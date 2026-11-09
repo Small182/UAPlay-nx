@@ -1422,6 +1422,9 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_X){
                     char new_query[192]={0};
                     if(keyboard(new_query,sizeof(new_query))){
+                        /* Search spans movies and TV shows, regardless of the
+                           section where the on-screen keyboard was opened. */
+                        category=0;
                         snprintf(query,sizeof(query),"%s",new_query);
                         message[0]=0;
                         n=load_category(category,query,movies,message,sizeof(message));

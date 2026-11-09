@@ -64,9 +64,13 @@ static const char *categories[]={"movies","series","top","genre_28","genre_35",
     "favorites","history"};
 static const char *headings[]={"Популярні фільми","Популярні серіали","Найкращі фільми",
     "Бойовики","Комедії","Драми","Жахи","Фантастика","Анімація",
-    "Романтика","Документальні","Обране","Історія переглядів"};
+    "Романтика","Документальні","Вибране","Історія переглядів"};
 #define CATEGORY_COUNT ((int)(sizeof(categories)/sizeof(categories[0])))
 static int expanded_catalog=0;
+/* 0: posters, 1: Watch, 2: Add to favorites (catalog hero buttons). */
+static int catalog_hero_focus=0;
+/* 0: Watch, 1: Add to favorites (details buttons). */
+static int details_button_focus=0;
 static int settings_selected=0,ui_accent_alt=0,source_mode=0;
 static int video_settings_from_menu=0;
 static int ui_category=0;
@@ -366,8 +370,8 @@ static void footer(Paint *p,const char *message) {
         if(expanded_catalog)HINT("B","Згорнути");
         else if(ui_category!=0)HINT("B","Головна");
     }else if(footer_page==DETAILS){
-        HINT("X","Обране");HINT("Y","Переглянуто");
-        HINT("A","Джерела");HINT("B","Назад");
+        HINT("X","Вибране");HINT("Y","Переглянуто");
+        HINT("A","Натиснути");HINT("B","Назад");
     }else if(footer_page==SETTINGS){
         HINT("↑↓","Пункт");HINT("A","Змінити");HINT("B","Закрити");
     }else if(footer_page==TRACK_PICKER){
@@ -441,7 +445,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
     if (page==CATALOG) {
         box_alpha(p,0,0,1280,80,.059f,.070f,.081f,1.f,0);
         headline(p,"UAPlay",32,18,175);
-        const char *tabs[]={"Головна","Серіали","Фільми","Моє"};
+        const char *tabs[]={"Головна","Серіали","Фільми","Вибране"};
         for(int i=0;i<4;i++){
             int x=229+i*131;
             int active=(i==0 && ui_category==0) ||
@@ -489,8 +493,11 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                 headline(p,"Не знайдено матеріалів",63,121,900);
                 text_muted(p,"Спробуйте інший розділ або пошуковий запит",63,185,920);
             }
+            if(n && catalog_hero_focus==1)selection_frame(p,62,264,180,39);
+            if(n && catalog_hero_focus==2)selection_frame(p,254,264,189,39);
             button(p,"▶  Дивитися",62,264,180,39,1);
-            button(p,"+  До списку",254,264,189,39,0);
+            button(p,n && library_favorite(&movies[active])?
+                   "✓  У вибраному":"+  До списку",254,264,189,39,0);
             text(p,heading,UI_EDGE,336,930);
             if(status && (!strncmp(status,"Offline catalog",15) ||
                           !strncmp(status,"Офлайн-пошук",strlen("Офлайн-пошук"))))
@@ -499,7 +506,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             int start=chosen/6*6;
             for(int i=start;i<n && i<start+6;i++){
                 int k=i-start,x=53+k*201,y=389;
-                if(i==chosen)selection_frame(p,x,y,150,221);
+                if(i==chosen && !catalog_hero_focus)selection_frame(p,x,y,150,221);
                 poster(p,&movies[i],x,y,150,221,&poster_budget);
                 card_title(p,movies[i].title,x,y+224,164);
             }
@@ -540,8 +547,10 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                                 movies[chosen].series?"Серіал":"Фільм");
         text(p,tag,66,259,835);
         summary(p,movies[chosen].overview,66,313,858);
+        if(!details_button_focus)selection_frame(p,65,526,238,58);
+        else selection_frame(p,320,526,255,58);
         button(p,"▶  Дивитися",65,526,238,58,1);
-        button(p,library_favorite(&movies[chosen])?"✓  В обраному":"+  Мій список",
+        button(p,library_favorite(&movies[chosen])?"✓  У вибраному":"+  До списку",
                320,526,255,58,0);
         footer(p,status);
     } else if (page==SOURCES) {
@@ -843,33 +852,36 @@ int main(void) {
                         if(next!=category){
                             category=next;query[0]=message[0]=0;
                             n=load_category(category,query,movies,message,sizeof(message));
-                            chosen=0;expanded_catalog=0;
+                            chosen=0;expanded_catalog=0;catalog_hero_focus=0;
                         }
                         continue;
                     }
                     if(ty<78 && tx>=767 && tx<1044)key=SDL_CONTROLLER_BUTTON_X;
                     else if(ty<78 && tx>=1058 && tx<1111)key=SDL_CONTROLLER_BUTTON_BACK;
                     else if(expanded_catalog){
-                        if(ty>=95 && ty<145 && tx>=1090){expanded_catalog=0;chosen=0;continue;}
+                        if(ty>=95 && ty<145 && tx>=1090){expanded_catalog=0;chosen=0;catalog_hero_focus=0;continue;}
                         if(ty>=153 && ty<613 && tx>=54){
                             int col=(tx-54)/201,row=(ty-153)/246;
                             int index=chosen/12*12+row*6+col;
                             if(col<6 && row<2 && index<n && (tx-54)%201<138 &&
                                (ty-153)%246<206){
-                                chosen=index;key=SDL_CONTROLLER_BUTTON_A;
+                                chosen=index;catalog_hero_focus=0;key=SDL_CONTROLLER_BUTTON_A;
                             }
                         }
                     }else{
-                        if(ty>=326 && ty<375 && tx>=1095){expanded_catalog=1;chosen=0;continue;}
+                        if(ty>=326 && ty<375 && tx>=1095){expanded_catalog=1;chosen=0;catalog_hero_focus=0;continue;}
                         if(ty>=260 && ty<307 && tx>=254 && tx<444 && n){
+                            catalog_hero_focus=2;
                             library_toggle_favorite(&movies[chosen]);continue;
                         }
-                        if(ty>=260 && ty<307 && tx>=62 && tx<242 && n)
+                        if(ty>=260 && ty<307 && tx>=62 && tx<242 && n){
+                            catalog_hero_focus=1;
                             key=SDL_CONTROLLER_BUTTON_A;
+                        }
                         else if(ty>=389 && ty<661 && tx>=53){
                             int col=(tx-53)/201,index=chosen/6*6+col;
                             if(col<6 && index<n && (tx-53)%201<164){
-                                chosen=index;key=SDL_CONTROLLER_BUTTON_A;
+                                chosen=index;catalog_hero_focus=0;key=SDL_CONTROLLER_BUTTON_A;
                             }
                         }
                     }
@@ -896,10 +908,13 @@ int main(void) {
                     }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==DETAILS){
                     if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
-                    else if(ty>=526 && ty<585 && tx>=320 && tx<575)
+                    else if(ty>=526 && ty<585 && tx>=320 && tx<575){
+                        details_button_focus=1;
                         key=SDL_CONTROLLER_BUTTON_X;
-                    else if(ty>=526 && ty<585 && tx>=65 && tx<303)
+                    }else if(ty>=526 && ty<585 && tx>=65 && tx<303){
+                        details_button_focus=0;
                         key=SDL_CONTROLLER_BUTTON_A;
+                    }
                     else if(ty>=UI_FOOTER_TOP)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==TRACK_PICKER){
                     int slot=(ty-UI_ROW_Y)/UI_ROW_STEP;
@@ -1046,24 +1061,41 @@ int main(void) {
             if(page==CATALOG){
                 if(key==SDL_CONTROLLER_BUTTON_BACK){page=SETTINGS;continue;}
                 if(key==SDL_CONTROLLER_BUTTON_RIGHTSTICK){
-                    expanded_catalog=!expanded_catalog;chosen=0;continue;
+                    expanded_catalog=!expanded_catalog;chosen=0;catalog_hero_focus=0;continue;
                 }
                 if(key==SDL_CONTROLLER_BUTTON_B && expanded_catalog){
-                    expanded_catalog=0;chosen=0;continue;
+                    expanded_catalog=0;chosen=0;catalog_hero_focus=0;continue;
                 }
                 if(key==SDL_CONTROLLER_BUTTON_B && category!=0){
                     category=0;query[0]=message[0]=0;
                     n=load_category(category,query,movies,message,sizeof(message));
-                    chosen=0;continue;
+                    chosen=0;catalog_hero_focus=0;continue;
                 }
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && chosen>0)chosen--;
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && chosen<n-1)chosen++;
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && chosen>=6)chosen-=6;
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && chosen+6<n)chosen+=6;
-                if(key==SDL_CONTROLLER_BUTTON_A && n){message[0]=0;page=DETAILS;}
+                if(!expanded_catalog && catalog_hero_focus){
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus==2)
+                        catalog_hero_focus=1;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && catalog_hero_focus==1)
+                        catalog_hero_focus=2;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)catalog_hero_focus=0;
+                }else{
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && chosen>0)chosen--;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && chosen<n-1)chosen++;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_UP){
+                        if(chosen>=6)chosen-=6;
+                        else if(!expanded_catalog && n)catalog_hero_focus=1;
+                    }
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && chosen+6<n)chosen+=6;
+                }
+                if(key==SDL_CONTROLLER_BUTTON_A && n){
+                    if(!expanded_catalog && catalog_hero_focus==2){
+                        library_toggle_favorite(&movies[chosen]);
+                        snprintf(message,sizeof(message),"%s",library_favorite(&movies[chosen])?
+                                 "Додано у вибране":"Видалено з вибраного");
+                    }else{message[0]=0;details_button_focus=0;page=DETAILS;}
+                }
                 if(key==SDL_CONTROLLER_BUTTON_LEFTSHOULDER || key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER){
                     category=(category+(key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER?1:CATEGORY_COUNT-1))%CATEGORY_COUNT;
-                    expanded_catalog=0;
+                    expanded_catalog=0;catalog_hero_focus=0;
                     query[0]=message[0]=0;
                     n=load_category(category,query,movies,message,sizeof(message));chosen=0;
                 }
@@ -1072,14 +1104,16 @@ int main(void) {
                     if(keyboard(new_query,sizeof(new_query))){
                         snprintf(query,sizeof(query),"%s",new_query);
                         message[0]=0;
-                        n=load_category(category,query,movies,message,sizeof(message));chosen=0;
+                        n=load_category(category,query,movies,message,sizeof(message));chosen=0;catalog_hero_focus=0;
                     }
                 }
                 if(key==SDL_CONTROLLER_BUTTON_Y){
                     message[0]=0;
-                    n=load_category(category,query,movies,message,sizeof(message));chosen=0;
+                    n=load_category(category,query,movies,message,sizeof(message));chosen=0;catalog_hero_focus=0;
                 }
             }else if(page==DETAILS){
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT)details_button_focus=0;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT)details_button_focus=1;
                 if(key==SDL_CONTROLLER_BUTTON_B){
                     page=CATALOG;message[0]=0;
                     if(category>=CATEGORY_COUNT-2){
@@ -1090,17 +1124,23 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_X){
                     library_toggle_favorite(&movies[chosen]);
                     snprintf(message,sizeof(message),"%s",library_favorite(&movies[chosen])?
-                             "Додано в обране (B — назад)":"Видалено з обраного (B — назад)");
+                             "Додано у вибране (B — назад)":"Видалено з вибраного (B — назад)");
                 }
                 if(key==SDL_CONTROLLER_BUTTON_Y){
                     library_mark_watched(&movies[chosen]);
                     snprintf(message,sizeof(message),"Додано в історію переглядів (B — назад)");
                 }
                 if(key==SDL_CONTROLLER_BUTTON_A){
-                    message[0]=0;
-                    sn=uakino_search(&movies[chosen],sources,UAKINO_MAX,message,sizeof(message));
-                    prioritize_sources(sources,sn);
-                    source=0;page=SOURCES;
+                    if(details_button_focus){
+                        library_toggle_favorite(&movies[chosen]);
+                        snprintf(message,sizeof(message),"%s",library_favorite(&movies[chosen])?
+                                 "Додано у вибране":"Видалено з вибраного");
+                    }else{
+                        message[0]=0;
+                        sn=uakino_search(&movies[chosen],sources,UAKINO_MAX,message,sizeof(message));
+                        prioritize_sources(sources,sn);
+                        source=0;page=SOURCES;
+                    }
                 }
             }else if(page==SOURCES){
                 if(key==SDL_CONTROLLER_BUTTON_B){page=DETAILS;message[0]=0;}

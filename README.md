@@ -1,78 +1,51 @@
-# Lampa-nx — experimental native Nintendo Switch catalog + player
+# Uaflix for Nintendo Switch — native homebrew
 
-Native Switch prototype with **TMDB-based Lampa catalog**, Ukrainian titles,
-search, movie/series details, experimental **UAKino / UAFresh** source adapter,
-and `libmpv` playback. Uses libnx + SDL2 + SDL2_ttf + libcurl + libmpv; **no Chromium**.
+Native controller-first app on **libnx + SDL2 + libmpv**, using TMDB movie/series metadata and a native HTTP adapter for [UAFresh](https://uakino.ofreshofresh.workers.dev/uakino.js). **No Chromium, WebKit, CUB sync or TorrServer.**
 
-## Installation
+## Install
 
-1. Open the latest successful [GitHub Actions build](https://github.com/Small182/Lampa-nx/actions).
-2. Download the `Lampa-nx-catalog-uakino` artifact and extract `Lampa-nx.nro`.
-3. Copy it to `sdmc:/switch/lampa-nx/Lampa-nx.nro`.
-4. Start Homebrew Menu in **full application mode** (hold R when opening a game), then launch Lampa-nx.
+1. Open [GitHub Actions](https://github.com/Small182/Lampa-nx/actions) and download the latest successful **Uaflix-native** artifact.
+2. Extract `Uaflix.nro` to the SD card at `sdmc:/switch/Uaflix.nro`.
+3. Start Homebrew Menu in **full application mode** (hold R while opening a game), select Uaflix.
 
-The catalog uses the **public client API key embedded in the open-source
-[Lampa TMDB implementation](https://github.com/yumata/lampa-source/blob/main/src/core/tmdb/tmdb.js)**.
-You do not need to supply your own key. To override it, create the text file
-`sdmc:/switch/lampa-nx/tmdb.key` containing your TMDB v3 API key.
+TMDB works out of the box using the public client key from the [official Lampa source](https://github.com/yumata/lampa-source/blob/main/src/core/tmdb/tmdb.js). To override this key put `tmdb.key` at `sdmc:/switch/lampa-nx/tmdb.key`. If the emulator lacks network access, a small built-in metadata snapshot keeps the main categories browseable, but it is not updated live.
 
-Network sockets are initialized using libnx. If a Switch emulator cannot access
-the internet, the application falls back to a bundled snapshot of the three
-catalog categories, so the catalog UI can still be tested. Search and UAKino
-still require a working network connection; an offline snapshot is not live data.
+## Current native features
 
-Poster thumbnails are loaded directly from TMDB's image CDN at runtime and cached
-in RAM during the session. They need network access; the offline metadata snapshot
-cannot contain posters. A small placeholder is shown when an image is unavailable.
+- Movies, TV, top-rated and genre categories (action, comedy, drama, horror, sci-fi, animation, romance, documentary).
+- Ukrainian TMDB titles, metadata descriptions, search via Switch software keyboard, live TMDB posters with in-session cache.
+- Local-only **favorites**, **watch history**, and **resume position** stored at `sdmc:/switch/uaflix/library.tsv`.
+- UAFresh searching from its current UAFlix and UASerials providers through the worker HTTP proxy; embedded video resolution including Zetvideo HLS; libmpv playback.
+- Player pause, ±10 second seek, switching audio/subtitle tracks offered by the source.
+- Settings/information screen.
+- Original user-supplied Lampa icon retained for now; homebrew display name is **Uaflix**.
 
 ## Controls
 
 | Screen | Buttons |
 |---|---|
-| Catalog | D-pad navigation, **L/R** categories, **A** details, **X** text search, **Y** refresh |
-| Details | **A** query UAKino/UAFresh, **B** back |
-| Sources | D-pad select, **A** resolve stream, **B** back |
-| Playback | **A** pause/resume, left/right seek 10 seconds, **B** back |
-| Catalog/non-player | **+** exit |
+| Catalog | D-pad choose, L/R change section, A details, X search, Y refresh, Minus settings, Plus exit |
+| Details | A find UAFresh streams, X toggle favorite, Y mark watched, B back |
+| UAFresh sources | Up/down select, A resolve/play, B back |
+| Video | A pause, left/right seek, X cycle subtitles, Y cycle audio tracks, B stop/save position |
+| Settings | B return |
 
-## UAKino integration status — important
+## UAFresh adapter
 
-The URL `https://uakino.ofreshofresh.workers.dev/uakino.js` is a **Lampa JavaScript plugin**, not a standalone native API. We cannot execute it as-is without Lampa's JavaScript runtime and its `Lampa.*` interfaces.
+This is **not** the original UAFresh JavaScript plugin running inside Lampa. That plugin relies on the browser and the global `Lampa.*` runtime. The native adapter implements selected functionality directly in C. The older `uakino.best` source returned HTTP 403 and is deliberately excluded in the current plugin; UAFlix/UASerials work through the plugin's worker.
 
-This native prototype implements **a tested HTTP adapter for the current UAFresh
-sources UAFlix and UASerials**. The plugin itself deliberately excludes the old
-`uakino.best` provider, which gave us an HTTP 403. We now search providers through
-UAFresh's public proxy and follow known player embeds (for example Zetvideo) to
-resolve direct HLS streams for `libmpv`.
-
-An end-to-end host-side smoke test on 2026-11-09 found 14 pages for *Avatar*
-and successfully resolved the UAFlix *Avatar (2009)* player to an `.m3u8` URL.
-Run it on a Linux PC using:
+On 2026-11-09 a Linux test searched *Avatar*, received 14 results, and successfully resolved a direct HLS stream from UAFlix's embedded Zetvideo player. You can repeat this host-side test with:
 
 ```sh
 cc -O2 -Isource source/catalog.c tests/uafresh_smoke.c \
-    $(pkg-config --cflags --libs libcurl) -o /tmp/lampa-uafresh-smoke
-/tmp/lampa-uafresh-smoke
+  $(pkg-config --cflags --libs libcurl) -o /tmp/uafresh-smoke
+/tmp/uafresh-smoke
 ```
 
-**Limitations:** this does not execute the complete JavaScript plugin; it does
-not yet implement all UAFresh providers, obfuscated player links, episode
-selection, authorization, or geo-restricted streams. Successful resolution on a
-PC does not prove actual decoding on Switch/Eden. Never ship passwords/cookies
-in source control.
+## Important limitations
 
-## Notes
+This remains an **experimental native app**, not an exact feature-for-feature reimplementation of Lampa. In particular, full TV episode/season selection, multi-provider source ranking, account-gated sites, detailed stream-quality menus, external arbitrary JS plugins, and automatic progress marking at every playback checkpoint need additional implementation and device-level verification. The player supports subtitles/audio tracks when provided, but language availability depends on the stream. Native playback must be tested on a real Switch and Eden; a successful CI compilation is not a runtime guarantee.
 
-- TMDB provides **metadata**, not movies or video streams.
-- Bookmarks, subtitle/track selection and a full plugin bridge remain to be implemented.
-- Uses the TMDB API and image CDN; **This product uses the TMDB API but is not
-  endorsed or certified by TMDB.**
-- Hardware decoding and performance must be verified on an actual Switch.
-- Includes a DejaVu Sans font for Unicode/Ukrainian rendering, derived from the
-  DejaVu Fonts project (Bitstream Vera derivative; see its distribution license).
+Metadata is provided by TMDB: **This product uses the TMDB API but is not endorsed or certified by TMDB.** No copyrighted video is bundled; only links returned by third-party services are resolved. Use content you have the right to access.
 
-## Related source
-
-- [Lampa source (TMDB metadata)](https://github.com/yumata/lampa-source)
-- [UAFresh plugin](https://uakino.ofreshofresh.workers.dev/uakino.js)
-- [libmpv examples](https://github.com/mpv-player/mpv-examples)
+Font: DejaVu Sans (Bitstream Vera-derived license), included to render Ukrainian text. Refer to [DejaVu Fonts](https://dejavu-fonts.github.io/).

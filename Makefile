@@ -10,7 +10,7 @@ CC := $(DEVKITA64)/bin/aarch64-none-elf-gcc
 PKG_CONFIG_LIBDIR := $(PORTLIBS)/lib/pkgconfig
 export PKG_CONFIG_LIBDIR
 
-TARGET := Lampa-nx
+TARGET := Uaflix
 ARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -fPIE
 COMMON := -O2 -g -Wall -Wextra -ffunction-sections -fdata-sections $(ARCH)
 CFLAGS := $(COMMON) -D__SWITCH__ -I$(LIBNX)/include -I$(PORTLIBS)/include $(shell pkg-config --cflags sdl2 SDL2_ttf SDL2_image mpv libcurl)
@@ -20,7 +20,7 @@ LIBS := $(shell pkg-config --libs mpv sdl2 SDL2_ttf SDL2_image libcurl) -lGLESv2
 .PHONY: all clean
 all: $(TARGET).nro
 
-main.o: source/main.c source/catalog.h source/posters.h
+main.o: source/main.c source/catalog.h source/posters.h source/library.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 catalog.o: source/catalog.c source/catalog.h
@@ -29,14 +29,17 @@ catalog.o: source/catalog.c source/catalog.h
 posters.o: source/posters.c source/posters.h source/catalog.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(TARGET).elf: main.o catalog.o posters.o
+library.o: source/library.c source/library.h source/catalog.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TARGET).elf: main.o catalog.o posters.o library.o
 	$(CC) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(TARGET).nacp:
-	nacptool --create "Lampa Native" "Small182" "0.1.0" $@
+	nacptool --create "Uaflix" "Small182" "0.4.0" $@
 
 $(TARGET).nro: $(TARGET).elf $(TARGET).nacp
 	elf2nro $< $@ --nacp=$(TARGET).nacp --icon=icon.jpg --romfsdir=romfs
 
 clean:
-	rm -f main.o catalog.o posters.o $(TARGET).elf $(TARGET).nacp $(TARGET).nro
+	rm -f main.o catalog.o posters.o library.o $(TARGET).elf $(TARGET).nacp $(TARGET).nro

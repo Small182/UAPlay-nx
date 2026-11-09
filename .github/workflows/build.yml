@@ -1,4 +1,4 @@
-name: Build native Lampa with libmpv
+name: Build native Uaflix with libmpv
 
 on:
   push:
@@ -24,9 +24,9 @@ jobs:
           export PKG_CONFIG_PATH="$DEVKITPRO/portlibs/switch/lib/pkgconfig:$DEVKITPRO/libnx/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$PKG_CONFIG_PATH"
           make -j2
-          test -s Lampa-nx.nro
+          test -s Uaflix.nro
       - uses: actions/upload-artifact@v4
         with:
-          name: Lampa-nx-catalog-uakino
-          path: Lampa-nx.nro
+          name: Uaflix-native
+          path: Uaflix.nro
           if-no-files-found: error

@@ -147,9 +147,13 @@ int catalog_load(const char *category, const char *query, Movie *items, int max,
     if (q) {
         snprintf(url, sizeof(url), "https://api.themoviedb.org/3/search/multi?api_key=%s&language=uk-UA&include_adult=false&query=%s", key, q);
     } else {
-        const char *path = !strcmp(category, "series") ? "trending/tv/week" :
-                           !strcmp(category, "top") ? "movie/top_rated" : "trending/movie/week";
-        snprintf(url, sizeof(url), "https://api.themoviedb.org/3/%s?api_key=%s&language=uk-UA", path, key);
+        if (!strncmp(category,"genre_",6))
+            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/movie?api_key=%s&language=uk-UA&sort_by=popularity.desc&with_genres=%s",key,category+6);
+        else {
+            const char *path = !strcmp(category, "series") ? "trending/tv/week" :
+                               !strcmp(category, "top") ? "movie/top_rated" : "trending/movie/week";
+            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/%s?api_key=%s&language=uk-UA", path, key);
+        }
     }
     free(q);
     char *json = request(url, error, error_size);

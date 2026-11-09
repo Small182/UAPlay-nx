@@ -18,7 +18,8 @@ TMDB works out of the box using the public client key from the [official Lampa s
 - UAFresh searching from its current UAFlix and UASerials providers through the worker HTTP proxy; embedded video resolution including Zetvideo HLS; libmpv playback.
 - Native **season/episode browser** for UAFresh sources exposing episode-page links (tested on UAFlix); play selected episode when its stream can be resolved.
 - Player pause, ±10 second seek, **separate audio-track and subtitle-track lists** built from libmpv `track-list` with language/title and selected-track state.
-- Rounded native interface and a transparent video control bar with Back, timeline scrubbing, pause/play, ±10-second seek, settings, audio and subtitles. The bar auto-hides after **3 seconds** and reappears when any button is pressed or the video is tapped.
+- Lampa-inspired native home screen: tall rounded posters in a six-column gallery, dark header with section navigation, and an overlaid right-side settings drawer. Status footer shows graphical Switch Joy-Con button badges.
+- Compact translucent video control bar modeled after the supplied reference, with Back, volume adjustment, timeline scrubbing, pause/play, ±10-second seek, settings, audio and subtitles. The bar auto-hides after **3 seconds** and reappears when any button is pressed or the video is tapped.
 - Switch touch controls for movie cards, source/season/episode lists, video overlay buttons, and timeline. Touch works with mouse clicks in Eden as well.
 - Playback settings overlay: speed, volume, brightness, contrast, subtitle text size, subtitle timing, and **HLS bitrate preset** (auto/highest, economy, ≤1/2/4 Mbps). Changing bitrate reloads the stream and tries to restore playback position.
 - Adds an external WebVTT subtitle track from UAFresh embedded players when the provider supplies one (for example Zetvideo's Ukrainian subtitles).

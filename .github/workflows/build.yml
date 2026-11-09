@@ -12,9 +12,9 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - name: Install native player dependencies
+      - name: Verify preinstalled native player dependencies
         run: |
-          dkp-pacman -Sy --noconfirm --needed switch-sdl2 switch-libmpv switch-pkg-config
+          dkp-pacman -Q switch-sdl2 switch-libmpv switch-pkg-config
       - name: Compile native NRO
         run: |
           export DEVKITPRO=/opt/devkitpro

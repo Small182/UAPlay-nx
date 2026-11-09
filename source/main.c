@@ -172,13 +172,13 @@ static void text(Paint *p,const char *str,int x,int y,int limit) {
     SDL_FreeSurface(surface);
 }
 static void footer(Paint *p,const char *message) {
-    box_alpha(p,0,665,1280,55,.81f,.13f,.17f,.97f,0);
+    box_alpha(p,0,665,1280,55,.13f,.15f,.18f,.98f,0);
     const char *buttons[]={"B","A","Y","X","ZR","R","ZL","L","SL","SR"};
     int x=17;
     for(int i=0;i<10;i++){
         int wide=i>=4?44:35;
         box_alpha(p,x,675,wide,35,1.f,1.f,1.f,.98f,i<4?18:7);
-        box_alpha(p,x+2,677,wide-4,31,.81f,.13f,.17f,1.f,i<4?16:6);
+        box_alpha(p,x+2,677,wide-4,31,.13f,.15f,.18f,1.f,i<4?16:6);
         text(p,buttons[i],x+(wide==35?9:4),675,wide-5);
         x+=wide+14;
     }

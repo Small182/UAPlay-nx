@@ -1,30 +1,57 @@
-# Lampa-nx (native Switch prototype)
+# Lampa-nx — experimental native Nintendo Switch catalog + player
 
-An early **native** Nintendo Switch player prototype using SDL2 and libmpv (FFmpeg). No Chromium, WebKit, or Linux guest.
+Native Switch prototype with **TMDB-based Lampa catalog**, Ukrainian titles,
+search, movie/series details, experimental **UAKino / UAFresh** source adapter,
+and `libmpv` playback. Uses libnx + SDL2 + SDL2_ttf + libcurl + libmpv; **no Chromium**.
 
-## First test
+## Installation
 
-1. Download `Lampa-nx.nro` from the latest successful GitHub Actions artifact.
-2. Copy to `sdmc:/switch/lampa-nx/Lampa-nx.nro`.
-3. Launch via Atmosphère Homebrew Menu in **full application mode** (hold R when opening a game). The memory-limited Album applet is not suitable for video.
-4. A public demo video (Big Buck Bunny) is played by default.
+1. Open the latest successful [GitHub Actions build](https://github.com/Small182/Lampa-nx/actions).
+2. Download the `Lampa-nx-catalog-uakino` artifact and extract `Lampa-nx.nro`.
+3. Copy it to `sdmc:/switch/lampa-nx/Lampa-nx.nro`.
+4. Start Homebrew Menu in **full application mode** (hold R when opening a game), then launch Lampa-nx.
 
-To test a video URL you are authorized to access, create the text file `sdmc:/switch/lampa-nx/stream.url` with a single direct `https://` or `http://` MP4/HLS URL on the first line. Restart the app.
+The catalog uses the **public client API key embedded in the open-source
+[Lampa TMDB implementation](https://github.com/yumata/lampa-source/blob/main/src/core/tmdb/tmdb.js)**.
+You do not need to supply your own key. To override it, create the text file
+`sdmc:/switch/lampa-nx/tmdb.key` containing your TMDB v3 API key.
 
-**Controls:** A = pause/resume; left/right = seek 10 seconds; Y = show playback time; B = stop; Plus = exit.
+## Controls
 
-## State / scope
+| Screen | Buttons |
+|---|---|
+| Catalog | D-pad navigation, **L/R** categories, **A** details, **X** text search, **Y** refresh |
+| Details | **A** query UAKino/UAFresh, **B** back |
+| Sources | D-pad select, **A** resolve stream, **B** back |
+| Playback | **A** pause/resume, left/right seek 10 seconds, **B** back |
+| Catalog/non-player | **+** exit |
 
-- **Implemented:** SDL video surface, real libmpv playback API, Joy-Con controls, external URL configuration.
-- **Not yet implemented:** Lampa catalog UI, UAKino source integration, bookmarks, stream quality selection.
-- This is an integration milestone, not yet a replacement for the Chromium-based Lampa build.
+## UAKino integration status — important
 
-We will add a native catalog and an adapter for the single requested UAKino extension. The extension is not directly executable as a Lampa plugin in this native build; its functionality must be adapted.
+The URL `https://uakino.ofreshofresh.workers.dev/uakino.js` is a **Lampa JavaScript plugin**, not a standalone native API. We cannot execute it as-is without Lampa's JavaScript runtime and its `Lampa.*` interfaces.
 
-Playback relies on the installed libmpv codec support and the external stream's accessibility. Hardware decoding is requested automatically where supported; it must be verified on a real Switch.
+This native prototype therefore implements **only an experimental HTTP adapter**:
+it requests UAKino search pages through the plugin's public UAFresh worker proxy,
+enumerates candidate pages, and looks for direct MP4/HLS/DASH stream URLs to pass
+to `libmpv`. It does **not** yet reproduce the full plugin's providers, obfuscated
+players, episode selection, authentication, or runtime behavior.
 
-## References
+At the time of development, the UAKino proxy test received a Cloudflare browser
+challenge. **That means catalog browsing should work, but actual UAKino video
+playback is not yet verified and may be blocked.** No claim of full UAKino
+compatibility is made. Never ship passwords/cookies in source control.
 
-- [mpv official SDL/libmpv example](https://github.com/mpv-player/mpv-examples/blob/master/libmpv/sdl/main.c)
-- [Switch SDL2 sample Makefile](https://github.com/switchbrew/switch-examples/blob/master/graphics/sdl2/sdl2-simple/Makefile)
-- [SwitchWave](https://github.com/averne/SwitchWave)
+## Notes
+
+- TMDB provides **metadata**, not movies or video streams.
+- Images/posters, bookmarks, subtitle/track selection and a full plugin bridge
+  remain to be implemented.
+- Hardware decoding and performance must be verified on an actual Switch.
+- Includes a DejaVu Sans font for Unicode/Ukrainian rendering, derived from the
+  DejaVu Fonts project (Bitstream Vera derivative; see its distribution license).
+
+## Related source
+
+- [Lampa source (TMDB metadata)](https://github.com/yumata/lampa-source)
+- [UAFresh plugin](https://uakino.ofreshofresh.workers.dev/uakino.js)
+- [libmpv examples](https://github.com/mpv-player/mpv-examples)

@@ -273,7 +273,10 @@ static char *fetch_uafresh(const char *upstream, char *error, int error_size) {
        request originates from the Switch user's Ukrainian network, unlike
        the Cloudflare worker; UAFlix episode availability is geo-dependent. */
     if(!strncmp(upstream,"https://uafix.net/",18) ||
-       !strncmp(upstream,"https://uakino.best/",20)){
+       !strncmp(upstream,"https://uakino.best/",20) ||
+       !strncmp(upstream,"https://zetvideo.net/",21) ||
+       !strncmp(upstream,"https://hdvbua.pro/",19) ||
+       !strncmp(upstream,"https://ashdi.vip/",18)){
         char *direct=request(upstream,error,error_size);
         if(direct)return direct;
         /* Existing public UAFresh worker remains a normal network fallback. */

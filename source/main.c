@@ -78,15 +78,19 @@ static int load_category(int category,const char *query,Movie *movies,char *mess
 }
 typedef struct {
     GLuint program, vbo, tex;
-    GLint tint;
+    GLint tint, shape;
     TTF_Font *font;
 } Paint;
 
 static const char *vs = "attribute vec2 pos;attribute vec2 uv;varying vec2 tc;"
                         "void main(){gl_Position=vec4(pos,0.,1.);tc=uv;}";
 static const char *fs = "precision mediump float;varying vec2 tc;"
-                        "uniform vec4 tint;uniform sampler2D image;"
-                        "void main(){gl_FragColor=texture2D(image,tc)*tint;}";
+                        "uniform vec4 tint;uniform sampler2D image;uniform vec3 shape;"
+                        "void main(){vec2 p=tc*shape.xy;vec2 q=abs(p-shape.xy*.5)"
+                        "-shape.xy*.5+shape.z;float d=length(max(q,0.0))"
+                        "+min(max(q.x,q.y),0.0)-shape.z;"
+                        "float a=1.0-smoothstep(-1.0,1.5,d);"
+                        "gl_FragColor=texture2D(image,tc)*tint*a;}";
 static void *proc(void *ctx, const char *name) {
     (void)ctx; return SDL_GL_GetProcAddress(name);
 }
@@ -110,6 +114,7 @@ static int paint_init(Paint *p) {
     glGetProgramiv(p->program,GL_LINK_STATUS,&linked);
     if (!linked) return 0;
     p->tint=glGetUniformLocation(p->program,"tint");
+    p->shape=glGetUniformLocation(p->program,"shape");
     glGenBuffers(1,&p->vbo);
     glGenTextures(1,&p->tex);
     glBindTexture(GL_TEXTURE_2D,p->tex);
@@ -123,13 +128,14 @@ static int paint_init(Paint *p) {
     p->font=TTF_OpenFont("romfs:/DejaVuSans.ttf",25);
     return p->font != NULL;
 }
-static void box(Paint *p,int x,int y,int w,int h,float r,float g,float b) {
+static void box_alpha(Paint *p,int x,int y,int w,int h,float r,float g,float b,float a,int radius) {
     float x0=x/640.f-1.f,x1=(x+w)/640.f-1.f;
     float y0=1.f-y/360.f,y1=1.f-(y+h)/360.f;
     float vertices[]={x0,y0,0,0, x1,y0,1,0, x0,y1,0,1,
                       x1,y0,1,0, x1,y1,1,1, x0,y1,0,1};
     glUseProgram(p->program);
-    glUniform4f(p->tint,r,g,b,1);
+    glUniform4f(p->tint,r,g,b,a);
+    glUniform3f(p->shape,(float)w,(float)h,(float)radius);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D,p->tex);
     glBindBuffer(GL_ARRAY_BUFFER,p->vbo);
@@ -138,6 +144,9 @@ static void box(Paint *p,int x,int y,int w,int h,float r,float g,float b) {
     glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,4*sizeof(float),(void*)0);
     glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,4*sizeof(float),(void*)(2*sizeof(float)));
     glDrawArrays(GL_TRIANGLES,0,6);
+}
+static void box(Paint *p,int x,int y,int w,int h,float r,float g,float b) {
+    box_alpha(p,x,y,w,h,r,g,b,1.f,w>100 && h>40?14:5);
 }
 static void text(Paint *p,const char *str,int x,int y,int limit) {
     if (!str || !*str) return;
@@ -182,15 +191,19 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
     glViewport(0,0,1280,720);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
-    box(p,0,0,1280,720,.055f,.064f,.08f);
+    box(p,0,0,1280,720,.035f,.044f,.068f);
+    box_alpha(p,0,0,1280,8,.18f,.72f,.86f,1.f,0);
     int poster_budget=1;
     if (page==CATALOG) {
-        text(p,"UAFLIX",28,18,330);
-        text(p,heading,28,80,1050);
+        box_alpha(p,20,17,180,48,.08f,.20f,.27f,.93f,18);
+        text(p,"UAFLIX",40,24,158);
+        text(p,heading,28,85,1050);
+        text(p,"L / R  ›",1100,86,150);
         int start=chosen/8*8;
         for (int i=start;i<n && i<start+8;i++) {
             int k=i-start,x=28+k%4*311,y=139+k/4*248;
-            box(p,x,y,292,226,i==chosen?.22f:.11f,i==chosen?.42f:.14f,i==chosen?.51f:.19f);
+            if(i==chosen)box_alpha(p,x-4,y-4,300,234,.28f,.79f,.89f,1.f,18);
+            box(p,x,y,292,226,i==chosen?.10f:.09f,i==chosen?.21f:.12f,i==chosen?.30f:.18f);
             poster(p,&movies[i],x+10,y+10,127,206,&poster_budget);
             text(p,movies[i].title,x+147,y+36,134);
             text(p,movies[i].original,x+147,y+110,134);
@@ -198,6 +211,8 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         }
         footer(p,*status?status:"A: Деталі  X: Пошук  L/R: Розділи  -: Налаштування  +: Вихід");
     } else if (page==DETAILS) {
+        box_alpha(p,25,16,160,43,.13f,.19f,.26f,.92f,16);
+        text(p,"‹  Назад",42,20,150);
         text(p,movies[chosen].title,340,70,870);
         text(p,movies[chosen].original,340,127,860);
         text(p,movies[chosen].year,340,177,300);
@@ -209,8 +224,13 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             text(p,line,340,y,900);
             s+=len;while(*s==' ')s++;
         }
-        footer(p,*status?status:"A: UAFresh  X: В обране  Y: Переглянуто  B: Назад");
+        box_alpha(p,340,591,340,60,.19f,.55f,.66f,.97f,20);
+        text(p,"▶  Дивитися",370,605,290);
+        box_alpha(p,705,591,250,60,.13f,.21f,.31f,.97f,20);
+        text(p,"♡  В обране",732,605,220);
+        footer(p,*status?status:"A: Джерела відео   X: Обране   Y: Переглянуто   B: Назад");
     } else if (page==SOURCES) {
+        text(p,"‹",18,45,42);
         text(p,"UAKino / UAFresh — джерела",40,45,1100);
         int first=source/10*10;
         for (int i=first;i<sn && i<first+10;i++) {
@@ -229,6 +249,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         text(p,"Обране та історія зберігаються на SD-карті",45,450,1100);
         footer(p,"B: Повернутися до каталогу");
     } else if (page==SEASONS) {
+        text(p,"‹",18,45,42);
         text(p,"UAFLIX — вибір сезону",42,45,1120);
         for(int i=0;i<season_count && i<10;i++) {
             int y=125+i*48;
@@ -241,6 +262,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         }
         footer(p,*status?status:"A: Серії сезону   B: Повернутися до джерел");
     } else if (page==EPISODES) {
+        text(p,"‹",18,45,42);
         char heading[128];
         snprintf(heading,sizeof(heading),"UAFLIX — сезон %d: вибір серії",season_ids[selected_season]);
         text(p,heading,42,45,1130);
@@ -294,6 +316,35 @@ static void apply_hls_quality(mpv_handle *player) {
 static void seek(mpv_handle *player,const char *seconds) {
     const char *args[]={"seek",seconds,"relative",NULL};
     if(player) mpv_command_async(player,0,args);
+}
+static void draw_player_controls(Paint *p,mpv_handle *player) {
+    double pos=0,duration=0;
+    int paused=0;
+    if(player){
+        mpv_get_property(player,"time-pos",MPV_FORMAT_DOUBLE,&pos);
+        mpv_get_property(player,"duration",MPV_FORMAT_DOUBLE,&duration);
+        mpv_get_property(player,"pause",MPV_FORMAT_FLAG,&paused);
+    }
+    glViewport(0,0,1280,720);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+    box_alpha(p,18,18,280,72,.07f,.09f,.13f,.78f,22);
+    text(p,"‹  Назад",48,36,220);
+    box_alpha(p,20,562,1240,140,.07f,.09f,.13f,.82f,24);
+    box(p,66,593,1148,9,.26f,.30f,.37f);
+    int filled=duration>0?(int)(1148.0*pos/duration):0;
+    if(filled>1148)filled=1148;
+    if(filled>0)box_alpha(p,66,593,filled,9,.31f,.78f,.90f,1.f,4);
+    char times[96];
+    snprintf(times,sizeof(times),"%02d:%02d / %02d:%02d",
+             (int)pos/60,(int)pos%60,(int)duration/60,(int)duration%60);
+    text(p,times,870,614,280);
+    text(p,"«  -10",80,627,180);
+    text(p,paused?"▶  Грати":"Ⅱ  Пауза",330,627,230);
+    text(p,"+10  »",580,627,170);
+    text(p,"⚙  Відео",750,627,185);
+    text(p,"Аудіо",970,627,100);
+    text(p,"Субт.",1110,627,130);
 }
 static int native_button(int button) {
     /* SDL uses Xbox-style face button names; Switch prints the opposite labels. */
@@ -390,6 +441,7 @@ int main(void) {
     Page player_return_page=SOURCES;
     Uint32 video_started_at=0;
     int video_loaded=0;
+    Uint32 controls_until=0;
     Uint32 stick_last_time=0;
     int stick_last_key=0;
     while(running){
@@ -414,6 +466,87 @@ int main(void) {
                     case SDLK_ESCAPE:key=SDL_CONTROLLER_BUTTON_START;break;
                 }
             }
+            int tx=-1,ty=-1;
+            if(e.type==SDL_FINGERDOWN){
+                tx=(int)(e.tfinger.x*1280);ty=(int)(e.tfinger.y*720);
+            }else if(e.type==SDL_MOUSEBUTTONDOWN &&
+                     e.button.button==SDL_BUTTON_LEFT && e.button.which!=SDL_TOUCH_MOUSEID){
+                int ww=1280,hh=720;
+                SDL_GetWindowSize(window,&ww,&hh);
+                tx=e.button.x*1280/(ww?ww:1280);
+                ty=e.button.y*720/(hh?hh:720);
+            }
+            if(tx>=0 && ty>=0){
+                if(page==PLAYER){
+                    int was_visible=SDL_GetTicks()<controls_until;
+                    controls_until=SDL_GetTicks()+3000;
+                    if(!was_visible)continue;
+                    if(ty<105 && tx<310)key=SDL_CONTROLLER_BUTTON_B;
+                    else if(ty>=580 && ty<615){
+                        double duration=0;
+                        if(player && mpv_get_property(player,"duration",MPV_FORMAT_DOUBLE,&duration)>=0
+                           && duration>0){
+                            double to=duration*(tx-66)/1148.0;
+                            if(to<0)to=0;if(to>duration)to=duration;
+                            char at[48];snprintf(at,sizeof(at),"%.2f",to);
+                            const char *args[]={"seek",at,"absolute",NULL};
+                            mpv_command_async(player,0,args);
+                        }
+                        continue;
+                    }else if(ty>615){
+                        if(tx<270)key=SDL_CONTROLLER_BUTTON_DPAD_LEFT;
+                        else if(tx<545)key=SDL_CONTROLLER_BUTTON_A;
+                        else if(tx<745)key=SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
+                        else if(tx<950)key=SDL_CONTROLLER_BUTTON_BACK;
+                        else if(tx<1090)key=SDL_CONTROLLER_BUTTON_Y;
+                        else key=SDL_CONTROLLER_BUTTON_X;
+                    }else continue;
+                }else if(page==CATALOG){
+                    if(ty>=139 && ty<635 && tx>=28){
+                        int col=(tx-28)/311,row=(ty-139)/248;
+                        int new_chosen=chosen/8*8+row*4+col;
+                        if(col<4 && row<2 && new_chosen<n){
+                            chosen=new_chosen;key=SDL_CONTROLLER_BUTTON_A;
+                        }
+                    }else if(ty<125 && tx>1050)key=SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
+                }else if(page==SOURCES){
+                    int slot=(ty-110)/51,new_source=source/10*10+slot;
+                    if(ty>=110 && slot>=0 && slot<10 && new_source<sn){
+                        source=new_source;key=SDL_CONTROLLER_BUTTON_A;
+                    }else if(ty<100)key=SDL_CONTROLLER_BUTTON_B;
+                }else if(page==SEASONS){
+                    int slot=(ty-125)/48;
+                    if(ty>=125 && slot>=0 && slot<season_count && slot<10){
+                        selected_season=slot;key=SDL_CONTROLLER_BUTTON_A;
+                    }else if(ty<100)key=SDL_CONTROLLER_BUTTON_B;
+                }else if(page==EPISODES){
+                    int slot=(ty-118)/51;
+                    int episode=selected_episode/10*10+slot;
+                    if(ty>=118 && slot>=0 && slot<10 && selected_season<season_count &&
+                       episode<episodes_in_season(season_ids[selected_season])){
+                        selected_episode=episode;key=SDL_CONTROLLER_BUTTON_A;
+                    }else if(ty<100)key=SDL_CONTROLLER_BUTTON_B;
+                }else if(page==DETAILS){
+                    if(ty<68 && tx<220)key=SDL_CONTROLLER_BUTTON_B;
+                    else if(ty>=591 && ty<655 && tx>=705 && tx<960)
+                        key=SDL_CONTROLLER_BUTTON_X;
+                    else if(ty>=591 && ty<655 && tx>=340 && tx<680)
+                        key=SDL_CONTROLLER_BUTTON_A;
+                    else if(ty>=665)key=SDL_CONTROLLER_BUTTON_B;
+                }else if(page==TRACK_PICKER){
+                    int slot=(ty-125)/50,new_track=selected_track/10*10+slot;
+                    if(ty>=125 && slot>=0 && slot<10 && new_track<track_count){
+                        selected_track=new_track;key=SDL_CONTROLLER_BUTTON_A;
+                    }else if(ty<100)key=SDL_CONTROLLER_BUTTON_B;
+                }else if(page==VIDEO_SETTINGS){
+                    int slot=(ty-130)/70;
+                    if(ty>=130 && slot>=0 && slot<VIDEO_OPTION_COUNT){
+                        selected_video_option=slot;
+                        key=tx<640?SDL_CONTROLLER_BUTTON_DPAD_LEFT:SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
+                    }else if(ty<100)key=SDL_CONTROLLER_BUTTON_B;
+                }else if(page==SETTINGS)key=SDL_CONTROLLER_BUTTON_B;
+            }
+            if(page==PLAYER && key>=0)controls_until=SDL_GetTicks()+3000;
             if(key<0)continue;
             if(page==PLAYER){
                 if(key==SDL_CONTROLLER_BUTTON_B){
@@ -502,6 +635,7 @@ int main(void) {
                             configure_stream(player,url);
                             command(player,"loadfile",url);
                             video_started_at=SDL_GetTicks();video_loaded=0;
+                            controls_until=SDL_GetTicks()+3000;
                             player_return_page=EPISODES;page=PLAYER;
                         }
                     } else if(!render) snprintf(message,sizeof(message),"Плеєр mpv не ініціалізовано");
@@ -586,6 +720,7 @@ int main(void) {
                         configure_stream(player,url);
                         command(player,"loadfile",url);
                         video_started_at=SDL_GetTicks();video_loaded=0;
+                        controls_until=SDL_GetTicks()+3000;
                         player_return_page=SOURCES;page=PLAYER;
                     }
                 }
@@ -639,6 +774,7 @@ int main(void) {
                 snprintf(message,sizeof(message),"Помилка відеорендерера mpv: %s",mpv_error_string(render_result));
                 command(player,"stop",NULL);page=player_return_page;
             }
+            if(SDL_GetTicks()<controls_until)draw_player_controls(&paint,player);
         }else draw(&paint,page,movies,n,chosen,sources,sn,source,headings[category],message);
         SDL_GL_SwapWindow(window);SDL_Delay(16);
     }

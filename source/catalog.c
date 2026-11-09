@@ -365,7 +365,7 @@ int uakino_resolve(const Source *source, char *stream, int size,
         free(player);
         if (found) return 1;
     }
-    snprintf(error,error_size,"UAFresh: this title has no direct video (possibly trailer-only)");
+    snprintf(error,error_size,"Лише трейлер або немає потоку. Поверніться та виберіть інше джерело.");
     return 0;
 }
 

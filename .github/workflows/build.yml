@@ -15,6 +15,14 @@ jobs:
       - name: Verify preinstalled native player dependencies
         run: |
           dkp-pacman -Q switch-sdl2 switch-sdl2_ttf switch-sdl2_image switch-libmpv switch-curl switch-pkg-config
+      - name: Install network-enabled FFmpeg and libmpv for Switch
+        run: |
+          set -eu
+          base=https://github.com/xfangfang/wiliwili/releases/download/v0.1.0
+          curl -fL --retry 3 -o /tmp/switch-ffmpeg.pkg.tar.zst "$base/switch-ffmpeg-7.1-1-any.pkg.tar.zst"
+          curl -fL --retry 3 -o /tmp/switch-libmpv.pkg.tar.zst "$base/switch-libmpv-0.36.0-3-any.pkg.tar.zst"
+          dkp-pacman -U --noconfirm /tmp/switch-ffmpeg.pkg.tar.zst /tmp/switch-libmpv.pkg.tar.zst
+          dkp-pacman -Q switch-ffmpeg switch-libmpv
       - name: Compile native NRO
         run: |
           export DEVKITPRO=/opt/devkitpro

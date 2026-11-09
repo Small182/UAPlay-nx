@@ -70,6 +70,19 @@ static const char *headings[]={"Популярні фільми","Популяр
     "Романтика","Документальні","Обране","Історія переглядів"};
 #define CATEGORY_COUNT ((int)(sizeof(categories)/sizeof(categories[0])))
 static int expanded_catalog=0;
+static int settings_selected=0,ui_accent_alt=0,source_mode=0;
+static int video_settings_from_menu=0;
+static int ui_category=0;
+static void prioritize_sources(Source *items,int count){
+    if(source_mode==0)return;
+    for(int i=0;i<count;i++)for(int j=i+1;j<count;j++){
+        int a=(source_mode==1?strstr(items[i].title,"UAFlix")!=NULL:
+                               strstr(items[i].title,"UASerials")!=NULL);
+        int b=(source_mode==1?strstr(items[j].title,"UAFlix")!=NULL:
+                               strstr(items[j].title,"UASerials")!=NULL);
+        if(b&&!a){Source temp=items[i];items[i]=items[j];items[j]=temp;}
+    }
+}
 
 static int load_category(int category,const char *query,Movie *movies,char *message,int size) {
     if (!strcmp(categories[category],"favorites")) {
@@ -86,6 +99,7 @@ typedef struct {
     GLuint program, vbo, tex;
     GLint tint, shape;
     TTF_Font *font;
+    TTF_Font *font_big;
     TTF_Font *scripts[7];
 } Paint;
 static const char *script_fonts[]={"Tamil","Telugu","Devanagari","Malayalam",
@@ -154,6 +168,7 @@ static int paint_init(Paint *p) {
     glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,white);
     if (TTF_Init()) return 0;
     p->font=TTF_OpenFont("romfs:/DejaVuSans.ttf",25);
+    p->font_big=TTF_OpenFont("romfs:/DejaVuSans.ttf",37);
     for(int i=0;i<7;i++){
         char path[96];snprintf(path,sizeof(path),"romfs:/NotoSans%s.ttf",script_fonts[i]);
         p->scripts[i]=TTF_OpenFont(path,25);
@@ -211,6 +226,25 @@ static void text_color(Paint *p,const char *str,int x,int y,int limit,
 static void text(Paint *p,const char *str,int x,int y,int limit){
     text_color(p,str,x,y,limit,1,1,1);
 }
+static void headline(Paint *p,const char *str,int x,int y,int limit){
+    TTF_Font *normal=p->font;
+    if(p->font_big)p->font=p->font_big;
+    text(p,str,x,y,limit);
+    p->font=normal;
+}
+static void summary(Paint *p,const char *description,int x,int y,int width){
+    char line[220]={0};size_t take=0;
+    const char *s=description;
+    for(int row=0;row<3 && s && *s;row++){
+        size_t n=strlen(s);if(n>75)n=75;
+        if(s[n] && n>30){while(n>30 && s[n]!=' ')n--;}
+        if(n>=sizeof(line))n=sizeof(line)-1;
+        memcpy(line,s,n);line[n]=0;
+        text_color(p,line,x,y+row*32,width,.78f,.80f,.84f);
+        s+=n;while(*s==' ')s++;
+        take+=n;if(take>210)break;
+    }
+}
 static void card_title(Paint *p,const char *title,int x,int y,int width){
     if(!title || !*title)return;
     char first[192]={0},second[192]={0};
@@ -235,20 +269,40 @@ static void card_title(Paint *p,const char *title,int x,int y,int width){
     if(second[0])text(p,second,x,y+30,width);
 }
 static int footer_position,footer_total;
+static Page footer_page;
 static void footer(Paint *p,const char *message) {
     box_alpha(p,0,663,1280,57,.045f,.055f,.07f,.99f,0);
-    box_alpha(p,30,668,1220,2,.89f,.68f,.34f,1.f,0);
+    float ar=ui_accent_alt?.39f:.89f,ag=ui_accent_alt?.74f:.68f,
+          ab=ui_accent_alt?.87f:.34f;
+    box_alpha(p,30,668,1220,2,ar,ag,ab,1.f,0);
     char position[30];
     snprintf(position,sizeof(position),"%d / %d",footer_position,footer_total);
-    text_color(p,footer_total?position:"UAPLAY",76,682,140,.91f,.71f,.38f);
-    const char *keys[]={"L","R","Y","X","A","B"};
-    const char *labels[]={"Розділи","Розділи","Меню","Опції","Вибрати","Назад"};
-    int at[]={232,387,548,708,872,1040};
-    for(int i=0;i<6;i++){
-        int x=at[i];
-        box_alpha(p,x,684,32,26,.91f,.71f,.38f,1.f,i>=2?14:5);
-        text_color(p,keys[i],x+7,680,27,.10f,.11f,.13f);
-        text_color(p,labels[i],x+37,681,125,.91f,.71f,.38f);
+    text_color(p,footer_total?position:"UAPLAY",62,682,125,ar,ag,ab);
+    const char *keys[6],*labels[6];int count=0;
+#define HINT(k,l) do{keys[count]=k;labels[count]=l;count++;}while(0)
+    if(footer_page==CATALOG){
+        HINT("L","Попередній");HINT("R","Наступний");
+        HINT("X","Пошук");HINT("-","Налаштування");HINT("A","Відкрити");
+        HINT("B",expanded_catalog?"Згорнути":"Назад");
+    }else if(footer_page==SETTINGS){
+        HINT("↑↓","Пункт");HINT("A","Змінити");HINT("B","Закрити");
+    }else if(footer_page==TRACK_PICKER){
+        HINT("↑↓","Доріжка");HINT("A","Застосувати");HINT("B","Назад");
+    }else if(footer_page==VIDEO_SETTINGS){
+        HINT("↑↓","Параметр");HINT("←→","Змінити");HINT("B","Назад");
+    }else if(footer_page==LOGIN_USER || footer_page==LOGIN_PASSWORD){
+        HINT("A","Символ");HINT("B","Стерти");HINT("X","Регістр");HINT("Y","Далі");
+    }else{
+        HINT("↑↓","Вибір");HINT("A","Відкрити");HINT("B","Назад");
+    }
+#undef HINT
+    int start=count>=6?170:270;
+    int step=count>=6?178:235;
+    for(int i=0;i<count;i++){
+        int x=start+i*step;
+        box_alpha(p,x,685,36,26,ar,ag,ab,1.f,10);
+        text_color(p,keys[i],x+5,681,31,.10f,.11f,.13f);
+        text_color(p,labels[i],x+43,681,step-48,ar,ag,ab);
     }
     /* Errors stay readable without replacing the controller legend. */
     if(message && *message && strncmp(message,"A:",2) &&
@@ -275,85 +329,119 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
     box(p,0,0,1280,720,.035f,.044f,.068f);
-    box_alpha(p,0,0,1280,8,.18f,.72f,.86f,1.f,0);
+    box_alpha(p,0,0,1280,5,ui_accent_alt?.18f:.81f,
+              ui_accent_alt?.72f:.64f,ui_accent_alt?.86f:.37f,1.f,0);
     footer_position=page==CATALOG?chosen+1:0;
     footer_total=page==CATALOG?n:0;
+    footer_page=page;
     int poster_budget=1;
     if (page==CATALOG || page==SETTINGS) {
-        box_alpha(p,0,0,1280,89,.095f,.105f,.115f,.97f,0);
-        text(p,"‹",24,18,50);
-        text(p,"☰",76,18,55);
-        text(p,"Головна  -  TMDB",145,18,510);
-        text(p,"⌕",885,18,55);
-        text(p,"⚙",1030,18,50);
+        box_alpha(p,0,0,1280,78,.052f,.058f,.070f,.99f,0);
+        headline(p,"UAPlay",25,15,160);
+        const char *tabs[]={"Головна","Серіали","Фільми","Моє"};
+        for(int i=0;i<4;i++){
+            int x=225+i*131;
+            if((i==0 && ui_category!=1 && ui_category<11) || (i==1 && ui_category==1) ||
+               (i==2 && ui_category==0) || (i==3 && ui_category>=11))
+                box_alpha(p,x-11,15,125,46,.18f,.21f,.25f,1.f,22);
+            text(p,tabs[i],x,25,116);
+        }
+        box_alpha(p,764,16,282,49,.15f,.17f,.21f,1.f,17);
+        text(p,"⌕  Пошук",787,25,220);
+        box_alpha(p,1060,16,56,49,.15f,.17f,.21f,1.f,17);
+        text(p,"⚙",1073,23,44);
         time_t now=time(NULL);
         struct tm *local=localtime(&now);
         char clock_label[32]="--:--";
         if(local)strftime(clock_label,sizeof(clock_label),"%H:%M",local);
-        text(p,clock_label,1138,18,110);
-        text(p,heading,28,115,1020);
-        box_alpha(p,1110,112,137,48,.08f,.09f,.11f,1.f,23);
-        text(p,expanded_catalog && page==CATALOG?"Назад":"Ще  ›",1129,121,114);
+        text(p,clock_label,1154,24,104);
         if(expanded_catalog && page==CATALOG){
+            headline(p,heading,32,90,850);
+            box_alpha(p,1115,94,132,46,.15f,.18f,.22f,1.f,22);
+            text(p,"‹  Назад",1130,102,106);
             int start=chosen/12*12;
             for(int i=start;i<n && i<start+12;i++){
-                int k=i-start,x=29+k%6*208,y=170+k/6*244;
-                if(i==chosen)box_alpha(p,x-4,y-4,199,204,.94f,.95f,.97f,1.f,17);
-                poster(p,&movies[i],x,y,191,196,&poster_budget);
-                card_title(p,movies[i].title,x,y+199,190);
+                int k=i-start,x=44+k%6*201,y=150+k/6*244;
+                if(i==chosen)box_alpha(p,x-5,y-5,175,246,.92f,.93f,.95f,1.f,17);
+                poster(p,&movies[i],x,y,165,236,&poster_budget);
             }
         }else{
+            int active=chosen<n?chosen:0;
+            box_alpha(p,27,91,1226,243,.085f,.103f,.13f,1.f,23);
+            if(n){
+                poster(p,&movies[active],1039,97,169,231,&poster_budget);
+                headline(p,movies[active].title,57,109,875);
+                char tag[110];
+                snprintf(tag,sizeof(tag),"%s  ·  %s  ·  TMDB",movies[active].year,
+                         movies[active].series?"Серіал":"Фільм");
+                text_color(p,tag,59,158,640,.72f,.75f,.79f);
+                summary(p,movies[active].overview,58,199,890);
+            }
+            box_alpha(p,56,291,175,39,.88f,.89f,.91f,1.f,17);
+            text_color(p,"▶  Дивитися",71,294,152,.09f,.10f,.12f);
+            box_alpha(p,245,291,179,39,.25f,.27f,.31f,1.f,17);
+            text(p,"＋  Моє",272,294,137);
+            headline(p,heading,32,345,920);
+            box_alpha(p,1103,346,146,43,.15f,.18f,.22f,1.f,21);
+            text(p,"Усі  ›",1137,353,95);
             int start=chosen/6*6;
             for(int i=start;i<n && i<start+6;i++){
-                int k=i-start,x=29+k*208,y=179;
-                if(i==chosen)box_alpha(p,x-4,y-4,199,309,.94f,.95f,.97f,1.f,17);
-                poster(p,&movies[i],x,y,191,301,&poster_budget);
-                box_alpha(p,x,y+268,191,33,.02f,.04f,.06f,.76f,10);
-                card_title(p,movies[i].title,x,y+315,190);
-                text(p,movies[i].year,x,y+375,190);
+                int k=i-start,x=44+k*201,y=403;
+                if(i==chosen)box_alpha(p,x-5,y-5,175,246,.92f,.93f,.95f,1.f,17);
+                poster(p,&movies[i],x,y,165,236,&poster_budget);
             }
-            text_color(p,"Повний список — кнопка «Ще» угорі праворуч",30,581,850,
-                       .66f,.71f,.77f);
         }
         if(page==SETTINGS){
-            box_alpha(p,0,0,1280,720,0,0,0,.49f,0);
-            box_alpha(p,734,0,546,720,.15f,.16f,.17f,1.f,0);
-            text(p,"Налаштування",774,20,480);
-            const char *items[]={"▣  Інтерфейс","☷  Каталог","▶  Плеєр",
-                                 "◎  Джерела UAFresh","◉  UAFlix — акаунт"};
+            box_alpha(p,0,0,1280,720,.055f,.063f,.076f,1.f,0);
+            headline(p,"Налаштування UAPlay",45,35,950);
+            const char *items[]={"Інтерфейс","Каталог","Плеєр","Джерела","Акаунт UAFlix"};
             for(int i=0;i<5;i++){
-                int y=112+i*82;
-                box_alpha(p,767,y,477,68,i==4?.22f:.15f,i==4?.30f:.16f,
-                          i==4?.34f:.17f,.99f,13);
-                text(p,items[i],789,y+16,440);
+                int y=141+i*87;
+                box_alpha(p,45,y,441,68,i==settings_selected?.30f:.12f,
+                          i==settings_selected?.34f:.14f,
+                          i==settings_selected?.39f:.18f,.99f,13);
+                text(p,items[i],70,y+18,385);
             }
-            text(p,uaflix_logged_in()?"UAFlix: вхід виконано":"UAFlix: вхід необов'язковий",773,524,465);
-            box_alpha(p,770,566,229,62,.21f,.49f,.60f,1.f,16);
-            box_alpha(p,1009,566,235,62,.22f,.24f,.27f,1.f,16);
-            text(p,"A  Увійти",788,579,200);
-            text(p,"Y  Вийти",1032,579,195);
+            char description[240];
+            if(settings_selected==0)snprintf(description,sizeof(description),"Акцент: %s",ui_accent_alt?"Блакитний":"Золотистий");
+            else if(settings_selected==1)snprintf(description,sizeof(description),"Поточний розділ: %s",heading);
+            else if(settings_selected==2)snprintf(description,sizeof(description),"Швидкість: %.2f · гучність: %.0f",video_options[0],video_options[1]);
+            else if(settings_selected==3)snprintf(description,sizeof(description),"Порядок: %s",source_mode==0?"Усі":source_mode==1?"UAFlix спочатку":"UASerials спочатку");
+            else snprintf(description,sizeof(description),"UAFlix: %s",uaflix_logged_in()?"вхід виконано":"вхід необов'язковий");
+            box_alpha(p,518,141,720,485,.105f,.12f,.15f,1.f,19);
+            headline(p,items[settings_selected],555,178,635);
+            text(p,description,555,254,640);
+            const char *help[]={"Перемикання кольору виділення у всьому застосунку.",
+                "Виберіть розділ фільмів і серіалів.",
+                "Швидкість, гучність, якість та параметри субтитрів.",
+                "Яке джерело показувати першим у списку.",
+                "Вхід потрібен лише для персональних можливостей."};
+            summary(p,help[settings_selected],557,314,620);
+            box_alpha(p,555,534,239,65,.88f,.89f,.91f,1.f,15);
+            text_color(p,settings_selected==4?"Увійти":"Змінити",577,552,194,.09f,.10f,.12f);
+            if(settings_selected==4){
+                box_alpha(p,817,534,220,65,.26f,.28f,.32f,1.f,15);
+                text(p,"Вийти",840,552,178);
+            }
         }
         footer(p,*status?status:(page==SETTINGS?
                 "A: Вхід UAFlix   Y: Вихід   B: Закрити":
                 "A: Деталі   X: Пошук   L/R: Розділи   -: Меню"));
     } else if (page==DETAILS) {
-        box_alpha(p,25,16,160,43,.13f,.19f,.26f,.92f,16);
-        text(p,"‹  Назад",42,20,150);
-        text(p,movies[chosen].title,340,70,870);
-        text(p,movies[chosen].original,340,127,860);
-        text(p,movies[chosen].year,340,177,300);
-        poster(p,&movies[chosen],40,70,250,390,&poster_budget);
-        const char *s=movies[chosen].overview;
-        for (int y=245;*s && y<580;y+=40) {
-            size_t len=strlen(s);if(len>90){len=90;while(len>20 && s[len]!=' ')len--;}
-            char line[128]={0};memcpy(line,s,len);
-            text(p,line,340,y,900);
-            s+=len;while(*s==' ')s++;
-        }
-        box_alpha(p,340,591,340,60,.19f,.55f,.66f,.97f,20);
-        text(p,"▶  Дивитися",370,605,290);
-        box_alpha(p,705,591,250,60,.13f,.21f,.31f,.97f,20);
-        text(p,"♡  В обране",732,605,220);
+        box_alpha(p,0,0,1280,80,.052f,.058f,.070f,1.f,0);
+        text(p,"‹  До каталогу",37,28,250);
+        box_alpha(p,28,101,1225,510,.09f,.104f,.126f,1.f,23);
+        poster(p,&movies[chosen],964,112,241,364,&poster_budget);
+        headline(p,movies[chosen].title,60,143,850);
+        text_color(p,movies[chosen].original,64,208,835,.67f,.72f,.79f);
+        char tag[100];snprintf(tag,sizeof(tag),"%s    ·    %s",movies[chosen].year,
+                                movies[chosen].series?"Серіал":"Фільм");
+        text(p,tag,65,267,680);
+        summary(p,movies[chosen].overview,63,330,850);
+        box_alpha(p,61,505,245,66,.91f,.92f,.94f,1.f,17);
+        text_color(p,"▶  Дивитися",79,523,210,.09f,.10f,.12f);
+        box_alpha(p,328,505,250,66,.25f,.28f,.33f,1.f,17);
+        text(p,library_favorite(&movies[chosen])?"✓  В обраному":"＋  Мій список",349,523,210);
         footer(p,*status?status:"A: Джерела відео   X: Обране   Y: Переглянуто   B: Назад");
     } else if (page==SOURCES) {
         text(p,"‹",18,45,42);
@@ -471,31 +559,33 @@ static void draw_player_controls(Paint *p,mpv_handle *player) {
     glViewport(0,0,1280,720);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
-    box_alpha(p,31,29,172,49,.09f,.16f,.25f,.82f,13);
-    text(p,"‹  Назад",49,34,145);
-    box_alpha(p,160,493,960,166,.09f,.18f,.30f,.86f,20);
-    text(p,"◖",181,513,36);
-    box_alpha(p,222,534,131,6,.36f,.51f,.66f,1.f,3);
-    int volume=(int)(video_options[1]*130.0/130.0);
-    if(volume<0)volume=0;if(volume>130)volume=130;
-    if(volume>0)box_alpha(p,222,534,volume,6,.85f,.91f,.97f,1.f,3);
-    box_alpha(p,222+volume-7,527,14,20,.94f,.96f,1.f,1.f,7);
-    text(p,"◀◀",418,505,87);
-    text(p,paused?"▶":"Ⅱ",599,504,60);
-    text(p,"▶▶",750,505,87);
-    text(p,"⚙",921,505,50);
-    text(p,"♫",990,505,46);
-    text(p,"☷",1062,505,46);
-    box_alpha(p,235,614,810,7,.36f,.51f,.66f,1.f,4);
-    int filled=duration>0?(int)(810.0*pos/duration):0;
-    if(filled<0)filled=0;if(filled>810)filled=810;
-    if(filled>0)box_alpha(p,235,614,filled,7,.85f,.91f,.97f,1.f,4);
-    box_alpha(p,235+filled-8,607,16,21,.94f,.96f,1.f,1.f,8);
+    box_alpha(p,29,25,168,51,.05f,.07f,.10f,.84f,14);
+    text(p,"‹  Назад",47,33,141);
+    box_alpha(p,0,530,1280,190,.025f,.028f,.037f,.91f,0);
+    box_alpha(p,112,582,1056,6,.30f,.32f,.37f,1.f,3);
+    int filled=duration>0?(int)(1056.0*pos/duration):0;
+    if(filled<0)filled=0;if(filled>1056)filled=1056;
+    if(filled>0)box_alpha(p,112,582,filled,6,.93f,.94f,.96f,1.f,3);
+    box_alpha(p,112+filled-8,575,16,20,.95f,.95f,.97f,1.f,8);
     char left[24],right[24];
     snprintf(left,sizeof(left),"%02d:%02d",(int)pos/60,(int)pos%60);
     snprintf(right,sizeof(right),"%02d:%02d",(int)duration/60,(int)duration%60);
-    text(p,left,174,601,90);
-    text(p,right,1050,601,85);
+    text(p,left,32,570,88);
+    text(p,right,1177,570,90);
+    text_color(p,"R + ←/→ : 1 хв",53,630,204,.68f,.73f,.80f);
+    box_alpha(p,89,675,157,5,.35f,.42f,.52f,1.f,3);
+    int volume=(int)video_options[1];
+    if(volume<0)volume=0;if(volume>130)volume=130;
+    if(volume>0)box_alpha(p,89,675,volume*157/130,5,.92f,.94f,.97f,1.f,3);
+    box_alpha(p,89+volume*157/130-7,667,14,20,.96f,.97f,.98f,1.f,7);
+    const int centers[]={415,540,665,855,960,1075};
+    const char *icons[]={"−10",paused?"▶":"Ⅱ","+10","⚙","Аудіо","Субт."};
+    for(int i=0;i<6;i++){
+        int w=i<3?86:92;
+        box_alpha(p,centers[i]-w/2,629,w,56,.16f,.19f,.24f,.91f,15);
+        int left_offset=i==0||i==2?27:i==4||i==5?35:13;
+        text(p,icons[i],centers[i]-left_offset,643,w-5);
+    }
 }
 static int native_button(int button) {
     /* SDL uses Xbox-style face button names; Switch prints the opposite labels. */
@@ -657,53 +747,64 @@ int main(void) {
                     controls_until=SDL_GetTicks()+3000;
                     if(!was_visible)continue;
                     if(ty<105 && tx<310)key=SDL_CONTROLLER_BUTTON_B;
-                    else if(ty>=596 && ty<=649 && tx>=224 && tx<=1054){
+                    else if(ty>=561 && ty<=613 && tx>=103 && tx<=1176){
                         double duration=0;
                         if(player && mpv_get_property(player,"duration",MPV_FORMAT_DOUBLE,&duration)>=0
                            && duration>0){
-                            double to=duration*(tx-235)/810.0;
+                            double to=duration*(tx-112)/1056.0;
                             if(to<0)to=0;if(to>duration)to=duration;
                             char at[48];snprintf(at,sizeof(at),"%.2f",to);
                             const char *args[]={"seek",at,"absolute",NULL};
                             mpv_command_async(player,0,args);
                         }
                         continue;
-                    }else if(ty>=495 && ty<579){
-                        if(tx>=214 && tx<367){
-                            double volume=(tx-222)*130.0/130.0;
+                    }else if(ty>=625 && ty<702){
+                        if(tx>=75 && tx<260 && ty>=659){
+                            double volume=(tx-89)*130.0/157.0;
                             if(volume<0)volume=0;if(volume>130)volume=130;
                             video_options[1]=volume;
                             playback_set_value(player,"volume",volume);
                             continue;
                         }
-                        if(tx>=402 && tx<525)key=SDL_CONTROLLER_BUTTON_DPAD_LEFT;
-                        else if(tx>=565 && tx<698)key=SDL_CONTROLLER_BUTTON_A;
-                        else if(tx>=735 && tx<854)key=SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
-                        else if(tx>=907 && tx<977)key=SDL_CONTROLLER_BUTTON_BACK;
-                        else if(tx>=977 && tx<1043)key=SDL_CONTROLLER_BUTTON_Y;
-                        else if(tx>=1043 && tx<1112)key=SDL_CONTROLLER_BUTTON_X;
+                        if(tx>=372 && tx<458)key=SDL_CONTROLLER_BUTTON_DPAD_LEFT;
+                        else if(tx>=497 && tx<583)key=SDL_CONTROLLER_BUTTON_A;
+                        else if(tx>=622 && tx<708)key=SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
+                        else if(tx>=809 && tx<901)key=SDL_CONTROLLER_BUTTON_BACK;
+                        else if(tx>=914 && tx<1006)key=SDL_CONTROLLER_BUTTON_Y;
+                        else if(tx>=1029 && tx<1121)key=SDL_CONTROLLER_BUTTON_X;
                     }else continue;
                 }else if(page==CATALOG){
-                    if(ty>=108 && ty<168 && tx>=1080){
-                        expanded_catalog=!expanded_catalog;
-                        chosen=0;continue;
+                    if(ty<78 && tx>=225 && tx<748){
+                        int tab=(tx-225)/131;
+                        int next=tab==1?1:tab==3?11:0;
+                        if(next!=category){
+                            category=next;query[0]=message[0]=0;
+                            n=load_category(category,query,movies,message,sizeof(message));
+                            chosen=0;expanded_catalog=0;
+                        }
+                        continue;
                     }
-                    if(expanded_catalog && ty>=170 && ty<650 && tx>=29){
-                        int col=(tx-29)/208,row=(ty-170)/244;
-                        int new_chosen=chosen/12*12+row*6+col;
-                        if(col<6 && row<2 && new_chosen<n){
-                            chosen=new_chosen;key=SDL_CONTROLLER_BUTTON_A;
+                    if(ty<78 && tx>=764 && tx<1046)key=SDL_CONTROLLER_BUTTON_X;
+                    else if(ty<78 && tx>=1060 && tx<1118)key=SDL_CONTROLLER_BUTTON_BACK;
+                    else if(expanded_catalog){
+                        if(ty>=85 && ty<144 && tx>=1090){expanded_catalog=0;chosen=0;continue;}
+                        if(ty>=150 && ty<635 && tx>=44){
+                            int col=(tx-44)/201,row=(ty-150)/244;
+                            int index=chosen/12*12+row*6+col;
+                            if(col<6 && row<2 && index<n){chosen=index;key=SDL_CONTROLLER_BUTTON_A;}
                         }
-                    }else if(!expanded_catalog && ty>=179 && ty<550 && tx>=29){
-                        int col=(tx-29)/208;
-                        int new_chosen=chosen/6*6+col;
-                        if(col<6 && new_chosen<n){
-                            chosen=new_chosen;key=SDL_CONTROLLER_BUTTON_A;
+                    }else{
+                        if(ty>=340 && ty<394 && tx>=1080){expanded_catalog=1;chosen=0;continue;}
+                        if(ty>=291 && ty<335 && tx>=245 && tx<424 && n){
+                            library_toggle_favorite(&movies[chosen]);continue;
                         }
-                    }else if(ty<90 && tx>980 && tx<1090)key=SDL_CONTROLLER_BUTTON_BACK;
-                    else if(ty<90 && tx>=860 && tx<970)key=SDL_CONTROLLER_BUTTON_X;
-                    else if(ty<90 && tx<130)key=SDL_CONTROLLER_BUTTON_BACK;
-                    else if(ty>665 && tx>800)key=SDL_CONTROLLER_BUTTON_BACK;
+                        if(ty>=291 && ty<335 && tx>=56 && tx<231 && n)
+                            key=SDL_CONTROLLER_BUTTON_A;
+                        else if(ty>=403 && ty<640 && tx>=44){
+                            int col=(tx-44)/201,index=chosen/6*6+col;
+                            if(col<6 && index<n){chosen=index;key=SDL_CONTROLLER_BUTTON_A;}
+                        }
+                    }
                 }else if(page==SOURCES){
                     int slot=(ty-110)/51,new_source=source/10*10+slot;
                     if(ty>=110 && slot>=0 && slot<10 && new_source<sn){
@@ -722,10 +823,10 @@ int main(void) {
                         selected_episode=episode;key=SDL_CONTROLLER_BUTTON_A;
                     }else if(ty<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==DETAILS){
-                    if(ty<68 && tx<220)key=SDL_CONTROLLER_BUTTON_B;
-                    else if(ty>=591 && ty<655 && tx>=705 && tx<960)
+                    if(ty<85 && tx<310)key=SDL_CONTROLLER_BUTTON_B;
+                    else if(ty>=505 && ty<574 && tx>=328 && tx<579)
                         key=SDL_CONTROLLER_BUTTON_X;
-                    else if(ty>=591 && ty<655 && tx>=340 && tx<680)
+                    else if(ty>=505 && ty<574 && tx>=61 && tx<308)
                         key=SDL_CONTROLLER_BUTTON_A;
                     else if(ty>=665)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==TRACK_PICKER){
@@ -740,9 +841,14 @@ int main(void) {
                         key=tx<640?SDL_CONTROLLER_BUTTON_DPAD_LEFT:SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
                     }else if(ty<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==SETTINGS){
-                    if(ty>566 && ty<632 && tx>770 && tx<1009)key=SDL_CONTROLLER_BUTTON_A;
-                    else if(ty>566 && ty<632 && tx>=1009)key=SDL_CONTROLLER_BUTTON_Y;
-                    else if(tx<734 || ty<92 || ty>665)key=SDL_CONTROLLER_BUTTON_B;
+                    if(tx>=45 && tx<488 && ty>=141 && ty<580){
+                        settings_selected=(ty-141)/87;
+                        if(settings_selected>=5)settings_selected=4;
+                        key=SDL_CONTROLLER_BUTTON_A;
+                    }else if(ty>=534 && ty<600 && tx>=555 && tx<795)key=SDL_CONTROLLER_BUTTON_A;
+                    else if(ty>=534 && ty<600 && tx>=817 && tx<1038 && settings_selected==4)
+                        key=SDL_CONTROLLER_BUTTON_Y;
+                    else if(ty<125 || ty>665)key=SDL_CONTROLLER_BUTTON_B;
                 }
             }
             if(page==PLAYER && key>=0)controls_until=SDL_GetTicks()+3000;
@@ -786,8 +892,10 @@ int main(void) {
                     command(player,"stop",NULL);page=player_return_page;
                 }
                 if(key==SDL_CONTROLLER_BUTTON_A)command(player,"cycle","pause");
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT)seek(player,"-10");
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT)seek(player,"10");
+                int fast=pad && SDL_GameControllerGetAttached(pad) &&
+                    SDL_GameControllerGetButton(pad,SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT)seek(player,fast?"-60":"-10");
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT)seek(player,fast?"60":"10");
                 if(key==SDL_CONTROLLER_BUTTON_X || key==SDL_CONTROLLER_BUTTON_Y){
                     subtitle_picker=key==SDL_CONTROLLER_BUTTON_X;
                     track_count=playback_tracks(player,subtitle_picker,tracks,TRACKS_MAX);
@@ -816,7 +924,10 @@ int main(void) {
                 continue;
             }
             if(page==VIDEO_SETTINGS){
-                if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK)page=PLAYER;
+                if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){
+                    page=video_settings_from_menu?SETTINGS:PLAYER;
+                    video_settings_from_menu=0;
+                }
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && selected_video_option>0)selected_video_option--;
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && selected_video_option<VIDEO_OPTION_COUNT-1)selected_video_option++;
                 int direction=(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT)-(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT);
@@ -827,7 +938,7 @@ int main(void) {
                     if(video_options[i]>video_max[i])video_options[i]=video_max[i];
                     if(i==6){
                         apply_hls_quality(player);
-                        if(playing_url[0]){
+                        if(playing_url[0] && !video_settings_from_menu){
                             double pos=0;
                             if(mpv_get_property(player,"time-pos",MPV_FORMAT_DOUBLE,&pos)>=0)
                                 resume_at=pos;
@@ -877,14 +988,27 @@ int main(void) {
                 continue;
             }
             if(page==SETTINGS){
-                if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK)page=CATALOG;
+                if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){page=CATALOG;continue;}
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && settings_selected>0)settings_selected--;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && settings_selected<4)settings_selected++;
                 if(key==SDL_CONTROLLER_BUTTON_A){
-                    memset(login_user,0,sizeof(login_user));
-                    memset(login_password,0,sizeof(login_password));
-                    login_selected=login_upper=0;
-                    page=LOGIN_USER;
+                    if(settings_selected==0)ui_accent_alt=!ui_accent_alt;
+                    else if(settings_selected==1){
+                        category=(category+1)%CATEGORY_COUNT;
+                        n=load_category(category,query,movies,message,sizeof(message));
+                        chosen=0;expanded_catalog=0;page=CATALOG;
+                    }else if(settings_selected==2){
+                        selected_video_option=0;
+                        video_settings_from_menu=1;
+                        page=VIDEO_SETTINGS;
+                    }else if(settings_selected==3)source_mode=(source_mode+1)%3;
+                    else{
+                        memset(login_user,0,sizeof(login_user));
+                        memset(login_password,0,sizeof(login_password));
+                        login_selected=login_upper=0;page=LOGIN_USER;
+                    }
                 }
-                if(key==SDL_CONTROLLER_BUTTON_Y){
+                if(key==SDL_CONTROLLER_BUTTON_Y && settings_selected==4){
                     uaflix_logout();
                     snprintf(message,sizeof(message),"UAFlix: вихід виконано");
                 }
@@ -942,6 +1066,7 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_A){
                     message[0]=0;
                     sn=uakino_search(&movies[chosen],sources,UAKINO_MAX,message,sizeof(message));
+                    prioritize_sources(sources,sn);
                     source=0;page=SOURCES;
                 }
             }else if(page==SOURCES){
@@ -1036,7 +1161,10 @@ int main(void) {
                 command(player,"stop",NULL);page=player_return_page;
             }
             if(video_loaded && SDL_GetTicks()<controls_until)draw_player_controls(&paint,player);
-        }else draw(&paint,page,movies,n,chosen,sources,sn,source,headings[category],message);
+        }else{
+            ui_category=category;
+            draw(&paint,page,movies,n,chosen,sources,sn,source,headings[category],message);
+        }
         SDL_GL_SwapWindow(window);SDL_Delay(16);
     }
     if(render)mpv_render_context_free(render);
@@ -1044,6 +1172,7 @@ int main(void) {
     if(pad)SDL_GameControllerClose(pad);
     posters_destroy();
     for(int i=0;i<7;i++)if(paint.scripts[i])TTF_CloseFont(paint.scripts[i]);
+    if(paint.font_big)TTF_CloseFont(paint.font_big);
     TTF_CloseFont(paint.font);TTF_Quit();
     glDeleteTextures(1,&paint.tex);
     glDeleteBuffers(1,&paint.vbo);

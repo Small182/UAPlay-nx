@@ -16,10 +16,10 @@ TMDB works out of the box using the public client key from the [official Lampa s
 - Ukrainian TMDB titles, metadata descriptions, search via Switch software keyboard, live TMDB posters with in-session cache.
 - Local-only **favorites**, **watch history**, and **resume position** stored at `sdmc:/switch/uaflix/library.tsv`.
 - UAFresh searching from its current UAFlix and UASerials providers through the worker HTTP proxy; embedded video resolution including Zetvideo HLS; libmpv playback.
-- Native **season/episode browser** for UAFresh sources exposing episode-page links (tested on UAFlix); play selected episode when its stream can be resolved.
+- Native **season/episode browser** for UAFresh sources exposing episode-page links. Actual video playback depends on the episode's stream being discoverable; UAFlix web playback does not require a login.
 - Player pause, ±10 second seek, **separate audio-track and subtitle-track lists** built from libmpv `track-list` with language/title and selected-track state.
-- Lampa-inspired native home screen: tall rounded posters in a six-column gallery, dark header with section navigation, and an overlaid right-side settings drawer. Status footer shows graphical Switch Joy-Con button badges.
-- Compact translucent video control bar modeled after the supplied reference, with Back, volume adjustment, timeline scrubbing, pause/play, ±10-second seek, settings, audio and subtitles. The bar auto-hides after **3 seconds** and reappears when any button is pressed or the video is tapped.
+- Netflix-TV-inspired navigation concept (native UAPlay branding): top-level category tabs, selected-title hero with synopsis/actions, matching poster shelf, full collection browser, full-page settings and title details. No Netflix assets or proprietary UI code are included.
+- Dark full-width video overlay with Back, volume adjustment, timeline scrubbing, pause/play, ±10-second seek, settings, audio and subtitles. The overlay auto-hides after **3 seconds** and reappears when any button is pressed or the video is tapped.
 - Switch touch controls for movie cards, source/season/episode lists, video overlay buttons, and timeline. Touch works with mouse clicks in Eden as well.
 - Playback settings overlay: speed, volume, brightness, contrast, subtitle text size, subtitle timing, and **HLS bitrate preset** (auto/highest, economy, ≤1/2/4 Mbps). Changing bitrate reloads the stream and tries to restore playback position.
 - Adds an external WebVTT subtitle track from UAFresh embedded players when the provider supplies one (for example Zetvideo's Ukrainian subtitles).
@@ -37,10 +37,10 @@ TMDB works out of the box using the public client key from the [official Lampa s
 | UAFresh sources | Up/down select, A choose source (for TV with structured episodes: seasons), B back |
 | Seasons | Up/down choose season, A episodes, B sources |
 | Episodes | Up/down select episode, A resolve/play, B seasons |
-| Video | A pause, D-pad/stick left/right seek, X subtitle list, Y audio list, Minus video settings, B stop/save position |
+| Video | A pause, D-pad/stick left/right seek ±10 seconds, **hold R with left/right to seek ±60 seconds**, X subtitle list, Y audio list, Minus video settings, B stop/save position |
 | Track selection | Up/down choose audio or subtitles, A apply, B return to video |
 | Video settings | Up/down choose property, left/right adjust, B return |
-| Settings | B return |
+| Settings | Up/down choose Interface/Catalog/Player/Sources/UAFlix account, A open/change, B return, Y log out only in account section |
 
 ## UAFresh adapter
 

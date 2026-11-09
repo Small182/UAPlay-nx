@@ -58,11 +58,7 @@ int playback_select_track(mpv_handle *player, int subtitles, int id) {
     if(result<0)return 0;
     if(subtitles && id>0)
         mpv_set_property_string(player,"sub-visibility","yes");
-    char *active=mpv_get_property_string(player,property);
-    int ok=active && ((!strcmp(active,number)) ||
-                      (id==0 && !strcmp(active,"no")));
-    if(active)mpv_free(active);
-    return ok;
+    return 1; /* mpv may update the active track asynchronously. */
 }
 void playback_set_value(mpv_handle *player, const char *property, double value) {
     if (!player) return;

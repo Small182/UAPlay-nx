@@ -230,7 +230,9 @@ static int contains_title(const char *haystack,const char *needle){
 }
 
 int catalog_load_page(const char *category, const char *query, int page,
-                      Movie *items, int max, char *error, int error_size) {
+                      Movie *items, int max, char *error, int error_size,
+                      int *has_more) {
+    if(has_more)*has_more=0;
     if (page<1 || page>500) return 0;
     char key[256] = LAMPA_PUBLIC_TMDB_KEY;
     FILE *f = fopen(TMDB_KEY_PATH, "r");
@@ -284,6 +286,9 @@ int catalog_load_page(const char *category, const char *query, int page,
             return 0;
         }else return 0;
     } else error[0] = 0;
+    char total_pages[32]={0};
+    json_field(json,json+strlen(json),"total_pages",total_pages,sizeof(total_pages));
+    if(has_more && page<atoi(total_pages) && page<500)*has_more=1;
     const char *results = strstr(json, "\"results\"");
     if (!results || !(results = strchr(results, '['))) { free(json); snprintf(error, error_size, "Bad TMDB response"); return 0; }
     const char *p = results + 1;
@@ -323,7 +328,7 @@ int catalog_load_page(const char *category, const char *query, int page,
 
 int catalog_load(const char *category, const char *query, Movie *items, int max,
                  char *error, int error_size) {
-    return catalog_load_page(category,query,1,items,max,error,error_size);
+    return catalog_load_page(category,query,1,items,max,error,error_size,NULL);
 }
 
 /* Use UAFlix and UASerials sources. The experimental UAKino.best provider

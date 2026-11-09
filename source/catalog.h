@@ -3,6 +3,8 @@
 
 #define CATALOG_MAX 200
 #define CATALOG_PAGE_SIZE 20
+/* TMDB exposes at most 500 result pages; search expands only while browsing. */
+#define CATALOG_SEARCH_MAX (500 * CATALOG_PAGE_SIZE)
 #define UAKINO_MAX 20
 #define EPISODES_MAX 128
 
@@ -33,7 +35,8 @@ int catalog_load(const char *category, const char *query, Movie *items, int max,
                  char *error, int error_size);
 /* TMDB paginates 20 titles per page; used for asynchronous catalog expansion. */
 int catalog_load_page(const char *category, const char *query, int page,
-                      Movie *items, int max, char *error, int error_size);
+                      Movie *items, int max, char *error, int error_size,
+                      int *has_more);
 
 /* UAFresh integration: current UAFlix/UASerials sources via UAFresh worker. */
 int uakino_search(const Movie *movie, Source *items, int max,

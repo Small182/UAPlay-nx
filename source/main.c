@@ -119,12 +119,12 @@ typedef struct {
     SDL_mutex *mutex;
     SDL_cond *cond;
     int quit,requested,generation,request_generation,request_page;
-    int ready,ready_generation,ready_count,ready_page;
+    int ready,ready_generation,ready_count,ready_page,ready_has_more;
     char category[48],query[192];
     Movie ready_items[CATALOG_PAGE_SIZE];
 } CatalogLoader;
 static CatalogLoader catalog_loader;
-static int catalog_next_page=2,catalog_loading=0;
+static int catalog_next_page=2,catalog_loading=0,catalog_has_more=0;
 
 static int catalog_worker(void *opaque){
     CatalogLoader *loader=opaque;
@@ -143,14 +143,16 @@ static int catalog_worker(void *opaque){
         SDL_UnlockMutex(loader->mutex);
         memset(batch,0,CATALOG_PAGE_SIZE*sizeof(Movie));
         char error[192]={0};
+        int more=0;
         int count=catalog_load_page(category,query,page,batch,
-                                    CATALOG_PAGE_SIZE,error,sizeof(error));
+                                    CATALOG_PAGE_SIZE,error,sizeof(error),&more);
         SDL_LockMutex(loader->mutex);
         if(!loader->quit && generation==loader->generation){
             loader->ready=1;
             loader->ready_generation=generation;
             loader->ready_page=page;
             loader->ready_count=count;
+            loader->ready_has_more=more;
             if(count>0)memcpy(loader->ready_items,batch,count*sizeof(Movie));
         }
         SDL_UnlockMutex(loader->mutex);
@@ -167,7 +169,7 @@ static void catalog_loader_init(void){
 }
 static void catalog_loader_request(int page,int category,const char *query){
     CatalogLoader *loader=&catalog_loader;
-    if(!loader->thread || page<2 || page>20)return;
+    if(!loader->thread || page<2 || page>500)return;
     SDL_LockMutex(loader->mutex);
     loader->requested=1;
     loader->request_generation=loader->generation;
@@ -182,39 +184,54 @@ static void catalog_loader_reset(int category,const char *query,int count,int on
     CatalogLoader *loader=&catalog_loader;
     catalog_next_page=2;
     catalog_loading=0;
+    catalog_has_more=online && count>0 &&
+        strcmp(categories[category],"favorites") &&
+        strcmp(categories[category],"history");
     if(!loader->mutex)return;
     SDL_LockMutex(loader->mutex);
     loader->generation++;
     loader->ready=0;
     loader->requested=0;
     SDL_UnlockMutex(loader->mutex);
-    if(online && count>0 && count<CATALOG_MAX &&
-       strcmp(categories[category],"favorites") &&
-       strcmp(categories[category],"history"))
+    if(catalog_has_more && count<CATALOG_MAX)
         catalog_loader_request(catalog_next_page++,category,query);
 }
-static void catalog_loader_poll(Movie *movies,int *count,int category,const char *query){
+static void catalog_loader_poll(Movie **movies,int *count,int *capacity,int chosen,
+                                int category,const char *query){
     CatalogLoader *loader=&catalog_loader;
     if(!loader->mutex)return;
-    int batch_count=0,ready=0;
+    int batch_count=0,ready=0,more=0;
+    int limit=query && *query?CATALOG_SEARCH_MAX:CATALOG_MAX;
     SDL_LockMutex(loader->mutex);
     if(loader->ready && loader->ready_generation==loader->generation){
         ready=1;batch_count=loader->ready_count;
-        for(int i=0;i<batch_count && *count<CATALOG_MAX;i++){
+        more=loader->ready_has_more;
+        if(*count+batch_count>*capacity && *capacity<limit){
+            int next=*capacity+CATALOG_MAX;
+            if(next>limit)next=limit;
+            Movie *resized=realloc(*movies,(size_t)next*sizeof(Movie));
+            if(resized){*movies=resized;*capacity=next;}
+            else more=0;
+        }
+        for(int i=0;i<batch_count && *count<*capacity && *count<limit;i++){
             int duplicate=0;
             for(int k=0;k<*count;k++)
-                if(movies[k].id==loader->ready_items[i].id &&
-                   movies[k].series==loader->ready_items[i].series){duplicate=1;break;}
-            if(!duplicate)movies[(*count)++]=loader->ready_items[i];
+                if((*movies)[k].id==loader->ready_items[i].id &&
+                   (*movies)[k].series==loader->ready_items[i].series){duplicate=1;break;}
+            if(!duplicate)(*movies)[(*count)++]=loader->ready_items[i];
         }
         loader->ready=0;
     }
     SDL_UnlockMutex(loader->mutex);
     if(ready){
-        if(batch_count && *count<CATALOG_MAX && catalog_next_page<=20)
-            catalog_loader_request(catalog_next_page++,category,query);
-        else catalog_loading=0;
+        catalog_loading=0;
+        catalog_has_more=more;
     }
+    /* Populate the first 200 eagerly; search results beyond 200 are fetched
+       when the user approaches the end of the loaded list. */
+    if(catalog_has_more && !catalog_loading && catalog_next_page<=500 &&
+       *count<limit && (*count<CATALOG_MAX || *count-chosen<=42))
+        catalog_loader_request(catalog_next_page++,category,query);
 }
 static void catalog_loader_shutdown(void){
     CatalogLoader *loader=&catalog_loader;
@@ -683,9 +700,13 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             headline(p,heading,UI_EDGE,97,960);
             if(strcmp(categories[ui_category],"favorites") &&
                strcmp(categories[ui_category],"history")){
-                char count_label[32];
-                snprintf(count_label,sizeof(count_label),"%d / %d%s",n,CATALOG_MAX,
-                         catalog_loading?"…":"");
+                char count_label[64];
+                if(n && ui_category>=0 && catalog_next_page>1 &&
+                   catalog_loading && n>=CATALOG_MAX)
+                    snprintf(count_label,sizeof(count_label),"%d+ · завантаження…",n);
+                else if(catalog_loading || catalog_has_more)
+                    snprintf(count_label,sizeof(count_label),"Знайдено: %d+",n);
+                else snprintf(count_label,sizeof(count_label),"Знайдено: %d",n);
                 text_tiny(p,count_label,941,113,145);
             }
             button(p,"‹  Назад",1106,98,142,44,0);
@@ -993,7 +1014,9 @@ int main(void) {
             mpv_render_context_create(&render,player,init);
         }
     }
-    static Movie movies[CATALOG_MAX];
+    int movie_capacity=CATALOG_MAX;
+    Movie *movies=calloc((size_t)movie_capacity,sizeof(Movie));
+    if(!movies)goto cleanup;
     Source sources[UAKINO_MAX]={0};
     int n=0,sn=0,chosen=0,source=0,category=0,running=1;
     Page page=CATALOG;
@@ -1364,7 +1387,7 @@ int main(void) {
                         else if(expanded_catalog)
                             catalog_hero_focus=7+tab_for_category(category);
                         else if(n ||
-                                (category>=ANIMATION_FIRST && category<=ANIMATION_LAST)))
+                                (category>=ANIMATION_FIRST && category<=ANIMATION_LAST))
                             catalog_hero_focus=category>=ANIMATION_FIRST &&
                                 category<=ANIMATION_LAST?4+category-ANIMATION_FIRST:
                                 (chosen%6>=4?3:1);
@@ -1401,7 +1424,9 @@ int main(void) {
                     if(keyboard(new_query,sizeof(new_query))){
                         snprintf(query,sizeof(query),"%s",new_query);
                         message[0]=0;
-                        n=load_category(category,query,movies,message,sizeof(message));chosen=0;catalog_hero_focus=0;
+                        n=load_category(category,query,movies,message,sizeof(message));
+                        chosen=0;catalog_hero_focus=0;
+                        expanded_catalog=1;
                     }
                 }
                 if(key==SDL_CONTROLLER_BUTTON_Y){
@@ -1502,7 +1527,7 @@ int main(void) {
                 }
             }
         }
-        catalog_loader_poll(movies,&n,category,query);
+        catalog_loader_poll(&movies,&n,&movie_capacity,chosen,category,query);
         if(page==PLAYER && render){
             ui_theme_enabled=0;
             mpv_opengl_fbo fbo={.fbo=0,.w=1280,.h=720};int flip=1;
@@ -1535,11 +1560,13 @@ int main(void) {
             if(video_loaded && SDL_GetTicks()<controls_until)draw_player_controls(&paint,player);
         }else{
             ui_category=category;
-            draw(&paint,page,movies,n,chosen,sources,sn,source,headings[category],message);
+            draw(&paint,page,movies,n,chosen,sources,sn,source,
+                 query[0]?"Результати пошуку":headings[category],message);
         }
         SDL_GL_SwapWindow(window);SDL_Delay(16);
     }
     catalog_loader_shutdown();
+    free(movies);
     if(render)mpv_render_context_free(render);
     if(player)mpv_terminate_destroy(player);
     if(pad)SDL_GameControllerClose(pad);

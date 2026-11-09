@@ -1,4 +1,4 @@
-name: Build native Uaflix with libmpv
+name: Build native UAPlay with libmpv
 
 on:
   push:
@@ -32,9 +32,9 @@ jobs:
           export PKG_CONFIG_PATH="$DEVKITPRO/portlibs/switch/lib/pkgconfig:$DEVKITPRO/libnx/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$PKG_CONFIG_PATH"
           make -j2
-          test -s Uaflix.nro
+          test -s UAPlay.nro
       - uses: actions/upload-artifact@v4
         with:
-          name: Uaflix-native
-          path: Uaflix.nro
+          name: UAPlay-native
+          path: UAPlay.nro
           if-no-files-found: error

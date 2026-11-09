@@ -11,7 +11,7 @@ typedef struct {
 } MediaTrack;
 
 int playback_tracks(mpv_handle *player, int subtitles, MediaTrack *out, int maximum);
-void playback_select_track(mpv_handle *player, int subtitles, int id);
+int playback_select_track(mpv_handle *player, int subtitles, int id);
 void playback_set_value(mpv_handle *player, const char *property, double value);
 
 #endif

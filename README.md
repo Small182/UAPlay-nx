@@ -1,12 +1,12 @@
-# Uaflix for Nintendo Switch — native homebrew
+# UAPlay for Nintendo Switch — native homebrew
 
 Native controller-first app on **libnx + SDL2 + libmpv**, using TMDB movie/series metadata and a native HTTP adapter for [UAFresh](https://uakino.ofreshofresh.workers.dev/uakino.js). **No Chromium, WebKit, CUB sync or TorrServer.**
 
 ## Install
 
-1. Open [GitHub Actions](https://github.com/Small182/Lampa-nx/actions) and download the latest successful **Uaflix-native** artifact.
-2. Extract `Uaflix.nro` to the SD card at `sdmc:/switch/Uaflix.nro`.
-3. Start Homebrew Menu in **full application mode** (hold R while opening a game), select Uaflix.
+1. Open [GitHub Actions](https://github.com/Small182/Lampa-nx/actions) and download the latest successful **UAPlay-native** artifact.
+2. Extract `UAPlay.nro` to the SD card at `sdmc:/switch/UAPlay.nro`.
+3. Start Homebrew Menu in **full application mode** (hold R while opening a game), select UAPlay.
 
 TMDB works out of the box using the public client key from the [official Lampa source](https://github.com/yumata/lampa-source/blob/main/src/core/tmdb/tmdb.js). To override this key put `tmdb.key` at `sdmc:/switch/lampa-nx/tmdb.key`. If the emulator lacks network access, a small built-in metadata snapshot keeps the main categories browseable, but it is not updated live.
 
@@ -24,8 +24,9 @@ TMDB works out of the box using the public client key from the [official Lampa s
 - Playback settings overlay: speed, volume, brightness, contrast, subtitle text size, subtitle timing, and **HLS bitrate preset** (auto/highest, economy, ≤1/2/4 Mbps). Changing bitrate reloads the stream and tries to restore playback position.
 - Adds an external WebVTT subtitle track from UAFresh embedded players when the provider supplies one (for example Zetvideo's Ukrainian subtitles).
 - Settings/information screen.
-- Optional **UAFlix account sign-in** under Settings (`Minus` → `A`). The native app uses the same UAFresh worker `/login` endpoint as the supplied Lampa plugin, then sends its cookie to `/proxy` on UAFlix requests. This is important for series: the plugin explicitly warns that UAFlix serves only trailers without logging in on browser-style clients. `Y` signs out. Passwords are not saved, but the session cookie is stored in plaintext on the SD card at `sdmc:/switch/uaflix/uaflix.cookie`; anyone with access to the SD card can copy it. Do not use a password you share with other important accounts.
-- Custom cyan-on-midnight **Uaflix** icon featuring the user's supplied diagonal filmstrip, sprocket holes, play symbol, and stars; homebrew display name is **Uaflix**.
+- Optional **UAFlix account sign-in** under Settings (`Minus` → `A`). Series are playable on the UAFlix website without an account; login is not required to fetch public episodes. The homebrew uses an in-app keyboard instead of launching the system software keyboard, which previously coincided with an Atmosphère abort. `Y` signs out. Passwords are not saved, but the session cookie is stored in plaintext at `sdmc:/switch/uaflix/uaflix.cookie`; anyone with access to the SD card can copy it.
+- Custom cyan-on-midnight **UAPlay** icon featuring the user's supplied diagonal filmstrip, sprocket holes, play symbol, and stars; homebrew display name is **UAPlay**.
+- Seven Noto Sans fallback fonts (Tamil, Telugu, Devanagari, Malayalam, Bengali, Arabic, Thai) are bundled for non-Latin titles; they are distributed under the SIL Open Font License 1.1 (Google Noto Fonts).
 
 ## Controls
 

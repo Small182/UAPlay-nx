@@ -10,7 +10,7 @@ CC := $(DEVKITA64)/bin/aarch64-none-elf-gcc
 PKG_CONFIG_LIBDIR := $(PORTLIBS)/lib/pkgconfig
 export PKG_CONFIG_LIBDIR
 
-TARGET := Uaflix
+TARGET := UAPlay
 ARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -fPIE
 COMMON := -O2 -g -Wall -Wextra -ffunction-sections -fdata-sections $(ARCH)
 CFLAGS := $(COMMON) -D__SWITCH__ -I$(LIBNX)/include -I$(PORTLIBS)/include $(shell pkg-config --cflags sdl2 SDL2_ttf SDL2_image mpv libcurl)
@@ -39,7 +39,7 @@ $(TARGET).elf: main.o catalog.o posters.o library.o playback.o
 	$(CC) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(TARGET).nacp:
-	nacptool --create "Uaflix" "Small182" "0.4.0" $@
+	nacptool --create "UAPlay" "Small182" "0.5.0" $@
 
 $(TARGET).nro: $(TARGET).elf $(TARGET).nacp
 	elf2nro $< $@ --nacp=$(TARGET).nacp --icon=icon.jpg --romfsdir=romfs

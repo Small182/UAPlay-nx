@@ -441,10 +441,9 @@ int uakino_resolve(const Source *source, char *stream, int size,
         free(player);
         if (found) return 1;
     }
-    if(strstr(source->url,"https://uafix.net/")==source->url && !uaflix_logged_in())
-        snprintf(error,error_size,"UAFlix: лише трейлер. Увійдіть в акаунт у Налаштуваннях (кнопка -).");
-    else
-        snprintf(error,error_size,"Лише трейлер або немає потоку. Виберіть інше джерело.");
+    /* UAFlix episodes are publicly playable on the site. A missing stream
+       means our extraction did not find the player, not an auth requirement. */
+    snprintf(error,error_size,"Не знайдено прямий потік цієї серії. Спробуйте інший плеєр або джерело.");
     return 0;
 }
 

@@ -49,12 +49,20 @@ int playback_tracks(mpv_handle *player, int subtitles, MediaTrack *out, int maxi
     mpv_free_node_contents(&node);
     return count;
 }
-void playback_select_track(mpv_handle *player, int subtitles, int id) {
-    if (!player) return;
+int playback_select_track(mpv_handle *player, int subtitles, int id) {
+    if (!player) return 0;
     char number[20];
     snprintf(number,sizeof(number),"%d",id);
-    const char *args[]={"set",subtitles?"sid":"aid",id==0?"no":number,NULL};
-    mpv_command_async(player,0,args);
+    const char *property=subtitles?"sid":"aid";
+    int result=mpv_set_property_string(player,property,id==0?"no":number);
+    if(result<0)return 0;
+    if(subtitles && id>0)
+        mpv_set_property_string(player,"sub-visibility","yes");
+    char *active=mpv_get_property_string(player,property);
+    int ok=active && ((!strcmp(active,number)) ||
+                      (id==0 && !strcmp(active,"no")));
+    if(active)mpv_free(active);
+    return ok;
 }
 void playback_set_value(mpv_handle *player, const char *property, double value) {
     if (!player) return;

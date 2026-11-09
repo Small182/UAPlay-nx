@@ -311,11 +311,15 @@ int catalog_load(const char *category, const char *query, Movie *items, int max,
 static char *fetch_uafresh(const char *upstream, char *error, int error_size) {
     /* Native homebrew does not have browser CORS restrictions. A direct
        request originates from the Switch user's Ukrainian network, unlike
-       the Cloudflare worker; UAFlix episode availability is geo-dependent. */
-    if(!strncmp(upstream,"https://uafix.net/",18) ||
-       !strncmp(upstream,"https://zetvideo.net/",21) ||
-       !strncmp(upstream,"https://hdvbua.pro/",19) ||
-       !strncmp(upstream,"https://ashdi.vip/",18)){
+       the Cloudflare worker; UAFlix episode availability is geo-dependent.
+       However, video hosts such as Zetvideo can return an HTTP 200 page
+       containing an nginx 404 *body* from some regions. For iframe hosts,
+       prefer the UAFresh proxy, then fall back to direct access. */
+    int direct_first=!strncmp(upstream,"https://uafix.net/",18);
+    int video_host=!strncmp(upstream,"https://zetvideo.net/",21) ||
+                   !strncmp(upstream,"https://hdvbua.pro/",19) ||
+                   !strncmp(upstream,"https://ashdi.vip/",18);
+    if(direct_first){
         char *direct=request(upstream,error,error_size);
         if(direct)return direct;
         /* Existing public UAFresh worker remains a normal network fallback. */
@@ -335,6 +339,7 @@ static char *fetch_uafresh(const char *upstream, char *error, int error_size) {
     free(cookie);
     char *html = request(url, error, error_size);
     free(url);
+    if(!html && video_host)return request(upstream,error,error_size);
     return html;
 }
 

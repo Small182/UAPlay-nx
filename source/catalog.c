@@ -388,18 +388,80 @@ static int extract_media(const char *html, char *stream, int size) {
     return 0;
 }
 
-static int find_embed(const char *html, char *url, int size) {
-    const char *hosts[]={"https://zetvideo.net/vod/", "https://hdvbua.pro/",
-                          "https://ashdi.vip/", "https://tortuga."};
-    for (size_t i=0; i<sizeof(hosts)/sizeof(hosts[0]); i++) {
-        const char *p=strstr(html,hosts[i]);
-        if (!p) continue;
-        const char *end=p;
-        while (*end && *end!='"' && *end!='\'' && *end!='<' &&
-               *end!=' ' && end-p<size-1) end++;
-        if (end==p || !*end || end-p>=size) continue;
-        memcpy(url,p,(size_t)(end-p));url[end-p]=0;
-        if (!strstr(url,"trailer") && !strstr(url,"youtube")) return 1;
+static void extract_subtitle(const char *html);
+/* Parse actual iframe tags, not just the single hard-coded video host.
+   Return a cursor for the next candidate so one failed player does not
+   prevent trying the next tab/embedded player on the episode page. */
+static const char *find_embed_after(const char *cursor,char *url,int size) {
+    const char *tag=cursor;
+    while((tag=strstr(tag,"<iframe"))!=NULL){
+        const char *tag_end=strchr(tag,'>');
+        if(!tag_end)break;
+        const char *attr=tag;
+        while((attr=strstr(attr,"src=")) && attr<tag_end){
+            const char *value=attr+4;
+            if(*value=='"' || *value=='\''){
+                char quote=*value++;
+                const char *end=strchr(value,quote);
+                if(end && end<=tag_end){
+                    size_t len=(size_t)(end-value);
+                    if(len>8 && len<(size_t)size-8){
+                        if(!strncmp(value,"https://",8)){
+                            memcpy(url,value,len);url[len]=0;
+                        }else if(!strncmp(value,"//",2)){
+                            snprintf(url,(size_t)size,"https:%.*s",(int)len,value);
+                        }else url[0]=0;
+                        if(url[0] && !strstr(url,"youtube") &&
+                           !strstr(url,"trailer") && !strstr(url,"doubleclick") &&
+                           !strstr(url,"google"))return tag_end+1;
+                    }
+                }
+            }
+            attr+=4;
+        }
+        tag=tag_end+1;
+    }
+    return NULL;
+}
+
+static int resolve_embedded(const char *html,char *stream,int size,
+                            int depth,char *error,int error_size){
+    if(extract_media(html,stream,size))return 1;
+    if(depth<=0)return 0;
+    const char *next=html;
+    for(int attempt=0;attempt<3;attempt++){
+        char embedded[1024]={0};
+        next=find_embed_after(next,embedded,sizeof(embedded));
+        if(!next)break;
+        char *content=fetch_uafresh(embedded,error,error_size);
+        if(!content)continue;
+        extract_subtitle(content);
+        int found=resolve_embedded(content,stream,size,depth-1,error,error_size);
+        free(content);
+        if(found)return 1;
+    }
+    /* Keep the original non-iframe provider fallback: several film pages
+       store a player URL in a script attribute instead of an iframe tag. */
+    if(depth>0){
+        const char *hosts[]={"https://zetvideo.net/vod/","https://hdvbua.pro/",
+                              "https://ashdi.vip/","https://tortuga."};
+        for(size_t i=0;i<sizeof(hosts)/sizeof(hosts[0]);i++){
+            const char *p=strstr(html,hosts[i]);
+            if(!p)continue;
+            const char *end=p;
+            while(*end && *end!='"' && *end!='\'' && *end!='<' &&
+                  *end!=' ' && *end!='\\' && end-p<1000)end++;
+            size_t len=(size_t)(end-p);
+            if(len<15 || len>999)continue;
+            char link[1024];memcpy(link,p,len);link[len]=0;
+            if(strstr(link,"trailer") || strstr(link,"youtube"))continue;
+            char *content=fetch_uafresh(link,error,error_size);
+            if(!content)continue;
+            extract_subtitle(content);
+            int found=extract_media(content,stream,size);
+            free(content);
+            if(found)return 1;
+        }
     }
     return 0;
 }
@@ -429,18 +491,9 @@ int uakino_resolve(const Source *source, char *stream, int size,
     char *page = fetch_uafresh(source->url,error,error_size);
     if (!page) return 0;
     extract_subtitle(page);
-    if (extract_media(page,stream,size)) { free(page);return 1; }
-    char embed[1024];
-    int found = find_embed(page,embed,sizeof(embed));
+    int found=resolve_embedded(page,stream,size,2,error,error_size);
     free(page);
-    if (found) {
-        char *player = fetch_uafresh(embed,error,error_size);
-        if (!player) return 0;
-        extract_subtitle(player);
-        found = extract_media(player,stream,size);
-        free(player);
-        if (found) return 1;
-    }
+    if(found)return 1;
     /* UAFlix episodes are publicly playable on the site. A missing stream
        means our extraction did not find the player, not an auth requirement. */
     snprintf(error,error_size,"Не знайдено прямий потік цієї серії. Спробуйте інший плеєр або джерело.");

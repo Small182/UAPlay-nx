@@ -15,11 +15,7 @@
 #include "playback.h"
 
 typedef enum { CATALOG, DETAILS, SOURCES, PLAYER, SETTINGS,
-               SEASONS, EPISODES, TRACK_PICKER, VIDEO_SETTINGS,
-               LOGIN_USER, LOGIN_PASSWORD } Page;
-static char login_user[128],login_password[128];
-static int login_selected,login_upper;
-static const char login_keys[]="abcdefghijklmnopqrstuvwxyz0123456789@._-!#$%&*+?/";
+               SEASONS, EPISODES, TRACK_PICKER, VIDEO_SETTINGS } Page;
 
 static Episode episodes[EPISODES_MAX];
 static int episode_count,season_ids[64],season_count,selected_season,selected_episode;
@@ -290,8 +286,6 @@ static void footer(Paint *p,const char *message) {
         HINT("↑↓","Доріжка");HINT("A","Застосувати");HINT("B","Назад");
     }else if(footer_page==VIDEO_SETTINGS){
         HINT("↑↓","Параметр");HINT("←→","Змінити");HINT("B","Назад");
-    }else if(footer_page==LOGIN_USER || footer_page==LOGIN_PASSWORD){
-        HINT("A","Символ");HINT("B","Стерти");HINT("X","Регістр");HINT("Y","Далі");
     }else{
         HINT("↑↓","Вибір");HINT("A","Відкрити");HINT("B","Назад");
     }
@@ -347,7 +341,12 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             text(p,tabs[i],x,25,116);
         }
         box_alpha(p,764,16,282,49,.15f,.17f,.21f,1.f,17);
-        text(p,"⌕  Пошук",787,25,220);
+        /* Draw the search glyph in geometry: the Switch font lacks U+2315. */
+        box_alpha(p,784,25,25,25,.91f,.93f,.96f,1.f,13);
+        box_alpha(p,789,30,15,15,.15f,.17f,.21f,1.f,8);
+        box_alpha(p,806,47,6,6,.91f,.93f,.96f,1.f,2);
+        box_alpha(p,810,51,6,6,.91f,.93f,.96f,1.f,2);
+        text(p,"Пошук",828,25,175);
         box_alpha(p,1060,16,56,49,.15f,.17f,.21f,1.f,17);
         text(p,"⚙",1073,23,44);
         time_t now=time(NULL);
@@ -394,8 +393,8 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         if(page==SETTINGS){
             box_alpha(p,0,0,1280,720,.055f,.063f,.076f,1.f,0);
             headline(p,"Налаштування UAPlay",45,35,950);
-            const char *items[]={"Інтерфейс","Каталог","Плеєр","Джерела","Акаунт UAFlix"};
-            for(int i=0;i<5;i++){
+            const char *items[]={"Інтерфейс","Каталог","Плеєр","Джерела"};
+            for(int i=0;i<4;i++){
                 int y=141+i*87;
                 box_alpha(p,45,y,441,68,i==settings_selected?.30f:.12f,
                           i==settings_selected?.34f:.14f,
@@ -406,27 +405,19 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             if(settings_selected==0)snprintf(description,sizeof(description),"Акцент: %s",ui_accent_alt?"Блакитний":"Золотистий");
             else if(settings_selected==1)snprintf(description,sizeof(description),"Поточний розділ: %s",heading);
             else if(settings_selected==2)snprintf(description,sizeof(description),"Швидкість: %.2f · гучність: %.0f",video_options[0],video_options[1]);
-            else if(settings_selected==3)snprintf(description,sizeof(description),"Порядок: %s",source_mode==0?"Усі":source_mode==1?"UAFlix спочатку":"UASerials спочатку");
-            else snprintf(description,sizeof(description),"UAFlix: %s",uaflix_logged_in()?"вхід виконано":"вхід необов'язковий");
+            else snprintf(description,sizeof(description),"Порядок: %s",source_mode==0?"Усі":source_mode==1?"UAFlix спочатку":"UASerials спочатку");
             box_alpha(p,518,141,720,485,.105f,.12f,.15f,1.f,19);
             headline(p,items[settings_selected],555,178,635);
             text(p,description,555,254,640);
             const char *help[]={"Перемикання кольору виділення у всьому застосунку.",
                 "Виберіть розділ фільмів і серіалів.",
                 "Швидкість, гучність, якість та параметри субтитрів.",
-                "Яке джерело показувати першим у списку.",
-                "Вхід потрібен лише для персональних можливостей."};
+                "Яке джерело показувати першим у списку."};
             summary(p,help[settings_selected],557,314,620);
             box_alpha(p,555,534,239,65,.88f,.89f,.91f,1.f,15);
-            text_color(p,settings_selected==4?"Увійти":"Змінити",577,552,194,.09f,.10f,.12f);
-            if(settings_selected==4){
-                box_alpha(p,817,534,220,65,.26f,.28f,.32f,1.f,15);
-                text(p,"Вийти",840,552,178);
-            }
+            text_color(p,"Змінити",577,552,194,.09f,.10f,.12f);
         }
-        footer(p,*status?status:(page==SETTINGS?
-                "A: Вхід UAFlix   Y: Вихід   B: Закрити":
-                "A: Деталі   X: Пошук   L/R: Розділи   -: Меню"));
+        footer(p,*status?status:"A: Деталі   X: Пошук   L/R: Розділи   -: Меню");
     } else if (page==DETAILS) {
         box_alpha(p,0,0,1280,80,.052f,.058f,.070f,1.f,0);
         text(p,"‹  До каталогу",37,28,250);
@@ -471,10 +462,10 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         char heading[128];
         snprintf(heading,sizeof(heading),"UAPLAY — сезон %d: вибір серії",season_ids[selected_season]);
         text(p,heading,42,45,1130);
-        int idx=0,first=selected_episode/10*10;
+        int idx=0,first=selected_episode/9*9;
         for(int i=0;i<episode_count;i++) {
             if(episodes[i].season!=season_ids[selected_season])continue;
-            if(idx>=first && idx<first+10) {
+            if(idx>=first && idx<first+9) {
                 int y=118+(idx-first)*51;
                 box(p,40,y,1190,46,idx==selected_episode?.22f:.10f,
                     idx==selected_episode?.40f:.14f,idx==selected_episode?.49f:.19f);
@@ -507,32 +498,6 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             text(p,label,56,y+16,1130);
         }
         footer(p,"Вліво / вправо: змінити параметр   B: Назад");
-    } else if(page==LOGIN_USER || page==LOGIN_PASSWORD){
-        int password=page==LOGIN_PASSWORD;
-        text(p,password?"UAPLAY — пароль UAFlix":"UAPLAY — вхід до UAFlix",65,42,1110);
-        box_alpha(p,65,109,1150,73,.13f,.17f,.23f,1.f,14);
-        char display[140]={0};
-        if(password){
-            size_t len=strlen(login_password);
-            if(len>sizeof(display)-1)len=sizeof(display)-1;
-            memset(display,'*',len);
-        }else snprintf(display,sizeof(display),"%s",login_user);
-        text(p,*display?display:(password?"Введіть пароль":"Введіть логін або email"),85,128,1090);
-        int count=(int)strlen(login_keys);
-        for(int i=0;i<count;i++){
-            int x=70+i%12*94,y=210+i/12*65;
-            box_alpha(p,x,y,84,54,i==login_selected?.24f:.12f,
-                      i==login_selected?.46f:.16f,i==login_selected?.54f:.22f,1.f,11);
-            char letter[2]={login_keys[i],0};
-            if(login_upper && letter[0]>='a' && letter[0]<='z')letter[0]-=32;
-            text(p,letter,x+30,y+12,55);
-        }
-        box_alpha(p,70,557,1140,80,.11f,.16f,.22f,.96f,14);
-        text(p,password?"Y  Увійти":"Y  Далі",91,580,230);
-        text(p,"B  Стерти",334,580,215);
-        text(p,"X  Регістр",568,580,240);
-        text(p,"+  Скасувати",858,580,315);
-        footer(p,"Введення без системної клавіатури — безпечний режим");
     }
 }
 static void command(mpv_handle *player,const char *verb,const char *arg) {
@@ -572,7 +537,6 @@ static void draw_player_controls(Paint *p,mpv_handle *player) {
     snprintf(right,sizeof(right),"%02d:%02d",(int)duration/60,(int)duration%60);
     text(p,left,32,570,88);
     text(p,right,1177,570,90);
-    text_color(p,"R + ←/→ : 1 хв",53,630,204,.68f,.73f,.80f);
     box_alpha(p,89,675,157,5,.35f,.42f,.52f,1.f,3);
     int volume=(int)video_options[1];
     if(volume<0)volume=0;if(volume>130)volume=130;
@@ -729,20 +693,7 @@ int main(void) {
                 ty=e.motion.y*720/(hh?hh:720);
             }
             if(tx>=0 && ty>=0){
-                if(page==LOGIN_USER || page==LOGIN_PASSWORD){
-                    if(tx>=70 && tx<1198 && ty>=210 && ty<535){
-                        int col=(tx-70)/94,row=(ty-210)/65;
-                        int pick=row*12+col;
-                        if(col<12 && pick<(int)strlen(login_keys)){
-                            login_selected=pick;key=SDL_CONTROLLER_BUTTON_A;
-                        }
-                    }else if(ty>=557 && ty<641){
-                        if(tx<313)key=SDL_CONTROLLER_BUTTON_Y;
-                        else if(tx<550)key=SDL_CONTROLLER_BUTTON_B;
-                        else if(tx<830)key=SDL_CONTROLLER_BUTTON_X;
-                        else key=SDL_CONTROLLER_BUTTON_START;
-                    }
-                }else if(page==PLAYER){
+                if(page==PLAYER){
                     int was_visible=SDL_GetTicks()<controls_until;
                     controls_until=SDL_GetTicks()+3000;
                     if(!was_visible)continue;
@@ -817,8 +768,8 @@ int main(void) {
                     }else if(ty<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==EPISODES){
                     int slot=(ty-118)/51;
-                    int episode=selected_episode/10*10+slot;
-                    if(ty>=118 && slot>=0 && slot<10 && selected_season<season_count &&
+                    int episode=selected_episode/9*9+slot;
+                    if(ty>=118 && slot>=0 && slot<9 && selected_season<season_count &&
                        episode<episodes_in_season(season_ids[selected_season])){
                         selected_episode=episode;key=SDL_CONTROLLER_BUTTON_A;
                     }else if(ty<100)key=SDL_CONTROLLER_BUTTON_B;
@@ -841,49 +792,16 @@ int main(void) {
                         key=tx<640?SDL_CONTROLLER_BUTTON_DPAD_LEFT:SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
                     }else if(ty<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==SETTINGS){
-                    if(tx>=45 && tx<488 && ty>=141 && ty<580){
+                    if(tx>=45 && tx<488 && ty>=141 && ty<493){
                         settings_selected=(ty-141)/87;
-                        if(settings_selected>=5)settings_selected=4;
+                        if(settings_selected>=4)settings_selected=3;
                         key=SDL_CONTROLLER_BUTTON_A;
                     }else if(ty>=534 && ty<600 && tx>=555 && tx<795)key=SDL_CONTROLLER_BUTTON_A;
-                    else if(ty>=534 && ty<600 && tx>=817 && tx<1038 && settings_selected==4)
-                        key=SDL_CONTROLLER_BUTTON_Y;
                     else if(ty<125 || ty>665)key=SDL_CONTROLLER_BUTTON_B;
                 }
             }
             if(page==PLAYER && key>=0)controls_until=SDL_GetTicks()+3000;
             if(key<0)continue;
-            if(page==LOGIN_USER || page==LOGIN_PASSWORD){
-                if(key==SDL_CONTROLLER_BUTTON_START || key==SDL_CONTROLLER_BUTTON_BACK){
-                    memset(login_password,0,sizeof(login_password));page=SETTINGS;continue;
-                }
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && login_selected>0)login_selected--;
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && login_selected<(int)strlen(login_keys)-1)login_selected++;
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && login_selected>=12)login_selected-=12;
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && login_selected+12<(int)strlen(login_keys))login_selected+=12;
-                if(key==SDL_CONTROLLER_BUTTON_X)login_upper=!login_upper;
-                char *field=page==LOGIN_USER?login_user:login_password;
-                if(key==SDL_CONTROLLER_BUTTON_B){
-                    size_t length=strlen(field);if(length)field[length-1]=0;
-                }
-                if(key==SDL_CONTROLLER_BUTTON_A){
-                    size_t length=strlen(field);
-                    if(length<sizeof(login_user)-1){
-                        char c=login_keys[login_selected];
-                        if(login_upper && c>='a' && c<='z')c-=32;
-                        field[length]=c;field[length+1]=0;
-                    }
-                }
-                if(key==SDL_CONTROLLER_BUTTON_Y && *field){
-                    if(page==LOGIN_USER){page=LOGIN_PASSWORD;login_selected=0;}
-                    else{
-                        uaflix_login(login_user,login_password,message,sizeof(message));
-                        memset(login_password,0,sizeof(login_password));
-                        page=SETTINGS;
-                    }
-                }
-                continue;
-            }
             if(page==PLAYER){
                 if(key==SDL_CONTROLLER_BUTTON_B){
                     double position=0;
@@ -990,7 +908,7 @@ int main(void) {
             if(page==SETTINGS){
                 if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){page=CATALOG;continue;}
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && settings_selected>0)settings_selected--;
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && settings_selected<4)settings_selected++;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && settings_selected<3)settings_selected++;
                 if(key==SDL_CONTROLLER_BUTTON_A){
                     if(settings_selected==0)ui_accent_alt=!ui_accent_alt;
                     else if(settings_selected==1){
@@ -1002,15 +920,6 @@ int main(void) {
                         video_settings_from_menu=1;
                         page=VIDEO_SETTINGS;
                     }else if(settings_selected==3)source_mode=(source_mode+1)%3;
-                    else{
-                        memset(login_user,0,sizeof(login_user));
-                        memset(login_password,0,sizeof(login_password));
-                        login_selected=login_upper=0;page=LOGIN_USER;
-                    }
-                }
-                if(key==SDL_CONTROLLER_BUTTON_Y && settings_selected==4){
-                    uaflix_logout();
-                    snprintf(message,sizeof(message),"UAFlix: вихід виконано");
                 }
                 continue;
             }

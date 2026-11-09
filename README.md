@@ -15,7 +15,7 @@ TMDB works out of the box using the public client key from the [official Lampa s
 - Movies, TV, top-rated and genre categories (action, comedy, drama, horror, sci-fi, animation, romance, documentary).
 - Ukrainian TMDB titles, metadata descriptions, search via Switch software keyboard, live TMDB posters with in-session cache.
 - Local-only **favorites**, **watch history**, and **resume position** stored at `sdmc:/switch/uaflix/library.tsv`.
-- UAFresh searching from its current UAFlix and UASerials providers through the worker HTTP proxy; embedded video resolution including Zetvideo HLS; libmpv playback.
+- UAFresh searching from its current UAFlix and UASerials providers through the worker HTTP proxy; embedded video resolution including Zetvideo HLS; libmpv playback. Episode resolution now follows up to two levels of bounded embedded iframe players instead of relying on one hard-coded host.
 - Native **season/episode browser** for UAFresh sources exposing episode-page links. Actual video playback depends on the episode's stream being discoverable; UAFlix web playback does not require a login.
 - Player pause, ±10 second seek, **separate audio-track and subtitle-track lists** built from libmpv `track-list` with language/title and selected-track state.
 - Netflix-TV-inspired navigation concept (native UAPlay branding): top-level category tabs, selected-title hero with synopsis/actions, matching poster shelf, full collection browser, full-page settings and title details. No Netflix assets or proprietary UI code are included.
@@ -24,7 +24,7 @@ TMDB works out of the box using the public client key from the [official Lampa s
 - Playback settings overlay: speed, volume, brightness, contrast, subtitle text size, subtitle timing, and **HLS bitrate preset** (auto/highest, economy, ≤1/2/4 Mbps). Changing bitrate reloads the stream and tries to restore playback position.
 - Adds an external WebVTT subtitle track from UAFresh embedded players when the provider supplies one (for example Zetvideo's Ukrainian subtitles).
 - Settings/information screen.
-- Optional **UAFlix account sign-in** under Settings (`Minus` → `A`). Series are playable on the UAFlix website without an account; login is not required to fetch public episodes. The homebrew uses an in-app keyboard instead of launching the system software keyboard, which previously coincided with an Atmosphère abort. `Y` signs out. Passwords are not saved, but the session cookie is stored in plaintext at `sdmc:/switch/uaflix/uaflix.cookie`; anyone with access to the SD card can copy it.
+- **No UAFlix sign-in screen**. Public series episodes are attempted without requiring an account; the earlier custom login keyboard and diagnostic "safe mode" message have been removed from UI.
 - Custom cyan-on-midnight **UAPlay** icon featuring the user's supplied diagonal filmstrip, sprocket holes, play symbol, and stars; homebrew display name is **UAPlay**.
 - Seven Noto Sans fallback fonts (Tamil, Telugu, Devanagari, Malayalam, Bengali, Arabic, Thai) are bundled for non-Latin titles; they are distributed under the SIL Open Font License 1.1 (Google Noto Fonts).
 
@@ -40,7 +40,7 @@ TMDB works out of the box using the public client key from the [official Lampa s
 | Video | A pause, D-pad/stick left/right seek ±10 seconds, **hold R with left/right to seek ±60 seconds**, X subtitle list, Y audio list, Minus video settings, B stop/save position |
 | Track selection | Up/down choose audio or subtitles, A apply, B return to video |
 | Video settings | Up/down choose property, left/right adjust, B return |
-| Settings | Up/down choose Interface/Catalog/Player/Sources/UAFlix account, A open/change, B return, Y log out only in account section |
+| Settings | Up/down choose Interface/Catalog/Player/Sources, A open/change, B return |
 
 ## UAFresh adapter
 

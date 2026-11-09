@@ -67,7 +67,7 @@ static const char *headings[]={"Популярні фільми","Популяр
     "Романтика","Документальні","Вибране","Історія переглядів"};
 #define CATEGORY_COUNT ((int)(sizeof(categories)/sizeof(categories[0])))
 static int expanded_catalog=0;
-/* 0: posters, 1: Watch, 2: Add to favorites (catalog hero buttons). */
+/* 0: posters, 1: Watch, 2: Add to favorites, 3: All (catalog controls). */
 static int catalog_hero_focus=0;
 /* 0: Watch, 1: Add to favorites (details buttons). */
 static int details_button_focus=0;
@@ -178,10 +178,11 @@ static int paint_init(Paint *p) {
     unsigned char white[4]={255,255,255,255};
     glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,white);
     if (TTF_Init()) return 0;
-    p->font=TTF_OpenFont("romfs:/DejaVuSans.ttf",22);
-    p->font_big=TTF_OpenFont("romfs:/DejaVuSans.ttf",31);
-    p->font_small=TTF_OpenFont("romfs:/DejaVuSans.ttf",19);
-    p->font_tiny=TTF_OpenFont("romfs:/DejaVuSans.ttf",15);
+    /* Inter has SF/Helvetica-like proportions and includes Ukrainian glyphs. */
+    p->font=TTF_OpenFont("romfs:/InterVariable.ttf",22);
+    p->font_big=TTF_OpenFont("romfs:/InterVariable.ttf",31);
+    p->font_small=TTF_OpenFont("romfs:/InterVariable.ttf",19);
+    p->font_tiny=TTF_OpenFont("romfs:/InterVariable.ttf",15);
     for(int i=0;i<7;i++){
         char path[96];snprintf(path,sizeof(path),"romfs:/NotoSans%s.ttf",script_fonts[i]);
         p->scripts[i]=TTF_OpenFont(path,22);
@@ -502,6 +503,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             if(status && (!strncmp(status,"Offline catalog",15) ||
                           !strncmp(status,"Офлайн-пошук",strlen("Офлайн-пошук"))))
                 text_tiny(p,"Офлайн",1026,340,77);
+            if(n && catalog_hero_focus==3)selection_frame(p,1110,329,138,42);
             button(p,"Усі  ›",1110,329,138,42,0);
             int start=chosen/6*6;
             for(int i=start;i<n && i<start+6;i++){
@@ -1072,22 +1074,25 @@ int main(void) {
                     chosen=0;catalog_hero_focus=0;continue;
                 }
                 if(!expanded_catalog && catalog_hero_focus){
-                    if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus==2)
-                        catalog_hero_focus=1;
-                    if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && catalog_hero_focus==1)
-                        catalog_hero_focus=2;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus>1)
+                        catalog_hero_focus--;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && catalog_hero_focus<3)
+                        catalog_hero_focus++;
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)catalog_hero_focus=0;
                 }else{
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && chosen>0)chosen--;
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && chosen<n-1)chosen++;
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_UP){
                         if(chosen>=6)chosen-=6;
-                        else if(!expanded_catalog && n)catalog_hero_focus=1;
+                        else if(!expanded_catalog && n)
+                            catalog_hero_focus=chosen%6>=4?3:1;
                     }
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && chosen+6<n)chosen+=6;
                 }
                 if(key==SDL_CONTROLLER_BUTTON_A && n){
-                    if(!expanded_catalog && catalog_hero_focus==2){
+                    if(!expanded_catalog && catalog_hero_focus==3){
+                        expanded_catalog=1;chosen=0;catalog_hero_focus=0;message[0]=0;
+                    }else if(!expanded_catalog && catalog_hero_focus==2){
                         library_toggle_favorite(&movies[chosen]);
                         snprintf(message,sizeof(message),"%s",library_favorite(&movies[chosen])?
                                  "Додано у вибране":"Видалено з вибраного");

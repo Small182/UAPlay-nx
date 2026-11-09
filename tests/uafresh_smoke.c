@@ -21,6 +21,7 @@ int main(void) {
         if (uakino_resolve(&pages[i],stream,sizeof(stream),error,sizeof(error)) &&
             strstr(stream,".m3u8")) {
             printf("UAFresh HLS resolution OK: %s\n",stream);
+            printf("Subtitle URL: %s\n",uakino_resolved_subtitle());
             verified = 1;
         } else fprintf(stderr,"Resolve: %s\n",error);
     }

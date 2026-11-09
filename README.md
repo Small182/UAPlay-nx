@@ -19,6 +19,7 @@ TMDB works out of the box using the public client key from the [official Lampa s
 - Native **season/episode browser** for UAFresh sources exposing episode-page links (tested on UAFlix); play selected episode when its stream can be resolved.
 - Player pause, ±10 second seek, **separate audio-track and subtitle-track lists** built from libmpv `track-list` with language/title and selected-track state.
 - Playback settings overlay: speed, volume, brightness, contrast, subtitle text size and subtitle timing, applied immediately via libmpv.
+- Adds an external WebVTT subtitle track from UAFresh embedded players when the provider supplies one (for example Zetvideo's Ukrainian subtitles).
 - Settings/information screen.
 - Original user-supplied Lampa icon retained for now; homebrew display name is **Uaflix**.
 

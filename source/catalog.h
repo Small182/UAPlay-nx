@@ -36,6 +36,8 @@ int uakino_search(const Movie *movie, Source *items, int max,
                   char *error, int error_size);
 int uakino_resolve(const Source *source, char *stream, int size,
                    char *error, int error_size);
+/* Optional WebVTT URL announced by the last successfully resolved embed. */
+const char *uakino_resolved_subtitle(void);
 int uakino_episodes(const Source *source, Episode *items, int max,
                     char *error, int error_size);
 

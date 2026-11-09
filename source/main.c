@@ -334,6 +334,7 @@ int main(void) {
     n=load_category(category,query,movies,message,sizeof(message));
     Movie playing_movie={0};
     double resume_at=0;
+    char pending_subtitle[1024]={0};
     Page player_return_page=SOURCES;
     while(running){
         SDL_Event e;
@@ -425,6 +426,7 @@ int main(void) {
                         snprintf(episode_source.url,sizeof(episode_source.url),"%s",episode->url);
                         char url[2048]={0};message[0]=0;
                         if(uakino_resolve(&episode_source,url,sizeof(url),message,sizeof(message))){
+                            snprintf(pending_subtitle,sizeof(pending_subtitle),"%s",uakino_resolved_subtitle());
                             playing_movie=movies[chosen];
                             resume_at=0;
                             library_mark_watched(&playing_movie);
@@ -502,6 +504,7 @@ int main(void) {
                     char url[2048]={0};
                     message[0]=0;
                     if(render && uakino_resolve(&sources[source],url,sizeof(url),message,sizeof(message))){
+                        snprintf(pending_subtitle,sizeof(pending_subtitle),"%s",uakino_resolved_subtitle());
                         playing_movie=movies[chosen];
                         resume_at=library_progress(&playing_movie);
                         library_mark_watched(&playing_movie);
@@ -515,6 +518,11 @@ int main(void) {
             for (;;) {
                 mpv_event *event=mpv_wait_event(player,0);
                 if(event->event_id==MPV_EVENT_NONE)break;
+                if(event->event_id==MPV_EVENT_FILE_LOADED && pending_subtitle[0]){
+                    const char *args[]={"sub-add",pending_subtitle,"auto","Українські", "uk",NULL};
+                    mpv_command_async(player,0,args);
+                    pending_subtitle[0]=0;
+                }
                 if(event->event_id==MPV_EVENT_FILE_LOADED && resume_at>1){
                     char seconds[40];snprintf(seconds,sizeof(seconds),"%.1f",resume_at);
                     const char *args[]={"seek",seconds,"absolute",NULL};

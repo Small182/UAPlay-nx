@@ -328,10 +328,31 @@ static int find_embed(const char *html, char *url, int size) {
     return 0;
 }
 
+static char resolved_subtitle[1024];
+const char *uakino_resolved_subtitle(void) { return resolved_subtitle; }
+
+static void extract_subtitle(const char *html) {
+    const char *field=strstr(html,"subtitle:");
+    if (!field) field=strstr(html,"subtitle\":");
+    if (!field) return;
+    const char *url=strstr(field,"https://");
+    if (!url || url-field>500) return;
+    const char *end=url;
+    while (*end && *end!=',' && *end!='"' && *end!='\'' && *end!='<' &&
+           *end!=' ' && end-url < (int)sizeof(resolved_subtitle)-1) end++;
+    size_t n=(size_t)(end-url);
+    if (n>=7 && (strstr(url,".vtt") || strstr(url,".srt"))) {
+        memcpy(resolved_subtitle,url,n);
+        resolved_subtitle[n]=0;
+    }
+}
+
 int uakino_resolve(const Source *source, char *stream, int size,
                    char *error, int error_size) {
+    resolved_subtitle[0]=0;
     char *page = fetch_uafresh(source->url,error,error_size);
     if (!page) return 0;
+    extract_subtitle(page);
     if (extract_media(page,stream,size)) { free(page);return 1; }
     char embed[1024];
     int found = find_embed(page,embed,sizeof(embed));
@@ -339,6 +360,7 @@ int uakino_resolve(const Source *source, char *stream, int size,
     if (found) {
         char *player = fetch_uafresh(embed,error,error_size);
         if (!player) return 0;
+        extract_subtitle(player);
         found = extract_media(player,stream,size);
         free(player);
         if (found) return 1;

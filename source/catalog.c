@@ -481,6 +481,21 @@ static void search_provider(const char *host, const char *name, int provider,
                             title_end=strstr(title_start,"</h2>");
                             if(!title_end || title_end-title_start>300)title_start=NULL;
                         }
+                    }else if(provider==1){
+                        /* UASerials search cards put the human title in
+                           .th-title, often followed by the English name.
+                           Never label a source with its raw numeric slug. */
+                        const char *heading=strstr(end,"class=\"th-title");
+                        if(heading && heading-end<900 &&
+                           strncmp(heading,"class=\"th-title-oname",21)){
+                            const char *opening=strchr(heading,'>');
+                            if(opening && opening-heading<140){
+                                title_start=opening+1;
+                                title_end=strchr(title_start,'<');
+                                if(!title_end || title_end-title_start>300)
+                                    title_start=NULL;
+                            }
+                        }
                     }
                     if(title_start){
                         char label[176];size_t len=(size_t)(title_end-title_start);
@@ -503,12 +518,25 @@ static void search_provider(const char *host, const char *name, int provider,
 int uakino_search(const Movie *movie, Source *items, int max,
                   char *error, int error_size) {
     int count=0;
-    const char *search = movie->original[0] ? movie->original : movie->title;
+    /* Localized and original titles may differ radically (Lost / Загублені).
+       Search each provider in Ukrainian first, then try the original only if
+       the localized search returned no matches for that provider. Leave room
+       for both providers even when one returns many similar titles. */
+    const char *localized=movie->title;
+    const char *original=movie->original;
     error[0]=0;
-    search_provider("https://uafix.net", "UAFlix", 0, search,movie->series,
+    int provider_limit=max>2?max/2:max;
+    search_provider("https://uafix.net", "UAFlix", 0, localized,movie->series,
+                    items, &count, provider_limit, error, error_size);
+    if(count==0 && original[0] && strcmp(original,localized))
+        search_provider("https://uafix.net", "UAFlix", 0, original,movie->series,
+                        items, &count, provider_limit, error, error_size);
+    int before=count;
+    search_provider("https://uaserials.my", "UASerials", 1, localized,movie->series,
                     items, &count, max, error, error_size);
-    search_provider("https://uaserials.my", "UASerials", 1, search,movie->series,
-                    items, &count, max, error, error_size);
+    if(count==before && original[0] && strcmp(original,localized))
+        search_provider("https://uaserials.my", "UASerials", 1, original,movie->series,
+                        items, &count, max, error, error_size);
     if (count) error[0]=0;
     else if (!error[0]) snprintf(error,error_size,"UAFresh: no matching pages");
     return count;
@@ -637,6 +665,14 @@ static void extract_subtitle(const char *html) {
 int uakino_resolve(const Source *source, char *stream, int size,
                    char *error, int error_size) {
     resolved_subtitle[0]=0;
+    /* A Playerjs playlist leaf already contains the actual media URL. */
+    if((strstr(source->url,".m3u8") || strstr(source->url,".mp4") ||
+        strstr(source->url,".mpd")) &&
+       (!strncmp(source->url,"https://",8) || !strncmp(source->url,"http://",7))){
+        snprintf(stream,(size_t)size,"%s",source->url);
+        error[0]=0;
+        return 1;
+    }
     char *page = fetch_uafresh(source->url,error,error_size);
     if (!page) return 0;
     extract_subtitle(page);
@@ -656,46 +692,276 @@ static int episode_order(const void *a, const void *b) {
     return one->number - two->number;
 }
 
-int uakino_episodes(const Source *source, Episode *items, int max,
-                    char *error, int error_size) {
-    char *html=fetch_uafresh(source->url,error,error_size);
-    if (!html) return 0;
-    int count=0;
+/* Playerjs serials often contain a JSON tree voice -> season -> episode in
+   their iframe's `file` field. Unlike UAFlix episode cards, these have no
+   /season-N-episode-M/ hrefs (e.g. South Park and many animated shows). */
+static const char *json_ws(const char *p){
+    while(*p && isspace((unsigned char)*p))p++;
+    return p;
+}
+static const char *json_string(const char *p,char *out,size_t size){
+    if(*p!='"')return NULL;
+    p++;size_t n=0;
+    while(*p && *p!='"'){
+        unsigned char c=(unsigned char)*p++;
+        if(c=='\\' && *p){
+            c=(unsigned char)*p++;
+            if(c=='n'||c=='r'||c=='t')c=' ';
+            else if(c=='u'){
+                for(int i=0;i<4 && isxdigit((unsigned char)*p);i++)p++;
+                continue;
+            }
+        }
+        if(n+1<size)out[n++]=(char)c;
+    }
+    out[n]=0;
+    return *p=='"'?p+1:NULL;
+}
+static const char *json_skip(const char *p,int depth){
+    p=json_ws(p);
+    if(depth>16 || !*p)return NULL;
+    if(*p=='"'){
+        p++;while(*p && *p!='"'){
+            if(*p=='\\' && p[1])p++;
+            p++;
+        }
+        return *p=='"'?p+1:NULL;
+    }
+    if(*p=='[' || *p=='{'){
+        char end=*p=='['?']':'}';p++;
+        while(*(p=json_ws(p)) && *p!=end){
+            if(*p==':' || *p==','){p++;continue;}
+            p=json_skip(p,depth+1);
+            if(!p)return NULL;
+        }
+        return *p==end?p+1:NULL;
+    }
+    while(*p && *p!=',' && *p!=']' && *p!='}' && !isspace((unsigned char)*p))p++;
+    return p;
+}
+static int title_number(const char *title){
+    while(*title && !isdigit((unsigned char)*title))title++;
+    return *title?atoi(title):0;
+}
+static int is_season_title(const char *title){
+    return strstr(title,"Сезон") || strstr(title,"сезон") ||
+           strstr(title,"Season") || strstr(title,"season");
+}
+static int is_episode_title(const char *title){
+    return strstr(title,"Серія") || strstr(title,"серія") ||
+           strstr(title,"Episode") || strstr(title,"episode");
+}
+static void playlist_add(Episode *items,int *count,int max,int season,int episode,
+                         const char *voice,const char *url){
+    if(!url || !*url || *count>=max)return;
+    const char *direct=strstr(url,"https://");
+    if(!direct)direct=strstr(url,"http://");
+    if(!direct || (!strstr(direct,".m3u8") && !strstr(direct,".mp4") &&
+                   !strstr(direct,".mpd")))return;
+    const char *end=direct;
+    while(*end && *end!=',' && *end!='|' && *end!=' ' && *end!='"' &&
+          *end!='\'' && end-direct<1023)end++;
+    size_t length=(size_t)(end-direct);
+    if(length<15 || length>=sizeof(items[0].url))return;
+    if(season<1)season=1;
+    if(episode<1)episode=1;
+    for(int i=0;i<*count;i++)
+        if(items[i].season==season && items[i].number==episode &&
+           !strcmp(items[i].voice,voice?voice:""))return;
+    Episode *entry=&items[(*count)++];
+    memset(entry,0,sizeof(*entry));
+    entry->season=season;entry->number=episode;
+    memcpy(entry->url,direct,length);entry->url[length]=0;
+    snprintf(entry->voice,sizeof(entry->voice),"%s",voice && *voice?voice:"Основна");
+    snprintf(entry->title,sizeof(entry->title),"Сезон %d · Серія %d",season,episode);
+}
+static const char *playlist_walk(const char *p,int season,int episode,
+                                 const char *voice,int ordinal,int depth,
+                                 Episode *items,int *count,int max){
+    p=json_ws(p);
+    if(depth>16 || !*p || *count>=max)return json_skip(p,depth);
+    if(*p=='['){
+        p++;int index=0;
+        while(*(p=json_ws(p)) && *p!=']'){
+            if(*p==','){p++;continue;}
+            const char *next=playlist_walk(p,season,episode,voice,++index,depth+1,
+                                           items,count,max);
+            if(!next || next<=p)return NULL;
+            p=next;
+        }
+        return *p==']'?p+1:NULL;
+    }
+    if(*p!='{')return json_skip(p,depth);
+    const char *cursor=p+1,*folder=NULL;
+    char title[192]={0},file[2048]={0};
+    while(*(cursor=json_ws(cursor)) && *cursor!='}'){
+        if(*cursor==','){cursor++;continue;}
+        char key[48];
+        cursor=json_string(cursor,key,sizeof(key));
+        if(!cursor)return NULL;
+        cursor=json_ws(cursor);
+        if(*cursor++!=':')return NULL;
+        cursor=json_ws(cursor);
+        if(!strcmp(key,"title") && *cursor=='"')
+            cursor=json_string(cursor,title,sizeof(title));
+        else if(!strcmp(key,"file") && *cursor=='"')
+            cursor=json_string(cursor,file,sizeof(file));
+        else {
+            if(!strcmp(key,"folder") && (*cursor=='[' || *cursor=='{'))folder=cursor;
+            cursor=json_skip(cursor,depth+1);
+        }
+        if(!cursor)return NULL;
+    }
+    if(*cursor!='}')return NULL;
+    int s=season,e=episode;
+    const char *v=voice;
+    int num=title_number(title);
+    if(is_season_title(title) && num>0){s=num;e=0;}
+    else if(is_episode_title(title) && num>0)e=num;
+    else if(depth<=2 && title[0] && !file[0])v=title;
+    if(file[0])playlist_add(items,count,max,s,e?e:ordinal,v,file);
+    if(folder)playlist_walk(folder,s,e,v,0,depth+1,items,count,max);
+    return cursor+1;
+}
+static int playlist_from_html(const char *html,Episode *items,int max){
+    const char *p=html;int count=0;
+    while((p=strstr(p,"file"))!=NULL && !count){
+        const char *value=json_ws(p+4);
+        if(*value!=':' && *value!='='){p+=4;continue;}
+        value=json_ws(value+1);
+        char *decoded=NULL;
+        if(*value=='\'' || *value=='"'){
+            char quote=*value++;
+            size_t capacity=strlen(value)+1;
+            if(capacity>3*1024*1024){p+=4;continue;}
+            decoded=malloc(capacity);
+            if(!decoded)return 0;
+            size_t n=0;
+            while(*value && *value!=quote){
+                char c=*value++;
+                if(c=='\\' && *value){
+                    c=*value++;
+                    if(c=='n'||c=='r'||c=='t')c=' ';
+                }
+                decoded[n++]=c;
+            }
+            decoded[n]=0;
+        }else if(*value=='[' || *value=='{'){
+            const char *end=json_skip(value,0);
+            if(end && (size_t)(end-value)<3*1024*1024){
+                decoded=malloc((size_t)(end-value)+1);
+                if(!decoded)return 0;
+                memcpy(decoded,value,(size_t)(end-value));
+                decoded[end-value]=0;
+            }
+        }
+        if(decoded){
+            const char *start=json_ws(decoded);
+            if(*start=='[' || *start=='{')
+                playlist_walk(start,1,0,"Основна",0,0,items,&count,max);
+            free(decoded);
+        }
+        p+=4;
+    }
+    return count;
+}
+
+/* UAFlix keeps earlier episodes on /sezon-N/ pages for many long-running
+   serials. The original catalog scanned only the first (usually newest)
+   page, so whole seasons were absent from the Switch picker. */
+static int uaflix_href(const char *begin,size_t length,char *url,size_t size){
+    static const char host[]="https://uafix.net";
+    if(length==0 || length>=size-25)return 0;
+    if(!strncmp(begin,host,strlen(host)))
+        snprintf(url,size,"%.*s",(int)length,begin);
+    else if(begin[0]=='/' && (length<2 || begin[1]!='/'))
+        snprintf(url,size,"%s%.*s",host,(int)length,begin);
+    else if(!strncmp(begin,"//uafix.net/",13))
+        snprintf(url,size,"https:%.*s",(int)length,begin);
+    else return 0;
+    return 1;
+}
+static void parse_uaflix_episodes(const char *html,const char *root,
+                                  Episode *items,int *count,int max,
+                                  char season_urls[][1024],int *seasons,int max_seasons){
     const char *p=html;
-    while (count<max && (p=strstr(p,"href="))) {
+    while(*count<max && (p=strstr(p,"href="))){
         p+=5;
-        if (*p!='"' && *p!='\'') continue;
+        if(*p!='"' && *p!='\'')continue;
         char quote=*p++;
         const char *end=strchr(p,quote);
-        if (!end) break;
-        size_t len=(size_t)(end-p);
+        if(!end)break;
         char url[1024];
-        if (len>15 && len<sizeof(url)) {
-            memcpy(url,p,len);url[len]=0;
-            const char *token=strstr(url,"/season-");
-            int season=0,episode=0;
-            if (token && sscanf(token,"/season-%d-episode-%d/",&season,&episode)==2 &&
-                season>=1 && season<100 && episode>=1 && episode<1000 &&
-                !strncmp(url,"https://uafix.net/",18)) {
+        if(uaflix_href(p,(size_t)(end-p),url,sizeof(url)) &&
+           !strncmp(url,root,strlen(root))){
+            const char *ep=strstr(url+strlen(root),"season-");
+            int season=0,number=0;
+            if(ep && sscanf(ep,"season-%d-episode-%d/",&season,&number)==2 &&
+               season>=1 && season<=100 && number>=1 && number<=1000){
                 int exists=0;
-                for (int i=0;i<count;i++)
-                    if (items[i].season==season && items[i].number==episode) exists=1;
-                if (!exists) {
-                    Episode *new_episode=&items[count++];
-                    new_episode->season=season;
-                    new_episode->number=episode;
-                    snprintf(new_episode->url,sizeof(new_episode->url),"%s",url);
-                    snprintf(new_episode->title,sizeof(new_episode->title),
-                             "Сезон %d · Серія %d",season,episode);
+                for(int i=0;i<*count;i++)
+                    if(items[i].season==season && items[i].number==number)exists=1;
+                if(!exists){
+                    Episode *entry=&items[(*count)++];
+                    memset(entry,0,sizeof(*entry));
+                    entry->season=season;entry->number=number;
+                    snprintf(entry->url,sizeof(entry->url),"%s",url);
+                    snprintf(entry->title,sizeof(entry->title),
+                             "Сезон %d · Серія %d",season,number);
+                }
+            }else if(season_urls && seasons && *seasons<max_seasons){
+                const char *season_part=strstr(url+strlen(root),"sezon-");
+                int season_number=0;
+                if(season_part && sscanf(season_part,"sezon-%d/",&season_number)==1 &&
+                   season_number>0 && season_number<=100){
+                    int exists=0;
+                    for(int i=0;i<*seasons;i++)
+                        if(!strcmp(season_urls[i],url))exists=1;
+                    if(!exists)snprintf(season_urls[(*seasons)++],1024,"%s",url);
                 }
             }
         }
         p=end+1;
     }
+}
+
+int uakino_episodes(const Source *source, Episode *items, int max,
+                    char *error, int error_size) {
+    char *html=fetch_uafresh(source->url,error,error_size);
+    if (!html) return 0;
+    int count=0;
+    if(!strncmp(source->url,"https://uafix.net/serials/",25)){
+        char season_urls[40][1024];int season_pages=0;
+        parse_uaflix_episodes(html,source->url,items,&count,max,
+                              season_urls,&season_pages,40);
+        /* Fetch the season archive pages even when the main page lists some
+           episodes. Those may only cover the latest season or latest items. */
+        for(int i=0;i<season_pages && count<max;i++){
+            char *archive=fetch_uafresh(season_urls[i],error,error_size);
+            if(!archive)continue;
+            parse_uaflix_episodes(archive,source->url,items,&count,max,
+                                  NULL,NULL,0);
+            free(archive);
+        }
+    }
+    if(!count){
+        count=playlist_from_html(html,items,max);
+        const char *next=html;
+        for(int attempt=0;!count && attempt<4;attempt++){
+            char iframe[1024]={0};
+            next=find_embed_after(next,iframe,sizeof(iframe));
+            if(!next)break;
+            char *player_html=fetch_uafresh(iframe,error,error_size);
+            if(player_html){
+                count=playlist_from_html(player_html,items,max);
+                free(player_html);
+            }
+        }
+    }
     free(html);
     if (count) {
         qsort(items,(size_t)count,sizeof(*items),episode_order);
         error[0]=0;
-    } else snprintf(error,error_size,"No structured episodes in this source");
+    } else snprintf(error,error_size,"Плеєр не надав доступний перелік серій. Спробуйте інше джерело.");
     return count;
 }

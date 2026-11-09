@@ -21,6 +21,7 @@ typedef enum { CATALOG, DETAILS, SOURCES, PLAYER, SETTINGS,
 
 static Episode episodes[EPISODES_MAX];
 static int episode_count,season_ids[64],season_count,selected_season,selected_episode;
+static int active_episode_variant=-1;
 static MediaTrack tracks[TRACKS_MAX];
 static int track_count,selected_track,subtitle_picker;
 static int selected_video_option;
@@ -49,13 +50,19 @@ static void rebuild_seasons(void) {
 }
 static int episodes_in_season(int season) {
     int count=0;
-    for(int i=0;i<episode_count;i++) if(episodes[i].season==season)count++;
+    for(int i=0;i<episode_count;i++)if(episodes[i].season==season){
+        if(i>0 && episodes[i-1].season==season &&
+           episodes[i-1].number==episodes[i].number)continue;
+        count++;
+    }
     return count;
 }
 static Episode *selected_episode_item(void) {
     if(selected_season>=season_count)return NULL;
     int season=season_ids[selected_season],nth=0;
     for(int i=0;i<episode_count;i++) if(episodes[i].season==season) {
+        if(i>0 && episodes[i-1].season==season &&
+           episodes[i-1].number==episodes[i].number)continue;
         if(nth++==selected_episode)return &episodes[i];
     }
     return NULL;
@@ -65,7 +72,7 @@ static const char *categories[]={"movies","series","top","genre_28","genre_35",
     "genre_18","genre_27","genre_878","genre_16","genre_10749","genre_99",
     "favorites","history","cartoons","cartoon_series","anime"};
 static const char *headings[]={"Популярні фільми","Популярні серіали","Найкращі фільми",
-    "Бойовики","Комедії","Драми","Жахи","Фантастика","Анімація",
+    "Бойовики","Комедії","Драми","Жахи","Фантастика","Мультфільми",
     "Романтика","Документальні","Вибране","Історія переглядів",
     "Мультфільми","Мультсеріали","Аніме"};
 #define CATEGORY_COUNT ((int)(sizeof(categories)/sizeof(categories[0])))
@@ -489,6 +496,12 @@ static void card_title(Paint *p,const char *title,int x,int y,int width){
     wrapped(p,title,x,y,width,2,24,p->font_small,.95f,.96f,.98f);
 }
 static void accent(float *r,float *g,float *b){
+    if(ui_light_theme){
+        /* box_alpha inverts light-theme UI fills. These pre-inverted
+           values produce Nintendo-style bright blue (#03B0ED). */
+        *r=.99f;*g=.31f;*b=.07f;
+        return;
+    }
     *r=ui_accent_alt?.43f:.89f;
     *g=ui_accent_alt?.73f:.68f;
     *b=ui_accent_alt?.84f:.39f;
@@ -534,9 +547,9 @@ static void polygon(Paint *p,const float *points,int count,float r,float g,float
 }
 static void search_icon(Paint *p,int cx,int cy,float bg_r,float bg_g,float bg_b){
     const float fg=.96f;
-    box_alpha(p,cx-15,cy-15,30,30,fg,fg,fg,1.f,15);
-    box_alpha(p,cx-9,cy-9,18,18,bg_r,bg_g,bg_b,1.f,9);
-    const float handle[]={cx+9,cy+9,cx+14,cy+4,cx+25,cy+16,cx+20,cy+21};
+    box_alpha(p,cx-11,cy-11,22,22,fg,fg,fg,1.f,11);
+    box_alpha(p,cx-7,cy-7,14,14,bg_r,bg_g,bg_b,1.f,7);
+    const float handle[]={cx+7,cy+7,cx+11,cy+3,cx+20,cy+12,cx+16,cy+16};
     polygon(p,handle,4,fg,fg,fg);
 }
 /* Eight sturdy teeth + circular opening, matching the supplied gear image. */
@@ -545,7 +558,7 @@ static void gear_icon(Paint *p,int cx,int cy,float bg_r,float bg_g,float bg_b){
     float teeth[8*6*2];
     for(int k=0;k<8;k++){
         const float angles[]={-.37f,-.22f,-.15f,.15f,.22f,.37f};
-        const float radii[]={14.f,14.f,20.f,20.f,14.f,14.f};
+        const float radii[]={10.5f,10.5f,15.f,15.f,10.5f,10.5f};
         for(int j=0;j<6;j++){
             float angle=k*pi/4.f+angles[j];
             teeth[(k*6+j)*2]=cx+cosf(angle)*radii[j];
@@ -553,7 +566,7 @@ static void gear_icon(Paint *p,int cx,int cy,float bg_r,float bg_g,float bg_b){
         }
     }
     polygon(p,teeth,48,fg,fg,fg);
-    box_alpha(p,cx-7,cy-7,14,14,bg_r,bg_g,bg_b,1.f,7);
+    box_alpha(p,cx-5,cy-5,10,10,bg_r,bg_g,bg_b,1.f,5);
 }
 static void screen_header(Paint *p,const char *name,const char *context){
     box_alpha(p,0,0,1280,92,.058f,.069f,.083f,1.f,0);
@@ -671,9 +684,9 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
     if (page==CATALOG) {
         box_alpha(p,0,0,1280,80,.059f,.070f,.081f,1.f,0);
         headline(p,"UAPlay",25,18,166);
-        const char *tabs[]={"Головна","Серіали","Фільми","Анімація","Вибране"};
-        const int tab_x[]={205,307,410,502,630};
-        const int tab_w[]={96,95,89,120,112};
+        const char *tabs[]={"Головна","Серіали","Фільми","Мультфільми","Вибране"};
+        const int tab_x[]={205,307,410,502,650};
+        const int tab_w[]={96,95,89,144,106};
         for(int i=0;i<5;i++){
             int x=tab_x[i];
             int active=(i==0 && ui_category==0) ||
@@ -687,7 +700,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         }
         /* Search is a real touch target, not a missing Unicode glyph. */
         box_alpha(p,767,17,277,47,.13f,.16f,.19f,1.f,15);
-        search_icon(p,799,37,.13f,.16f,.19f);
+        search_icon(p,800,38,.13f,.16f,.19f);
         text_small(p,"Пошук",831,27,177);
         box_alpha(p,1058,17,53,47,.13f,.16f,.19f,1.f,15);
         gear_icon(p,1085,40,.13f,.16f,.19f);
@@ -782,7 +795,10 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         headline(p,items[settings_selected],513,174,685);
         char description[240];
         if(settings_selected==0)snprintf(description,sizeof(description),"Оформлення: %s",ui_light_theme?"Світла тема":"Темна тема");
-        else if(settings_selected==1)snprintf(description,sizeof(description),"Акцент: %s",ui_accent_alt?"Блакитний":"Золотистий");
+        else if(settings_selected==1){
+            if(ui_light_theme)snprintf(description,sizeof(description),"Акцент світлої теми: синій Nintendo Switch");
+            else snprintf(description,sizeof(description),"Акцент: %s",ui_accent_alt?"Блакитний":"Золотистий");
+        }
         else if(settings_selected==2)snprintf(description,sizeof(description),"Швидкість: %.2f · гучність: %.0f",video_options[0],video_options[1]);
         else snprintf(description,sizeof(description),"Пріоритет: %s",source_mode==0?"Усі джерела":source_mode==1?"UAFlix":"UASerials");
         text(p,description,516,255,682);
@@ -833,6 +849,8 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         int idx=0,first=selected_episode/UI_ROWS*UI_ROWS;
         for(int i=0;i<episode_count;i++) {
             if(episodes[i].season!=season_ids[selected_season])continue;
+            if(i>0 && episodes[i-1].season==episodes[i].season &&
+               episodes[i-1].number==episodes[i].number)continue;
             if(idx>=first && idx<first+UI_ROWS) {
                 list_row(p,episodes[i].title,UI_ROW_Y+(idx-first)*UI_ROW_STEP,
                          idx==selected_episode,NULL);
@@ -963,6 +981,10 @@ static void configure_stream(mpv_handle *player,const char *url) {
     mpv_set_property_string(player,"user-agent","Mozilla/5.0 (Nintendo Switch; UAPlay/1.0)");
     if(strstr(url,"zetvideo.net"))
         mpv_set_property_string(player,"referrer","https://zetvideo.net/");
+    else if(strstr(url,"ashdi.vip"))
+        mpv_set_property_string(player,"referrer","https://ashdi.vip/");
+    else if(strstr(url,"hdvbua.pro"))
+        mpv_set_property_string(player,"referrer","https://hdvbua.pro/");
     else mpv_set_property_string(player,"referrer","");
 }
 static int keyboard(char *value,size_t size) {
@@ -1108,8 +1130,8 @@ int main(void) {
                     }else continue;
                 }else if(page==CATALOG){
                     if(ty<78 && tx>=193 && tx<742){
-                        const int tab_x[]={193,295,398,490,618};
-                        const int tab_w[]={96,95,89,120,124};
+                        const int tab_x[]={193,295,398,490,638};
+                        const int tab_w[]={96,95,89,144,106};
                         int next=category;
                         int focused=-1;
                         for(int i=0;i<5;i++)
@@ -1234,6 +1256,25 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_X || key==SDL_CONTROLLER_BUTTON_Y){
                     subtitle_picker=key==SDL_CONTROLLER_BUTTON_X;
                     track_count=playback_tracks(player,subtitle_picker,tracks,TRACKS_MAX);
+                    /* In Playerjs playlists, a different dub is often a
+                       different HLS URL, not an mpv-embedded audio track. */
+                    if(!subtitle_picker && active_episode_variant>=0 &&
+                       active_episode_variant<episode_count){
+                        Episode *active=&episodes[active_episode_variant];
+                        int variants=0;
+                        for(int i=0;i<episode_count;i++)
+                            if(episodes[i].season==active->season &&
+                               episodes[i].number==active->number)variants++;
+                        if(variants>1)for(int i=0;i<episode_count && track_count<TRACKS_MAX;i++){
+                            if(episodes[i].season!=active->season ||
+                               episodes[i].number!=active->number)continue;
+                            MediaTrack *choice=&tracks[track_count++];
+                            choice->id=-(i+1);
+                            choice->selected=i==active_episode_variant;
+                            snprintf(choice->label,sizeof(choice->label),"Озвучка: %.165s",
+                                     episodes[i].voice[0]?episodes[i].voice:"Основна");
+                        }
+                    }
                     selected_track=0;
                     for(int i=0;i<track_count;i++) if(tracks[i].selected)selected_track=i;
                     page=TRACK_PICKER;
@@ -1249,7 +1290,29 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && selected_track>0)selected_track--;
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && selected_track<track_count-1)selected_track++;
                 if(key==SDL_CONTROLLER_BUTTON_A && track_count){
-                    if(playback_select_track(player,subtitle_picker,tracks[selected_track].id)){
+                    int id=tracks[selected_track].id;
+                    if(!subtitle_picker && id<0 && -id<=episode_count){
+                        int variant=-id-1;
+                        if(variant==active_episode_variant){page=PLAYER;continue;}
+                        Source alternate={0};
+                        snprintf(alternate.url,sizeof(alternate.url),"%s",episodes[variant].url);
+                        char url[2048]={0};message[0]=0;
+                        if(uakino_resolve(&alternate,url,sizeof(url),message,sizeof(message))){
+                            double position=0;
+                            if(player)mpv_get_property(player,"time-pos",MPV_FORMAT_DOUBLE,&position);
+                            resume_at=position>0?position:0;
+                            snprintf(playing_url,sizeof(playing_url),"%s",url);
+                            snprintf(pending_subtitle,sizeof(pending_subtitle),"%s",uakino_resolved_subtitle());
+                            active_episode_variant=variant;
+                            apply_hls_quality(player);
+                            configure_stream(player,url);
+                            mpv_set_property_string(player,"pause","no");
+                            command(player,"loadfile",url);
+                            video_started_at=SDL_GetTicks();video_loaded=0;
+                            controls_until=SDL_GetTicks()+3000;
+                            page=PLAYER;
+                        }
+                    }else if(playback_select_track(player,subtitle_picker,id)){
                         snprintf(message,sizeof(message),"%s: вибрано %s",
                                  subtitle_picker?"Субтитри":"Аудіо",
                                  tracks[selected_track].label);
@@ -1306,6 +1369,7 @@ int main(void) {
                         snprintf(episode_source.url,sizeof(episode_source.url),"%s",episode->url);
                         char url[2048]={0};message[0]=0;
                         if(uakino_resolve(&episode_source,url,sizeof(url),message,sizeof(message))){
+                            active_episode_variant=(int)(episode-episodes);
                             snprintf(pending_subtitle,sizeof(pending_subtitle),"%s",uakino_resolved_subtitle());
                             playing_movie=movies[chosen];
                             resume_at=0;
@@ -1472,6 +1536,7 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && source>0)source--;
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && source<sn-1)source++;
                 if(key==SDL_CONTROLLER_BUTTON_A && sn){
+                    active_episode_variant=-1;
                     if(movies[chosen].series){
                         message[0]=0;
                         episode_count=uakino_episodes(&sources[source],episodes,

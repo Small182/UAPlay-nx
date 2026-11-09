@@ -6,7 +6,7 @@
 /* TMDB exposes at most 500 result pages; search expands only while browsing. */
 #define CATALOG_SEARCH_MAX (500 * CATALOG_PAGE_SIZE)
 #define UAKINO_MAX 20
-#define EPISODES_MAX 128
+#define EPISODES_MAX 2048
 
 typedef struct {
     int id;
@@ -28,6 +28,7 @@ typedef struct {
     int number;
     char title[192];
     char url[1024];
+    char voice[96];
 } Episode;
 
 /* Key is loaded from sdmc:/switch/lampa-nx/tmdb.key; never bundled. */

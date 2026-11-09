@@ -97,7 +97,12 @@ typedef struct {
     GLint tint, shape;
     TTF_Font *font;
     TTF_Font *font_big;
+    TTF_Font *font_small;
+    TTF_Font *font_tiny;
     TTF_Font *scripts[7];
+    TTF_Font *scripts_small[7];
+    TTF_Font *scripts_big[7];
+    TTF_Font *scripts_tiny[7];
 } Paint;
 static const char *script_fonts[]={"Tamil","Telugu","Devanagari","Malayalam",
                                   "Bengali","Arabic","Thai"};
@@ -116,7 +121,12 @@ static TTF_Font *choose_font(Paint *p,const char *s){
                 cp>=0x0980 && cp<=0x09FF?4:
                 cp>=0x0600 && cp<=0x06FF?5:
                 cp>=0x0E00 && cp<=0x0E7F?6:-1;
-        if(idx>=0 && p->scripts[idx])return p->scripts[idx];
+        if(idx>=0){
+            TTF_Font *fallback=p->font==p->font_big?p->scripts_big[idx]:
+                p->font==p->font_small?p->scripts_small[idx]:
+                p->font==p->font_tiny?p->scripts_tiny[idx]:p->scripts[idx];
+            if(fallback)return fallback;
+        }
     }
     return p->font;
 }
@@ -164,11 +174,16 @@ static int paint_init(Paint *p) {
     unsigned char white[4]={255,255,255,255};
     glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,white);
     if (TTF_Init()) return 0;
-    p->font=TTF_OpenFont("romfs:/DejaVuSans.ttf",25);
-    p->font_big=TTF_OpenFont("romfs:/DejaVuSans.ttf",37);
+    p->font=TTF_OpenFont("romfs:/DejaVuSans.ttf",24);
+    p->font_big=TTF_OpenFont("romfs:/DejaVuSans.ttf",36);
+    p->font_small=TTF_OpenFont("romfs:/DejaVuSans.ttf",20);
+    p->font_tiny=TTF_OpenFont("romfs:/DejaVuSans.ttf",16);
     for(int i=0;i<7;i++){
         char path[96];snprintf(path,sizeof(path),"romfs:/NotoSans%s.ttf",script_fonts[i]);
-        p->scripts[i]=TTF_OpenFont(path,25);
+        p->scripts[i]=TTF_OpenFont(path,24);
+        p->scripts_small[i]=TTF_OpenFont(path,20);
+        p->scripts_big[i]=TTF_OpenFont(path,36);
+        p->scripts_tiny[i]=TTF_OpenFont(path,16);
     }
     return p->font != NULL;
 }
@@ -229,81 +244,167 @@ static void headline(Paint *p,const char *str,int x,int y,int limit){
     text(p,str,x,y,limit);
     p->font=normal;
 }
-static void summary(Paint *p,const char *description,int x,int y,int width){
-    char line[220]={0};size_t take=0;
-    const char *s=description;
-    for(int row=0;row<3 && s && *s;row++){
-        size_t n=strlen(s);if(n>75)n=75;
-        if(s[n] && n>30){while(n>30 && s[n]!=' ')n--;}
-        if(n>=sizeof(line))n=sizeof(line)-1;
-        memcpy(line,s,n);line[n]=0;
-        text_color(p,line,x,y+row*32,width,.78f,.80f,.84f);
-        s+=n;while(*s==' ')s++;
-        take+=n;if(take>210)break;
+/* A single 8-point scale keeps every screen aligned and touch targets stable. */
+enum { UI_EDGE=32, UI_FOOTER_TOP=668, UI_ROW_Y=130,
+       UI_ROW_HEIGHT=50, UI_ROW_STEP=58, UI_ROWS=8 };
+static void text_font(Paint *p,const char *s,int x,int y,int limit,
+                      TTF_Font *font,float r,float g,float b){
+    TTF_Font *prev=p->font;
+    if(font)p->font=font;
+    text_color(p,s,x,y,limit,r,g,b);
+    p->font=prev;
+}
+static void text_small(Paint *p,const char *s,int x,int y,int limit){
+    text_font(p,s,x,y,limit,p->font_small,1,1,1);
+}
+static void text_muted(Paint *p,const char *s,int x,int y,int limit){
+    text_font(p,s,x,y,limit,p->font_small,.70f,.75f,.81f);
+}
+static void text_tiny(Paint *p,const char *s,int x,int y,int limit){
+    text_font(p,s,x,y,limit,p->font_tiny,.78f,.83f,.88f);
+}
+static int measure(Paint *p,const char *s,TTF_Font *font){
+    TTF_Font *prev=p->font;p->font=font;
+    int w=0,h=0;
+    TTF_SizeUTF8(choose_font(p,s),s,&w,&h);
+    p->font=prev;
+    return w;
+}
+static void text_center(Paint *p,const char *s,int x,int y,int width,TTF_Font *font,
+                        float r,float g,float b){
+    int w=measure(p,s,font);
+    int left=x+(width-w)/2;
+    if(left<x)left=x;
+    text_font(p,s,left,y,width-(left-x),font,r,g,b);
+}
+/* Word-based wrapping avoids slicing a UTF-8 code point into replacement boxes. */
+static void wrapped(Paint *p,const char *s,int x,int y,int width,
+                    int max_lines,int line_height,TTF_Font *font,
+                    float r,float g,float b){
+    if(!s || !*s)return;
+    char copy[1024],line[512]={0};
+    snprintf(copy,sizeof(copy),"%s",s);
+    char *save=NULL,*word=strtok_r(copy," \n\t",&save);
+    int row=0;
+    while(word && row<max_lines){
+        char test[512];
+        snprintf(test,sizeof(test),"%s%s%s",line,line[0]?" ":"",word);
+        if(line[0] && measure(p,test,font)>width){
+            text_font(p,line,x,y+row*line_height,width,font,r,g,b);
+            row++;line[0]=0;
+            if(row>=max_lines)break;
+            snprintf(line,sizeof(line),"%s",word);
+        }else snprintf(line,sizeof(line),"%s",test);
+        word=strtok_r(NULL," \n\t",&save);
     }
+    if(row<max_lines && line[0])text_font(p,line,x,y+row*line_height,width,font,r,g,b);
+}
+static void summary(Paint *p,const char *description,int x,int y,int width){
+    wrapped(p,description,x,y,width,3,28,p->font_small,.72f,.77f,.82f);
 }
 static void card_title(Paint *p,const char *title,int x,int y,int width){
-    if(!title || !*title)return;
-    char first[192]={0},second[192]={0};
-    snprintf(first,sizeof(first),"%s",title);
-    int w=0,h=0;
-    TTF_Font *font=choose_font(p,first);
-    if(TTF_SizeUTF8(font,first,&w,&h)==0 && w>width){
-        int break_at=-1;
-        for(int i=1;first[i];i++)if(first[i]==' '){
-            char saved=first[i];first[i]=0;
-            int test=0;
-            TTF_SizeUTF8(font,first,&test,&h);
-            first[i]=saved;
-            if(test<=width)break_at=i;
-        }
-        if(break_at>0){
-            snprintf(second,sizeof(second),"%s",first+break_at+1);
-            first[break_at]=0;
-        }
+    wrapped(p,title,x,y,width,2,24,p->font_small,.95f,.96f,.98f);
+}
+static void accent(float *r,float *g,float *b){
+    *r=ui_accent_alt?.43f:.89f;
+    *g=ui_accent_alt?.73f:.68f;
+    *b=ui_accent_alt?.84f:.39f;
+}
+static void selection_frame(Paint *p,int x,int y,int w,int h){
+    float r,g,b;accent(&r,&g,&b);
+    box_alpha(p,x-4,y-4,w+8,h+8,r,g,b,1.f,18);
+}
+static void button(Paint *p,const char *label,int x,int y,int w,int h,int primary){
+    box_alpha(p,x,y,w,h,primary?.89f:.15f,primary?.91f:.18f,
+              primary?.94f:.22f,1.f,14);
+    text_center(p,label,x,y+(h-27)/2,w,p->font_small,
+                primary?.08f:.95f,primary?.10f:.96f,primary?.13f:.98f);
+}
+/* UI icons are drawn with primitives: no missing-font placeholder squares. */
+static void gear_icon(Paint *p,int cx,int cy,float bg_r,float bg_g,float bg_b){
+    const float fg=.95f;
+    box_alpha(p,cx-3,cy-18,6,36,fg,fg,fg,1.f,2);
+    box_alpha(p,cx-18,cy-3,36,6,fg,fg,fg,1.f,2);
+    box_alpha(p,cx-13,cy-13,26,26,fg,fg,fg,1.f,13);
+    box_alpha(p,cx-6,cy-6,12,12,bg_r,bg_g,bg_b,1.f,6);
+}
+static void screen_header(Paint *p,const char *name,const char *context){
+    box_alpha(p,0,0,1280,92,.058f,.069f,.083f,1.f,0);
+    box_alpha(p,UI_EDGE,23,55,48,.13f,.16f,.20f,1.f,13);
+    text_center(p,"‹",UI_EDGE,25,55,p->font_big,.96f,.97f,.99f);
+    headline(p,name,105,23,860);
+    if(context && *context)text_tiny(p,context,979,38,264);
+}
+static void list_row(Paint *p,const char *title,int y,int selected,
+                     const char *detail){
+    box_alpha(p,UI_EDGE,y,1216,UI_ROW_HEIGHT,
+              selected?.20f:.085f,selected?.30f:.105f,
+              selected?.38f:.135f,1.f,12);
+    if(selected){
+        float r,g,b;accent(&r,&g,&b);
+        box_alpha(p,UI_EDGE,y+9,4,UI_ROW_HEIGHT-18,r,g,b,1.f,2);
     }
-    text(p,first,x,y,width);
-    if(second[0])text(p,second,x,y+30,width);
+    text(p,title,UI_EDGE+22,y+9,detail?915:1155);
+    if(detail)text_muted(p,detail,1052,y+13,178);
 }
 static int footer_position,footer_total;
 static Page footer_page;
 static void footer(Paint *p,const char *message) {
-    box_alpha(p,0,663,1280,57,.045f,.055f,.07f,.99f,0);
-    float ar=ui_accent_alt?.39f:.89f,ag=ui_accent_alt?.74f:.68f,
-          ab=ui_accent_alt?.87f:.34f;
-    box_alpha(p,30,668,1220,2,ar,ag,ab,1.f,0);
+    box_alpha(p,0,UI_FOOTER_TOP,1280,720-UI_FOOTER_TOP,.047f,.057f,.070f,1.f,0);
+    float ar,ag,ab;accent(&ar,&ag,&ab);
+    box_alpha(p,UI_EDGE,UI_FOOTER_TOP,1216,2,ar,ag,ab,.78f,0);
     char position[30];
     snprintf(position,sizeof(position),"%d / %d",footer_position,footer_total);
-    text_color(p,footer_total?position:"UAPLAY",62,682,125,ar,ag,ab);
+    text_font(p,footer_total?position:"UAPLAY",43,682,140,
+              p->font_small,ar,ag,ab);
     const char *keys[6],*labels[6];int count=0;
 #define HINT(k,l) do{keys[count]=k;labels[count]=l;count++;}while(0)
     if(footer_page==CATALOG){
-        HINT("L","Попередній");HINT("R","Наступний");
-        HINT("X","Пошук");HINT("-","Налаштування");HINT("A","Відкрити");
-        HINT("B",expanded_catalog?"Згорнути":"Назад");
+        HINT("L","Розділ");HINT("R","Розділ");
+        HINT("X","Пошук");HINT("−","Меню");HINT("A","Відкрити");
+        if(expanded_catalog)HINT("B","Згорнути");
+        else if(ui_category!=0)HINT("B","Головна");
+    }else if(footer_page==DETAILS){
+        HINT("X","Обране");HINT("Y","Переглянуто");
+        HINT("A","Джерела");HINT("B","Назад");
     }else if(footer_page==SETTINGS){
         HINT("↑↓","Пункт");HINT("A","Змінити");HINT("B","Закрити");
     }else if(footer_page==TRACK_PICKER){
         HINT("↑↓","Доріжка");HINT("A","Застосувати");HINT("B","Назад");
     }else if(footer_page==VIDEO_SETTINGS){
         HINT("↑↓","Параметр");HINT("←→","Змінити");HINT("B","Назад");
+    }else if(footer_page==SEASONS){
+        HINT("↑↓","Сезон");HINT("A","Серії");HINT("B","Назад");
+    }else if(footer_page==EPISODES){
+        HINT("↑↓","Серія");HINT("A","Дивитися");HINT("B","Назад");
     }else{
         HINT("↑↓","Вибір");HINT("A","Відкрити");HINT("B","Назад");
     }
 #undef HINT
-    int start=count>=6?170:270;
-    int step=count>=6?178:235;
+    int widths[6]={0},total=0;
     for(int i=0;i<count;i++){
-        int x=start+i*step;
-        box_alpha(p,x,685,36,26,ar,ag,ab,1.f,10);
-        text_color(p,keys[i],x+5,681,31,.10f,.11f,.13f);
-        text_color(p,labels[i],x+43,681,step-48,ar,ag,ab);
+        int badge_width=measure(p,keys[i],p->font_small)+12;
+        if(badge_width<30)badge_width=30;
+        widths[i]=badge_width+8+measure(p,labels[i],p->font_small)+20;
+        total+=widths[i];
     }
-    /* Errors stay readable without replacing the controller legend. */
+    total+=(count-1)*12;
+    int x=1244-total;
+    if(x<204)x=204;
+    for(int i=0;i<count;i++){
+        int badge_width=measure(p,keys[i],p->font_small)+12;
+        if(badge_width<30)badge_width=30;
+        box_alpha(p,x,681,badge_width,28,ar,ag,ab,1.f,9);
+        text_center(p,keys[i],x,682,badge_width,p->font_small,.09f,.11f,.13f);
+        text_font(p,labels[i],x+badge_width+8,681,widths[i]-badge_width-8,
+                  p->font_small,ar,ag,ab);
+        x+=widths[i]+12;
+    }
+    /* Notification occupies its own safe zone, never the last selectable row. */
     if(message && *message && strncmp(message,"A:",2) &&
        strncmp(message,"B:",2) && strncmp(message,"Вліво",10)){
-        box_alpha(p,25,620,1230,38,.10f,.13f,.17f,.96f,8);
-        text(p,message,42,621,1195);
+        box_alpha(p,UI_EDGE,617,1216,43,.11f,.16f,.19f,.98f,11);
+        text_small(p,message,50,626,1170);
     }
 }
 static void poster(Paint *p,const Movie *movie,int x,int y,int width,int height,int *budget) {
@@ -323,184 +424,178 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
     glViewport(0,0,1280,720);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
-    box(p,0,0,1280,720,.035f,.044f,.068f);
-    box_alpha(p,0,0,1280,5,ui_accent_alt?.18f:.81f,
-              ui_accent_alt?.72f:.64f,ui_accent_alt?.86f:.37f,1.f,0);
-    footer_position=page==CATALOG?chosen+1:0;
-    footer_total=page==CATALOG?n:0;
+    box(p,0,0,1280,720,.034f,.042f,.054f);
+    footer_position=page==CATALOG?(n?chosen+1:0):page==SOURCES?(sn?source+1:0):
+                    page==EPISODES?(episode_count?selected_episode+1:0):
+                    page==SEASONS?(season_count?selected_season+1:0):0;
+    footer_total=page==CATALOG?n:page==SOURCES?sn:page==SEASONS?season_count:
+                 page==EPISODES && selected_season<season_count?
+                    episodes_in_season(season_ids[selected_season]):0;
     footer_page=page;
     int poster_budget=1;
-    if (page==CATALOG || page==SETTINGS) {
-        box_alpha(p,0,0,1280,78,.052f,.058f,.070f,.99f,0);
-        headline(p,"UAPlay",25,15,160);
+    if (page==CATALOG) {
+        box_alpha(p,0,0,1280,80,.059f,.070f,.081f,1.f,0);
+        headline(p,"UAPlay",32,18,175);
         const char *tabs[]={"Головна","Серіали","Фільми","Моє"};
         for(int i=0;i<4;i++){
-            int x=225+i*131;
-            if((i==0 && ui_category!=1 && ui_category<11) || (i==1 && ui_category==1) ||
-               (i==2 && ui_category==0) || (i==3 && ui_category>=11))
-                box_alpha(p,x-11,15,125,46,.18f,.21f,.25f,1.f,22);
-            text(p,tabs[i],x,25,116);
+            int x=229+i*131;
+            int active=(i==0 && ui_category==0) ||
+                       (i==1 && ui_category==1) || (i==2 && ui_category>=2 && ui_category<11) ||
+                       (i==3 && ui_category>=11);
+            if(active)box_alpha(p,x-12,19,124,43,.19f,.24f,.28f,1.f,16);
+            text_small(p,tabs[i],x,27,114);
         }
-        box_alpha(p,764,16,282,49,.15f,.17f,.21f,1.f,17);
-        /* Draw the search glyph in geometry: the Switch font lacks U+2315. */
-        box_alpha(p,784,25,25,25,.91f,.93f,.96f,1.f,13);
-        box_alpha(p,789,30,15,15,.15f,.17f,.21f,1.f,8);
-        box_alpha(p,806,47,6,6,.91f,.93f,.96f,1.f,2);
-        box_alpha(p,810,51,6,6,.91f,.93f,.96f,1.f,2);
-        text(p,"Пошук",828,25,175);
-        box_alpha(p,1060,16,56,49,.15f,.17f,.21f,1.f,17);
-        text(p,"⚙",1073,23,44);
+        /* Search is a real touch target, not a missing Unicode glyph. */
+        box_alpha(p,767,17,277,47,.13f,.16f,.19f,1.f,15);
+        box_alpha(p,787,27,22,22,.91f,.93f,.96f,1.f,11);
+        box_alpha(p,791,31,14,14,.13f,.16f,.19f,1.f,7);
+        box_alpha(p,805,44,11,5,.91f,.93f,.96f,1.f,2);
+        text_small(p,"Пошук",831,27,177);
+        box_alpha(p,1058,17,53,47,.13f,.16f,.19f,1.f,15);
+        gear_icon(p,1085,40,.13f,.16f,.19f);
         time_t now=time(NULL);
         struct tm *local=localtime(&now);
         char clock_label[32]="--:--";
         if(local)strftime(clock_label,sizeof(clock_label),"%H:%M",local);
-        text(p,clock_label,1154,24,104);
-        if(expanded_catalog && page==CATALOG){
-            headline(p,heading,32,90,850);
-            box_alpha(p,1115,94,132,46,.15f,.18f,.22f,1.f,22);
-            text(p,"‹  Назад",1130,102,106);
+        text_small(p,clock_label,1154,29,105);
+        if(expanded_catalog){
+            headline(p,heading,UI_EDGE,97,960);
+            button(p,"‹  Назад",1106,98,142,44,0);
             int start=chosen/12*12;
             for(int i=start;i<n && i<start+12;i++){
-                int k=i-start,x=44+k%6*201,y=150+k/6*244;
-                if(i==chosen)box_alpha(p,x-5,y-5,175,246,.92f,.93f,.95f,1.f,17);
-                poster(p,&movies[i],x,y,165,236,&poster_budget);
+                int k=i-start,x=54+k%6*201,y=151+k/6*256;
+                if(i==chosen)selection_frame(p,x,y,135,200);
+                poster(p,&movies[i],x,y,135,200,&poster_budget);
+                card_title(p,movies[i].title,x,y+204,171);
             }
         }else{
-            int active=chosen<n?chosen:0;
-            box_alpha(p,27,91,1226,243,.085f,.103f,.13f,1.f,23);
+            int active=chosen>=0 && chosen<n?chosen:0;
+            box_alpha(p,UI_EDGE,92,1216,222,.09f,.11f,.14f,1.f,22);
             if(n){
-                poster(p,&movies[active],1039,97,169,231,&poster_budget);
-                headline(p,movies[active].title,57,109,875);
+                poster(p,&movies[active],1080,102,135,202,&poster_budget);
+                headline(p,movies[active].title,61,106,967);
                 char tag[110];
                 snprintf(tag,sizeof(tag),"%s  ·  %s  ·  TMDB",movies[active].year,
                          movies[active].series?"Серіал":"Фільм");
-                text_color(p,tag,59,158,640,.72f,.75f,.79f);
-                summary(p,movies[active].overview,58,199,890);
+                text_muted(p,tag,63,159,890);
+                wrapped(p,movies[active].overview,63,198,949,2,27,
+                        p->font_small,.74f,.79f,.84f);
+            }else{
+                headline(p,"Не знайдено матеріалів",63,121,900);
+                text_muted(p,"Спробуйте інший розділ або пошуковий запит",63,185,920);
             }
-            box_alpha(p,56,291,175,39,.88f,.89f,.91f,1.f,17);
-            text_color(p,"▶  Дивитися",71,294,152,.09f,.10f,.12f);
-            box_alpha(p,245,291,179,39,.25f,.27f,.31f,1.f,17);
-            text(p,"＋  Моє",272,294,137);
-            headline(p,heading,32,345,920);
-            box_alpha(p,1103,346,146,43,.15f,.18f,.22f,1.f,21);
-            text(p,"Усі  ›",1137,353,95);
+            button(p,"▶  Дивитися",62,264,180,39,1);
+            button(p,"+  До списку",254,264,189,39,0);
+            text(p,heading,UI_EDGE,336,930);
+            button(p,"Усі  ›",1110,329,138,42,0);
             int start=chosen/6*6;
             for(int i=start;i<n && i<start+6;i++){
-                int k=i-start,x=44+k*201,y=403;
-                if(i==chosen)box_alpha(p,x-5,y-5,175,246,.92f,.93f,.95f,1.f,17);
-                poster(p,&movies[i],x,y,165,236,&poster_budget);
+                int k=i-start,x=53+k*201,y=389;
+                if(i==chosen)selection_frame(p,x,y,150,221);
+                poster(p,&movies[i],x,y,150,221,&poster_budget);
+                card_title(p,movies[i].title,x,y+224,164);
             }
         }
-        if(page==SETTINGS){
-            box_alpha(p,0,0,1280,720,.055f,.063f,.076f,1.f,0);
-            headline(p,"Налаштування UAPlay",45,35,950);
-            const char *items[]={"Інтерфейс","Каталог","Плеєр","Джерела"};
-            for(int i=0;i<4;i++){
-                int y=141+i*87;
-                box_alpha(p,45,y,441,68,i==settings_selected?.30f:.12f,
-                          i==settings_selected?.34f:.14f,
-                          i==settings_selected?.39f:.18f,.99f,13);
-                text(p,items[i],70,y+18,385);
-            }
-            char description[240];
-            if(settings_selected==0)snprintf(description,sizeof(description),"Акцент: %s",ui_accent_alt?"Блакитний":"Золотистий");
-            else if(settings_selected==1)snprintf(description,sizeof(description),"Поточний розділ: %s",heading);
-            else if(settings_selected==2)snprintf(description,sizeof(description),"Швидкість: %.2f · гучність: %.0f",video_options[0],video_options[1]);
-            else snprintf(description,sizeof(description),"Порядок: %s",source_mode==0?"Усі":source_mode==1?"UAFlix спочатку":"UASerials спочатку");
-            box_alpha(p,518,141,720,485,.105f,.12f,.15f,1.f,19);
-            headline(p,items[settings_selected],555,178,635);
-            text(p,description,555,254,640);
-            const char *help[]={"Перемикання кольору виділення у всьому застосунку.",
-                "Виберіть розділ фільмів і серіалів.",
-                "Швидкість, гучність, якість та параметри субтитрів.",
-                "Яке джерело показувати першим у списку."};
-            summary(p,help[settings_selected],557,314,620);
-            box_alpha(p,555,534,239,65,.88f,.89f,.91f,1.f,15);
-            text_color(p,"Змінити",577,552,194,.09f,.10f,.12f);
+        footer(p,status);
+    } else if(page==SETTINGS){
+        screen_header(p,"Налаштування","UAPlay");
+        const char *items[]={"Інтерфейс","Каталог","Плеєр","Джерела"};
+        for(int i=0;i<4;i++){
+            int y=136+i*88;
+            box_alpha(p,32,y,417,72,i==settings_selected?.20f:.09f,
+                      i==settings_selected?.29f:.11f,
+                      i==settings_selected?.37f:.14f,1.f,16);
+            if(i==settings_selected){float r,g,b;accent(&r,&g,&b);
+                box_alpha(p,32,y+15,5,42,r,g,b,1.f,2);}
+            text(p,items[i],55,y+17,372);
         }
-        footer(p,*status?status:"A: Деталі   X: Пошук   L/R: Розділи   -: Меню");
+        box_alpha(p,475,136,773,480,.10f,.12f,.15f,1.f,20);
+        headline(p,items[settings_selected],513,174,685);
+        char description[240];
+        if(settings_selected==0)snprintf(description,sizeof(description),"Акцент: %s",ui_accent_alt?"Блакитний":"Золотистий");
+        else if(settings_selected==1)snprintf(description,sizeof(description),"Поточний розділ: %s",heading);
+        else if(settings_selected==2)snprintf(description,sizeof(description),"Швидкість: %.2f · гучність: %.0f",video_options[0],video_options[1]);
+        else snprintf(description,sizeof(description),"Пріоритет: %s",source_mode==0?"Усі джерела":source_mode==1?"UAFlix":"UASerials");
+        text(p,description,516,255,682);
+        const char *help[]={"Змінює колір виділення на всіх екранах.",
+            "Перемикає каталог на наступний розділ.",
+            "Налаштуйте відео, гучність та субтитри.",
+            "Оберіть порядок відображення джерел відео."};
+        wrapped(p,help[settings_selected],517,315,675,3,29,p->font_small,.73f,.78f,.84f);
+        button(p,settings_selected==2?"Відкрити параметри":"Змінити",515,537,258,55,1);
+        footer(p,status);
     } else if (page==DETAILS) {
-        box_alpha(p,0,0,1280,80,.052f,.058f,.070f,1.f,0);
-        text(p,"‹  До каталогу",37,28,250);
-        box_alpha(p,28,101,1225,510,.09f,.104f,.126f,1.f,23);
-        poster(p,&movies[chosen],964,112,241,364,&poster_budget);
-        headline(p,movies[chosen].title,60,143,850);
-        text_color(p,movies[chosen].original,64,208,835,.67f,.72f,.79f);
+        screen_header(p,movies[chosen].series?"Про серіал":"Про фільм","UAPlay");
+        box_alpha(p,32,109,1216,507,.09f,.11f,.14f,1.f,21);
+        poster(p,&movies[chosen],978,121,229,344,&poster_budget);
+        headline(p,movies[chosen].title,65,138,872);
+        text_muted(p,movies[chosen].original,67,198,859);
         char tag[100];snprintf(tag,sizeof(tag),"%s    ·    %s",movies[chosen].year,
                                 movies[chosen].series?"Серіал":"Фільм");
-        text(p,tag,65,267,680);
-        summary(p,movies[chosen].overview,63,330,850);
-        box_alpha(p,61,505,245,66,.91f,.92f,.94f,1.f,17);
-        text_color(p,"▶  Дивитися",79,523,210,.09f,.10f,.12f);
-        box_alpha(p,328,505,250,66,.25f,.28f,.33f,1.f,17);
-        text(p,library_favorite(&movies[chosen])?"✓  В обраному":"＋  Мій список",349,523,210);
-        footer(p,*status?status:"A: Джерела відео   X: Обране   Y: Переглянуто   B: Назад");
+        text(p,tag,66,259,835);
+        summary(p,movies[chosen].overview,66,313,858);
+        button(p,"▶  Дивитися",65,526,238,58,1);
+        button(p,library_favorite(&movies[chosen])?"✓  В обраному":"+  Мій список",
+               320,526,255,58,0);
+        footer(p,status);
     } else if (page==SOURCES) {
-        text(p,"‹",18,45,42);
-        text(p,"UAKino / UAFresh — джерела",40,45,1100);
-        int first=source/10*10;
-        for (int i=first;i<sn && i<first+10;i++) {
-            int y=110+(i-first)*51;
-            box(p,35,y,1200,46,i==source?.22f:.11f,i==source?.42f:.14f,i==source?.51f:.19f);
-            text(p,sources[i].title,50,y+8,1160);
+        screen_header(p,"Джерела відео","UAFlix · UASerials · UAKino");
+        int first=source/UI_ROWS*UI_ROWS;
+        for(int i=first;i<sn && i<first+UI_ROWS;i++){
+            list_row(p,sources[i].title,UI_ROW_Y+(i-first)*UI_ROW_STEP,i==source,NULL);
         }
-        footer(p,*status?status:"A: Відкрити відео    B: Назад");
+        footer(p,status);
     } else if (page==SEASONS) {
-        text(p,"‹",18,45,42);
-        text(p,"UAPLAY — вибір сезону",42,45,1120);
-        for(int i=0;i<season_count && i<10;i++) {
-            int y=125+i*48;
-            box(p,40,y,1180,43,i==selected_season?.22f:.10f,
-                i==selected_season?.40f:.14f,i==selected_season?.49f:.19f);
-            char label[128];
-            snprintf(label,sizeof(label),"Сезон %d  ·  %d серій",season_ids[i],
-                     episodes_in_season(season_ids[i]));
-            text(p,label,57,y+5,1090);
+        screen_header(p,"Вибір сезону","Оберіть сезон");
+        int first=selected_season/UI_ROWS*UI_ROWS;
+        for(int i=first;i<season_count && i<first+UI_ROWS;i++){
+            char title[96],detail[48];
+            snprintf(title,sizeof(title),"Сезон %d",season_ids[i]);
+            snprintf(detail,sizeof(detail),"%d серій",episodes_in_season(season_ids[i]));
+            list_row(p,title,UI_ROW_Y+(i-first)*UI_ROW_STEP,i==selected_season,detail);
         }
-        footer(p,*status?status:"A: Серії сезону   B: Повернутися до джерел");
+        footer(p,status);
     } else if (page==EPISODES) {
-        text(p,"‹",18,45,42);
-        char heading[128];
-        snprintf(heading,sizeof(heading),"UAPLAY — сезон %d: вибір серії",season_ids[selected_season]);
-        text(p,heading,42,45,1130);
-        int idx=0,first=selected_episode/9*9;
+        char header[96];
+        snprintf(header,sizeof(header),"Сезон %d · Серії",season_ids[selected_season]);
+        screen_header(p,header,"Оберіть серію");
+        int idx=0,first=selected_episode/UI_ROWS*UI_ROWS;
         for(int i=0;i<episode_count;i++) {
             if(episodes[i].season!=season_ids[selected_season])continue;
-            if(idx>=first && idx<first+9) {
-                int y=118+(idx-first)*51;
-                box(p,40,y,1190,46,idx==selected_episode?.22f:.10f,
-                    idx==selected_episode?.40f:.14f,idx==selected_episode?.49f:.19f);
-                text(p,episodes[i].title,56,y+7,1130);
+            if(idx>=first && idx<first+UI_ROWS) {
+                list_row(p,episodes[i].title,UI_ROW_Y+(idx-first)*UI_ROW_STEP,
+                         idx==selected_episode,NULL);
             }
             idx++;
         }
-        footer(p,*status?status:"A: Дивитися серію   B: Вибір сезону");
+        footer(p,status);
     } else if (page==TRACK_PICKER) {
-        text(p,subtitle_picker?"UAPLAY — субтитри":"UAPLAY — аудіодоріжки",45,50,1110);
-        int first=selected_track/10*10;
-        for(int i=first;i<track_count && i<first+10;i++) {
-            int y=125+(i-first)*50;
-            box(p,38,y,1190,44,i==selected_track?.22f:.10f,
-                i==selected_track?.40f:.14f,i==selected_track?.49f:.19f);
-            text(p,tracks[i].label,55,y+7,1140);
+        screen_header(p,subtitle_picker?"Субтитри":"Аудіодоріжки","Оберіть доріжку");
+        int first=selected_track/UI_ROWS*UI_ROWS;
+        for(int i=first;i<track_count && i<first+UI_ROWS;i++) {
+            list_row(p,tracks[i].label,UI_ROW_Y+(i-first)*UI_ROW_STEP,
+                     i==selected_track,tracks[i].selected?"Активна":NULL);
         }
-        if (!track_count) text(p,"Немає доступних доріжок",60,200,1050);
-        footer(p,"A: Вибрати   B: Назад до відео");
+        if (!track_count) text_muted(p,"У цьому відео немає доступних доріжок",60,200,1100);
+        footer(p,status);
     } else if (page==VIDEO_SETTINGS) {
-        text(p,"UAPLAY — параметри відео",45,50,1140);
+        screen_header(p,"Налаштування відео","Плеєр");
         for(int i=0;i<VIDEO_OPTION_COUNT;i++) {
-            int y=130+i*70;
-            box(p,40,y,1180,62,i==selected_video_option?.22f:.10f,
-                i==selected_video_option?.40f:.14f,i==selected_video_option?.49f:.19f);
-            char label[256];
-            if(i==6)snprintf(label,sizeof(label),"%s: %s",video_titles[i],
-                              hls_labels[(int)video_options[i]]);
-            else snprintf(label,sizeof(label),"%s: %.2f",video_titles[i],video_options[i]);
-            text(p,label,56,y+16,1130);
+            int y=132+i*68;
+            box_alpha(p,UI_EDGE,y,1216,60,i==selected_video_option?.20f:.09f,
+                      i==selected_video_option?.30f:.11f,
+                      i==selected_video_option?.38f:.14f,1.f,13);
+            text(p,video_titles[i],55,y+15,830);
+            char value[48];
+            if(i==6)snprintf(value,sizeof(value),"%s",hls_labels[(int)video_options[i]]);
+            else if(i==0 || i==5)snprintf(value,sizeof(value),"%.2f",video_options[i]);
+            else snprintf(value,sizeof(value),"%.0f",video_options[i]);
+            text_center(p,value,963,y+15,240,p->font,.95f,.96f,.98f);
+            if(i==selected_video_option){float r,g,b;accent(&r,&g,&b);
+                box_alpha(p,UI_EDGE,y+12,4,36,r,g,b,1.f,2);}
         }
-        text_color(p,"Якість HLS залежить від доступних варіантів відеопотоку.",
-                   50,629,1160,.67f,.74f,.81f);
-        footer(p,"Вліво / вправо: змінити параметр   B: Назад");
+        text_tiny(p,"Якість HLS визначається потоками, які надає джерело.",50,626,1150);
+        footer(p,NULL);
     }
 }
 static void command(mpv_handle *player,const char *verb,const char *arg) {
@@ -527,31 +622,39 @@ static void draw_player_controls(Paint *p,mpv_handle *player) {
     glViewport(0,0,1280,720);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
-    box_alpha(p,29,25,168,51,.05f,.07f,.10f,.84f,14);
-    text(p,"‹  Назад",47,33,141);
-    box_alpha(p,0,530,1280,190,.025f,.028f,.037f,.91f,0);
-    box_alpha(p,112,582,1056,6,.30f,.32f,.37f,1.f,3);
-    int filled=duration>0?(int)(1056.0*pos/duration):0;
-    if(filled<0)filled=0;if(filled>1056)filled=1056;
-    if(filled>0)box_alpha(p,112,582,filled,6,.93f,.94f,.96f,1.f,3);
-    box_alpha(p,112+filled-8,575,16,20,.95f,.95f,.97f,1.f,8);
+    box_alpha(p,32,27,141,49,.045f,.063f,.079f,.92f,14);
+    text_center(p,"‹  Назад",32,37,141,p->font_small,.96f,.97f,.99f);
+    box_alpha(p,0,507,1280,213,.027f,.034f,.044f,.93f,0);
+    text_tiny(p,"UAPlay  ·  Відтворення",35,519,430);
+    box_alpha(p,126,566,1028,6,.34f,.39f,.44f,1.f,3);
+    int filled=duration>0?(int)(1028.0*pos/duration):0;
+    if(filled<0)filled=0;if(filled>1028)filled=1028;
+    if(filled>0)box_alpha(p,126,566,filled,6,.92f,.94f,.97f,1.f,3);
+    box_alpha(p,126+filled-8,559,16,20,.95f,.96f,.98f,1.f,8);
     char left[24],right[24];
     snprintf(left,sizeof(left),"%02d:%02d",(int)pos/60,(int)pos%60);
     snprintf(right,sizeof(right),"%02d:%02d",(int)duration/60,(int)duration%60);
-    text(p,left,32,570,88);
-    text(p,right,1177,570,90);
-    box_alpha(p,89,675,157,5,.35f,.42f,.52f,1.f,3);
+    text_small(p,left,35,552,85);
+    text_small(p,right,1167,552,88);
+    text_tiny(p,"Гучність",67,606,190);
+    box_alpha(p,70,649,178,5,.35f,.42f,.52f,1.f,3);
     int volume=(int)video_options[1];
     if(volume<0)volume=0;if(volume>130)volume=130;
-    if(volume>0)box_alpha(p,89,675,volume*157/130,5,.92f,.94f,.97f,1.f,3);
-    box_alpha(p,89+volume*157/130-7,667,14,20,.96f,.97f,.98f,1.f,7);
-    const int centers[]={415,540,665,855,960,1075};
-    const char *icons[]={"−10",paused?"▶":"Ⅱ","+10","⚙","Аудіо","Субт."};
+    if(volume>0)box_alpha(p,70,649,volume*178/130,5,.92f,.94f,.97f,1.f,3);
+    box_alpha(p,70+volume*178/130-7,641,14,20,.96f,.97f,.98f,1.f,7);
+    char volume_label[24];snprintf(volume_label,sizeof(volume_label),"%d%%",volume*100/130);
+    text_tiny(p,volume_label,122,672,100);
+    const int centers[]={354,476,598,832,954,1076};
+    const char *icons[]={"−10",paused?"▶":"Ⅱ","+10","","♪","CC"};
+    const char *labels[]={"10 с назад","Пауза / пуск","10 с вперед",
+                          "Параметри","Аудіо","Субтитри"};
     for(int i=0;i<6;i++){
-        int w=i<3?86:92;
-        box_alpha(p,centers[i]-w/2,629,w,56,.16f,.19f,.24f,.91f,15);
-        int left_offset=i==0||i==2?27:i==4||i==5?35:13;
-        text(p,icons[i],centers[i]-left_offset,643,w-5);
+        const int w=76;
+        box_alpha(p,centers[i]-w/2,610,w,58,.18f,.22f,.26f,.94f,15);
+        text_center(p,icons[i],centers[i]-w/2,624,w,
+                    i==0||i==2?p->font_small:p->font,.98f,.98f,.99f);
+        if(i==3)gear_icon(p,centers[i],639,.18f,.22f,.26f);
+        text_center(p,labels[i],centers[i]-72,678,144,p->font_tiny,.78f,.84f,.89f);
     }
 }
 static int native_button(int button) {
@@ -700,37 +803,37 @@ int main(void) {
                     int was_visible=SDL_GetTicks()<controls_until;
                     controls_until=SDL_GetTicks()+3000;
                     if(!was_visible)continue;
-                    if(ty<105 && tx<310)key=SDL_CONTROLLER_BUTTON_B;
-                    else if(ty>=561 && ty<=613 && tx>=103 && tx<=1176){
+                    if(ty>=24 && ty<=83 && tx>=27 && tx<=180)key=SDL_CONTROLLER_BUTTON_B;
+                    else if(ty>=547 && ty<=594 && tx>=118 && tx<=1161){
                         double duration=0;
                         if(player && mpv_get_property(player,"duration",MPV_FORMAT_DOUBLE,&duration)>=0
                            && duration>0){
-                            double to=duration*(tx-112)/1056.0;
+                            double to=duration*(tx-126)/1028.0;
                             if(to<0)to=0;if(to>duration)to=duration;
                             char at[48];snprintf(at,sizeof(at),"%.2f",to);
                             const char *args[]={"seek",at,"absolute",NULL};
                             mpv_command_async(player,0,args);
                         }
                         continue;
-                    }else if(ty>=625 && ty<702){
-                        if(tx>=75 && tx<260 && ty>=659){
-                            double volume=(tx-89)*130.0/157.0;
+                    }else if(ty>=603 && ty<703){
+                        if(tx>=60 && tx<259 && ty>=632 && ty<674){
+                            double volume=(tx-70)*130.0/178.0;
                             if(volume<0)volume=0;if(volume>130)volume=130;
                             video_options[1]=volume;
                             playback_set_value(player,"volume",volume);
                             continue;
                         }
-                        if(tx>=372 && tx<458)key=SDL_CONTROLLER_BUTTON_DPAD_LEFT;
-                        else if(tx>=497 && tx<583)key=SDL_CONTROLLER_BUTTON_A;
-                        else if(tx>=622 && tx<708)key=SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
-                        else if(tx>=809 && tx<901)key=SDL_CONTROLLER_BUTTON_BACK;
-                        else if(tx>=914 && tx<1006)key=SDL_CONTROLLER_BUTTON_Y;
-                        else if(tx>=1029 && tx<1121)key=SDL_CONTROLLER_BUTTON_X;
+                        if(tx>=307 && tx<401)key=SDL_CONTROLLER_BUTTON_DPAD_LEFT;
+                        else if(tx>=429 && tx<523)key=SDL_CONTROLLER_BUTTON_A;
+                        else if(tx>=551 && tx<645)key=SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
+                        else if(tx>=785 && tx<879)key=SDL_CONTROLLER_BUTTON_BACK;
+                        else if(tx>=907 && tx<1001)key=SDL_CONTROLLER_BUTTON_Y;
+                        else if(tx>=1029 && tx<1123)key=SDL_CONTROLLER_BUTTON_X;
                     }else continue;
                 }else if(page==CATALOG){
-                    if(ty<78 && tx>=225 && tx<748){
-                        int tab=(tx-225)/131;
-                        int next=tab==1?1:tab==3?11:0;
+                    if(ty<78 && tx>=217 && tx<742){
+                        int tab=(tx-217)/131;
+                        int next=tab==1?1:tab==2?2:tab==3?11:0;
                         if(next!=category){
                             category=next;query[0]=message[0]=0;
                             n=load_category(category,query,movies,message,sizeof(message));
@@ -738,69 +841,79 @@ int main(void) {
                         }
                         continue;
                     }
-                    if(ty<78 && tx>=764 && tx<1046)key=SDL_CONTROLLER_BUTTON_X;
-                    else if(ty<78 && tx>=1060 && tx<1118)key=SDL_CONTROLLER_BUTTON_BACK;
+                    if(ty<78 && tx>=767 && tx<1044)key=SDL_CONTROLLER_BUTTON_X;
+                    else if(ty<78 && tx>=1058 && tx<1111)key=SDL_CONTROLLER_BUTTON_BACK;
                     else if(expanded_catalog){
-                        if(ty>=85 && ty<144 && tx>=1090){expanded_catalog=0;chosen=0;continue;}
-                        if(ty>=150 && ty<635 && tx>=44){
-                            int col=(tx-44)/201,row=(ty-150)/244;
+                        if(ty>=95 && ty<145 && tx>=1090){expanded_catalog=0;chosen=0;continue;}
+                        if(ty>=151 && ty<665 && tx>=54){
+                            int col=(tx-54)/201,row=(ty-151)/256;
                             int index=chosen/12*12+row*6+col;
-                            if(col<6 && row<2 && index<n){chosen=index;key=SDL_CONTROLLER_BUTTON_A;}
+                            if(col<6 && row<2 && index<n && (tx-54)%201<171){
+                                chosen=index;key=SDL_CONTROLLER_BUTTON_A;
+                            }
                         }
                     }else{
-                        if(ty>=340 && ty<394 && tx>=1080){expanded_catalog=1;chosen=0;continue;}
-                        if(ty>=291 && ty<335 && tx>=245 && tx<424 && n){
+                        if(ty>=326 && ty<375 && tx>=1095){expanded_catalog=1;chosen=0;continue;}
+                        if(ty>=260 && ty<307 && tx>=254 && tx<444 && n){
                             library_toggle_favorite(&movies[chosen]);continue;
                         }
-                        if(ty>=291 && ty<335 && tx>=56 && tx<231 && n)
+                        if(ty>=260 && ty<307 && tx>=62 && tx<242 && n)
                             key=SDL_CONTROLLER_BUTTON_A;
-                        else if(ty>=403 && ty<640 && tx>=44){
-                            int col=(tx-44)/201,index=chosen/6*6+col;
-                            if(col<6 && index<n){chosen=index;key=SDL_CONTROLLER_BUTTON_A;}
+                        else if(ty>=389 && ty<661 && tx>=53){
+                            int col=(tx-53)/201,index=chosen/6*6+col;
+                            if(col<6 && index<n && (tx-53)%201<164){
+                                chosen=index;key=SDL_CONTROLLER_BUTTON_A;
+                            }
                         }
                     }
                 }else if(page==SOURCES){
-                    int slot=(ty-110)/51,new_source=source/10*10+slot;
-                    if(ty>=110 && slot>=0 && slot<10 && new_source<sn){
+                    int slot=(ty-UI_ROW_Y)/UI_ROW_STEP,new_source=source/UI_ROWS*UI_ROWS+slot;
+                    if(ty>=UI_ROW_Y && (ty-UI_ROW_Y)%UI_ROW_STEP<UI_ROW_HEIGHT &&
+                       slot>=0 && slot<UI_ROWS && new_source<sn){
                         source=new_source;key=SDL_CONTROLLER_BUTTON_A;
-                    }else if(ty<100)key=SDL_CONTROLLER_BUTTON_B;
+                    }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==SEASONS){
-                    int slot=(ty-125)/48;
-                    if(ty>=125 && slot>=0 && slot<season_count && slot<10){
-                        selected_season=slot;key=SDL_CONTROLLER_BUTTON_A;
-                    }else if(ty<100)key=SDL_CONTROLLER_BUTTON_B;
+                    int slot=(ty-UI_ROW_Y)/UI_ROW_STEP;
+                    int next=selected_season/UI_ROWS*UI_ROWS+slot;
+                    if(ty>=UI_ROW_Y && (ty-UI_ROW_Y)%UI_ROW_STEP<UI_ROW_HEIGHT &&
+                       slot>=0 && slot<UI_ROWS && next<season_count){
+                        selected_season=next;key=SDL_CONTROLLER_BUTTON_A;
+                    }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==EPISODES){
-                    int slot=(ty-118)/51;
-                    int episode=selected_episode/9*9+slot;
-                    if(ty>=118 && slot>=0 && slot<9 && selected_season<season_count &&
+                    int slot=(ty-UI_ROW_Y)/UI_ROW_STEP;
+                    int episode=selected_episode/UI_ROWS*UI_ROWS+slot;
+                    if(ty>=UI_ROW_Y && (ty-UI_ROW_Y)%UI_ROW_STEP<UI_ROW_HEIGHT &&
+                       slot>=0 && slot<UI_ROWS && selected_season<season_count &&
                        episode<episodes_in_season(season_ids[selected_season])){
                         selected_episode=episode;key=SDL_CONTROLLER_BUTTON_A;
-                    }else if(ty<100)key=SDL_CONTROLLER_BUTTON_B;
+                    }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==DETAILS){
-                    if(ty<85 && tx<310)key=SDL_CONTROLLER_BUTTON_B;
-                    else if(ty>=505 && ty<574 && tx>=328 && tx<579)
+                    if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
+                    else if(ty>=526 && ty<585 && tx>=320 && tx<575)
                         key=SDL_CONTROLLER_BUTTON_X;
-                    else if(ty>=505 && ty<574 && tx>=61 && tx<308)
+                    else if(ty>=526 && ty<585 && tx>=65 && tx<303)
                         key=SDL_CONTROLLER_BUTTON_A;
-                    else if(ty>=665)key=SDL_CONTROLLER_BUTTON_B;
+                    else if(ty>=UI_FOOTER_TOP)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==TRACK_PICKER){
-                    int slot=(ty-125)/50,new_track=selected_track/10*10+slot;
-                    if(ty>=125 && slot>=0 && slot<10 && new_track<track_count){
+                    int slot=(ty-UI_ROW_Y)/UI_ROW_STEP;
+                    int new_track=selected_track/UI_ROWS*UI_ROWS+slot;
+                    if(ty>=UI_ROW_Y && (ty-UI_ROW_Y)%UI_ROW_STEP<UI_ROW_HEIGHT &&
+                       slot>=0 && slot<UI_ROWS && new_track<track_count){
                         selected_track=new_track;key=SDL_CONTROLLER_BUTTON_A;
-                    }else if(ty<100)key=SDL_CONTROLLER_BUTTON_B;
+                    }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==VIDEO_SETTINGS){
-                    int slot=(ty-130)/70;
-                    if(ty>=130 && slot>=0 && slot<VIDEO_OPTION_COUNT){
+                    int slot=(ty-132)/68;
+                    if(ty>=132 && (ty-132)%68<60 && slot>=0 && slot<VIDEO_OPTION_COUNT){
                         selected_video_option=slot;
                         key=tx<640?SDL_CONTROLLER_BUTTON_DPAD_LEFT:SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
-                    }else if(ty<100)key=SDL_CONTROLLER_BUTTON_B;
+                    }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==SETTINGS){
-                    if(tx>=45 && tx<488 && ty>=141 && ty<493){
-                        settings_selected=(ty-141)/87;
+                    if(tx>=32 && tx<449 && ty>=136 && ty<472 && (ty-136)%88<72){
+                        settings_selected=(ty-136)/88;
                         if(settings_selected>=4)settings_selected=3;
                         key=SDL_CONTROLLER_BUTTON_A;
-                    }else if(ty>=534 && ty<600 && tx>=555 && tx<795)key=SDL_CONTROLLER_BUTTON_A;
-                    else if(ty<125 || ty>665)key=SDL_CONTROLLER_BUTTON_B;
+                    }else if(ty>=537 && ty<592 && tx>=515 && tx<773)key=SDL_CONTROLLER_BUTTON_A;
+                    else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }
             }
             if(page==PLAYER && key>=0)controls_until=SDL_GetTicks()+3000;
@@ -934,6 +1047,11 @@ int main(void) {
                 }
                 if(key==SDL_CONTROLLER_BUTTON_B && expanded_catalog){
                     expanded_catalog=0;chosen=0;continue;
+                }
+                if(key==SDL_CONTROLLER_BUTTON_B && category!=0){
+                    category=0;query[0]=message[0]=0;
+                    n=load_category(category,query,movies,message,sizeof(message));
+                    chosen=0;continue;
                 }
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && chosen>0)chosen--;
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && chosen<n-1)chosen++;
@@ -1083,7 +1201,14 @@ int main(void) {
     if(player)mpv_terminate_destroy(player);
     if(pad)SDL_GameControllerClose(pad);
     posters_destroy();
-    for(int i=0;i<7;i++)if(paint.scripts[i])TTF_CloseFont(paint.scripts[i]);
+    for(int i=0;i<7;i++){
+        if(paint.scripts[i])TTF_CloseFont(paint.scripts[i]);
+        if(paint.scripts_small[i])TTF_CloseFont(paint.scripts_small[i]);
+        if(paint.scripts_big[i])TTF_CloseFont(paint.scripts_big[i]);
+        if(paint.scripts_tiny[i])TTF_CloseFont(paint.scripts_tiny[i]);
+    }
+    if(paint.font_tiny)TTF_CloseFont(paint.font_tiny);
+    if(paint.font_small)TTF_CloseFont(paint.font_small);
     if(paint.font_big)TTF_CloseFont(paint.font_big);
     TTF_CloseFont(paint.font);TTF_Quit();
     glDeleteTextures(1,&paint.tex);

@@ -22,7 +22,7 @@ static int episode_count,season_ids[64],season_count,selected_season,selected_ep
 static MediaTrack tracks[TRACKS_MAX];
 static int track_count,selected_track,subtitle_picker;
 static int selected_video_option;
-static double video_options[]={1.0,100.0,0.0,0.0,48.0,0.0,2.0};
+static double video_options[]={1.0,100.0,0.0,0.0,48.0,0.0,0.0};
 static const char *video_props[]={"speed","volume","brightness","contrast",
                                   "sub-font-size","sub-delay","hls-bitrate"};
 static const char *video_titles[]={"Швидкість","Гучність","Яскравість","Контраст",
@@ -30,9 +30,10 @@ static const char *video_titles[]={"Швидкість","Гучність","Яс
 static const double video_steps[]={0.25,5,5,5,4,0.25,1};
 static const double video_min[]={0.5,0,-100,-100,20,-10,0};
 static const double video_max[]={2.0,130,100,100,100,10,4};
-static const char *hls_presets[]={"max","min","1000000","2000000","4000000"};
-static const char *hls_labels[]={"Авто / найвища","Економія","До 1 Мбіт/с",
-                                 "До 2 Мбіт/с","До 4 Мбіт/с"};
+/* HLS bitrate ceilings approximate the requested picture height. Exact
+   360/480/720/1080p depends on variant resolutions offered by the source. */
+static const char *hls_presets[]={"max","800000","1500000","3000000","6000000"};
+static const char *hls_labels[]={"Авто","360p","480p","720p","1080p"};
 #define VIDEO_OPTION_COUNT 7
 
 static void rebuild_seasons(void) {
@@ -497,6 +498,8 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             else snprintf(label,sizeof(label),"%s: %.2f",video_titles[i],video_options[i]);
             text(p,label,56,y+16,1130);
         }
+        text_color(p,"Якість HLS залежить від доступних варіантів відеопотоку.",
+                   50,629,1160,.67f,.74f,.81f);
         footer(p,"Вліво / вправо: змінити параметр   B: Назад");
     }
 }
@@ -506,8 +509,8 @@ static void command(mpv_handle *player,const char *verb,const char *arg) {
 }
 static void apply_hls_quality(mpv_handle *player) {
     if(!player)return;
-    const char *args[]={"set","hls-bitrate",hls_presets[(int)video_options[6]],NULL};
-    mpv_command_async(player,0,args);
+    mpv_set_property_string(player,"options/hls-bitrate",
+                            hls_presets[(int)video_options[6]]);
 }
 static void seek(mpv_handle *player,const char *seconds) {
     const char *args[]={"seek",seconds,"relative",NULL};

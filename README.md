@@ -21,7 +21,7 @@ TMDB works out of the box using the public client key from the [official Lampa s
 - Netflix-TV-inspired navigation concept (native UAPlay branding): top-level category tabs, selected-title hero with synopsis/actions, matching poster shelf, full collection browser, full-page settings and title details. No Netflix assets or proprietary UI code are included.
 - Dark full-width video overlay with Back, volume adjustment, timeline scrubbing, pause/play, ±10-second seek, settings, audio and subtitles. The overlay auto-hides after **3 seconds** and reappears when any button is pressed or the video is tapped.
 - Switch touch controls for movie cards, source/season/episode lists, video overlay buttons, and timeline. Touch works with mouse clicks in Eden as well.
-- Playback settings overlay: speed, volume, brightness, contrast, subtitle text size, subtitle timing, and **HLS bitrate preset** (auto/highest, economy, ≤1/2/4 Mbps). Changing bitrate reloads the stream and tries to restore playback position.
+- Playback settings overlay: speed, volume, brightness, contrast, subtitle text size, subtitle timing, and **HLS quality targets** Auto/360p/480p/720p/1080p. mpv selects a stream variant by bitrate ceiling (≈0.8/1.5/3/6 Mbps); the actual video height depends on variants supplied by the provider. Changing the preset reloads the stream and tries to restore playback position.
 - Adds an external WebVTT subtitle track from UAFresh embedded players when the provider supplies one (for example Zetvideo's Ukrainian subtitles).
 - Settings/information screen.
 - **No UAFlix sign-in screen**. Public series episodes are attempted without requiring an account; the earlier custom login keyboard and diagnostic "safe mode" message have been removed from UI.

@@ -9,6 +9,7 @@
 #include <mpv/render_gl.h>
 #include <curl/curl.h>
 #include "catalog.h"
+#include "posters.h"
 
 typedef enum { CATALOG, DETAILS, SOURCES, PLAYER } Page;
 typedef struct {
@@ -100,12 +101,25 @@ static void footer(Paint *p,const char *message) {
     box(p,0,666,1280,54,.12f,.14f,.17f);
     text(p,message,22,675,1230);
 }
+static void poster(Paint *p,const Movie *movie,int x,int y,int width,int height,int *budget) {
+    GLuint image=poster_texture(movie,budget);
+    if(!image) {
+        box(p,x,y,width,height,.15f,.19f,.23f);
+        text(p,"LAMPA",x+15,y+height/2-15,width-30);
+        return;
+    }
+    GLuint previous=p->tex;
+    p->tex=image;
+    box(p,x,y,width,height,1,1,1);
+    p->tex=previous;
+}
 static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                  Source *sources,int sn,int source,const char *heading,const char *status) {
     glViewport(0,0,1280,720);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
     box(p,0,0,1280,720,.055f,.064f,.08f);
+    int poster_budget=1;
     if (page==CATALOG) {
         text(p,"LAMPA NX",28,18,330);
         text(p,heading,28,80,1050);
@@ -113,20 +127,22 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         for (int i=start;i<n && i<start+8;i++) {
             int k=i-start,x=28+k%4*311,y=139+k/4*248;
             box(p,x,y,292,226,i==chosen?.22f:.11f,i==chosen?.42f:.14f,i==chosen?.51f:.19f);
-            text(p,movies[i].title,x+15,y+52,260);
-            text(p,movies[i].original,x+15,y+105,260);
-            text(p,movies[i].year,x+15,y+168,250);
+            poster(p,&movies[i],x+10,y+10,127,206,&poster_budget);
+            text(p,movies[i].title,x+147,y+36,134);
+            text(p,movies[i].original,x+147,y+110,134);
+            text(p,movies[i].year,x+147,y+176,130);
         }
         footer(p,*status?status:"A: Деталі    X: Пошук    Y: Оновити    L/R: Категорія    +: Вихід");
     } else if (page==DETAILS) {
-        text(p,movies[chosen].title,40,70,1180);
-        text(p,movies[chosen].original,40,127,1150);
-        text(p,movies[chosen].year,40,177,300);
+        text(p,movies[chosen].title,340,70,870);
+        text(p,movies[chosen].original,340,127,860);
+        text(p,movies[chosen].year,340,177,300);
+        poster(p,&movies[chosen],40,70,250,390,&poster_budget);
         const char *s=movies[chosen].overview;
         for (int y=245;*s && y<580;y+=40) {
             size_t len=strlen(s);if(len>90){len=90;while(len>20 && s[len]!=' ')len--;}
             char line[128]={0};memcpy(line,s,len);
-            text(p,line,40,y,1170);
+            text(p,line,340,y,900);
             s+=len;while(*s==' ')s++;
         }
         footer(p,*status?status:"A: Шукати на UAKino / UAFresh    B: Назад");
@@ -281,6 +297,7 @@ int main(void) {
     if(render)mpv_render_context_free(render);
     if(player)mpv_terminate_destroy(player);
     if(pad)SDL_GameControllerClose(pad);
+    posters_destroy();
     TTF_CloseFont(paint.font);TTF_Quit();
     glDeleteTextures(1,&paint.tex);
     glDeleteBuffers(1,&paint.vbo);

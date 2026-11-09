@@ -21,6 +21,10 @@ the internet, the application falls back to a bundled snapshot of the three
 catalog categories, so the catalog UI can still be tested. Search and UAKino
 still require a working network connection; an offline snapshot is not live data.
 
+Poster thumbnails are loaded directly from TMDB's image CDN at runtime and cached
+in RAM during the session. They need network access; the offline metadata snapshot
+cannot contain posters. A small placeholder is shown when an image is unavailable.
+
 ## Controls
 
 | Screen | Buttons |
@@ -49,8 +53,9 @@ compatibility is made. Never ship passwords/cookies in source control.
 ## Notes
 
 - TMDB provides **metadata**, not movies or video streams.
-- Images/posters, bookmarks, subtitle/track selection and a full plugin bridge
-  remain to be implemented.
+- Bookmarks, subtitle/track selection and a full plugin bridge remain to be implemented.
+- Uses the TMDB API and image CDN; **This product uses the TMDB API but is not
+  endorsed or certified by TMDB.**
 - Hardware decoding and performance must be verified on an actual Switch.
 - Includes a DejaVu Sans font for Unicode/Ukrainian rendering, derived from the
   DejaVu Fonts project (Bitstream Vera derivative; see its distribution license).

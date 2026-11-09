@@ -15,7 +15,7 @@ ARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -fPIE
 COMMON := -O2 -g -Wall -Wextra -ffunction-sections -fdata-sections $(ARCH)
 CFLAGS := $(COMMON) -D__SWITCH__ -I$(LIBNX)/include -I$(PORTLIBS)/include $(shell pkg-config --cflags sdl2 mpv)
 LDFLAGS := -specs=$(LIBNX)/switch.specs $(ARCH) -Wl,--gc-sections
-LIBS := $(shell pkg-config --libs mpv sdl2) -L$(LIBNX)/lib -lnx -lm
+LIBS := $(shell pkg-config --libs mpv sdl2) -llzma -lzstd -L$(LIBNX)/lib -lnx -lm
 
 .PHONY: all clean
 all: $(TARGET).nro

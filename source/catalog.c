@@ -425,18 +425,19 @@ static const char *find_embed_after(const char *cursor,char *url,int size) {
 }
 
 static int resolve_embedded(const char *html,char *stream,int size,
-                            int depth,char *error,int error_size){
+                            int depth,int *requests_left,char *error,int error_size){
     if(extract_media(html,stream,size))return 1;
     if(depth<=0)return 0;
     const char *next=html;
-    for(int attempt=0;attempt<3;attempt++){
+    for(int attempt=0;attempt<3 && *requests_left>0;attempt++){
         char embedded[1024]={0};
         next=find_embed_after(next,embedded,sizeof(embedded));
         if(!next)break;
+        --*requests_left;
         char *content=fetch_uafresh(embedded,error,error_size);
         if(!content)continue;
         extract_subtitle(content);
-        int found=resolve_embedded(content,stream,size,depth-1,error,error_size);
+        int found=resolve_embedded(content,stream,size,depth-1,requests_left,error,error_size);
         free(content);
         if(found)return 1;
     }
@@ -445,7 +446,7 @@ static int resolve_embedded(const char *html,char *stream,int size,
     if(depth>0){
         const char *hosts[]={"https://zetvideo.net/vod/","https://hdvbua.pro/",
                               "https://ashdi.vip/","https://tortuga."};
-        for(size_t i=0;i<sizeof(hosts)/sizeof(hosts[0]);i++){
+        for(size_t i=0;i<sizeof(hosts)/sizeof(hosts[0]) && *requests_left>0;i++){
             const char *p=strstr(html,hosts[i]);
             if(!p)continue;
             const char *end=p;
@@ -455,6 +456,7 @@ static int resolve_embedded(const char *html,char *stream,int size,
             if(len<15 || len>999)continue;
             char link[1024];memcpy(link,p,len);link[len]=0;
             if(strstr(link,"trailer") || strstr(link,"youtube"))continue;
+            --*requests_left;
             char *content=fetch_uafresh(link,error,error_size);
             if(!content)continue;
             extract_subtitle(content);
@@ -491,7 +493,8 @@ int uakino_resolve(const Source *source, char *stream, int size,
     char *page = fetch_uafresh(source->url,error,error_size);
     if (!page) return 0;
     extract_subtitle(page);
-    int found=resolve_embedded(page,stream,size,2,error,error_size);
+    int requests_left=3;
+    int found=resolve_embedded(page,stream,size,2,&requests_left,error,error_size);
     free(page);
     if(found)return 1;
     /* UAFlix episodes are publicly playable on the site. A missing stream

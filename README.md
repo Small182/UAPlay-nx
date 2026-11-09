@@ -1,7 +1,6 @@
 # UAPlay for Nintendo Switch — native homebrew
 
-Native controller-first app on **libnx + SDL2 + libmpv**, using TMDB movie/series metadata and a native HTTP adapter for [UAFresh](https://uakino.ofreshofresh.workers.dev/uakino.js). **No Chromium, WebKit, CUB sync or TorrServer.**
-
+Native movies and serial UAFlix player for Switch using TMDB movie/series metadata and a native HTTP adapter for [UAFresh](https://uakino.ofreshofresh.workers.dev/uakino.js). 
 ## Install
 
 1. Open Releases and download the latest UAPlay

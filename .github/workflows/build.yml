@@ -20,6 +20,9 @@ jobs:
           export DEVKITPRO=/opt/devkitpro
           export DEVKITA64=/opt/devkitpro/devkitA64
           export PATH="$DEVKITA64/bin:$DEVKITPRO/tools/bin:$PATH"
+          find "$DEVKITPRO" \( -iname '*sdl*.pc' -o -iname '*mpv*.pc' -o -name 'SDL.h' \) -print
+          export PKG_CONFIG_PATH="$DEVKITPRO/portlibs/switch/lib/pkgconfig:$DEVKITPRO/libnx/lib/pkgconfig"
+          export PKG_CONFIG_LIBDIR="$PKG_CONFIG_PATH"
           make -j2
           test -s Lampa-nx.nro
       - uses: actions/upload-artifact@v4

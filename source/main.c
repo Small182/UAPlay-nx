@@ -31,6 +31,8 @@ static GLuint compile(GLenum type, const char *source) {
     return s;
 }
 static int paint_init(Paint *p) {
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     GLuint vert=compile(GL_VERTEX_SHADER, vs), frag=compile(GL_FRAGMENT_SHADER, fs);
     p->program=glCreateProgram();
     glAttachShader(p->program,vert); glAttachShader(p->program,frag);
@@ -100,6 +102,8 @@ static void footer(Paint *p,const char *message) {
 static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                  Source *sources,int sn,int source,const char *heading,const char *status) {
     glViewport(0,0,1280,720);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
     box(p,0,0,1280,720,.055f,.064f,.08f);
     if (page==CATALOG) {
         text(p,"LAMPA NX",28,18,330);

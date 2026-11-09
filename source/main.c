@@ -174,16 +174,16 @@ static int paint_init(Paint *p) {
     unsigned char white[4]={255,255,255,255};
     glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,white);
     if (TTF_Init()) return 0;
-    p->font=TTF_OpenFont("romfs:/DejaVuSans.ttf",24);
-    p->font_big=TTF_OpenFont("romfs:/DejaVuSans.ttf",36);
-    p->font_small=TTF_OpenFont("romfs:/DejaVuSans.ttf",20);
-    p->font_tiny=TTF_OpenFont("romfs:/DejaVuSans.ttf",16);
+    p->font=TTF_OpenFont("romfs:/DejaVuSans.ttf",22);
+    p->font_big=TTF_OpenFont("romfs:/DejaVuSans.ttf",31);
+    p->font_small=TTF_OpenFont("romfs:/DejaVuSans.ttf",19);
+    p->font_tiny=TTF_OpenFont("romfs:/DejaVuSans.ttf",15);
     for(int i=0;i<7;i++){
         char path[96];snprintf(path,sizeof(path),"romfs:/NotoSans%s.ttf",script_fonts[i]);
-        p->scripts[i]=TTF_OpenFont(path,24);
-        p->scripts_small[i]=TTF_OpenFont(path,20);
-        p->scripts_big[i]=TTF_OpenFont(path,36);
-        p->scripts_tiny[i]=TTF_OpenFont(path,16);
+        p->scripts[i]=TTF_OpenFont(path,22);
+        p->scripts_small[i]=TTF_OpenFont(path,19);
+        p->scripts_big[i]=TTF_OpenFont(path,31);
+        p->scripts_tiny[i]=TTF_OpenFont(path,15);
     }
     return p->font != NULL;
 }
@@ -317,7 +317,7 @@ static void selection_frame(Paint *p,int x,int y,int w,int h){
 static void button(Paint *p,const char *label,int x,int y,int w,int h,int primary){
     box_alpha(p,x,y,w,h,primary?.89f:.15f,primary?.91f:.18f,
               primary?.94f:.22f,1.f,14);
-    text_center(p,label,x,y+(h-27)/2,w,p->font_small,
+    text_center(p,label,x,y+(h-23)/2,w,p->font_small,
                 primary?.08f:.95f,primary?.10f:.96f,primary?.13f:.98f);
 }
 /* UI icons are drawn with primitives: no missing-font placeholder squares. */
@@ -351,7 +351,8 @@ static int footer_position,footer_total;
 static Page footer_page;
 static void footer(Paint *p,const char *message) {
     box_alpha(p,0,UI_FOOTER_TOP,1280,720-UI_FOOTER_TOP,.047f,.057f,.070f,1.f,0);
-    float ar,ag,ab;accent(&ar,&ag,&ab);
+    /* Monochrome Switch-style controller legend, independent of UI accent. */
+    float ar=.94f,ag=.95f,ab=.97f;
     box_alpha(p,UI_EDGE,UI_FOOTER_TOP,1216,2,ar,ag,ab,.78f,0);
     char position[30];
     snprintf(position,sizeof(position),"%d / %d",footer_position,footer_total);
@@ -394,7 +395,9 @@ static void footer(Paint *p,const char *message) {
     for(int i=0;i<count;i++){
         int badge_width=measure(p,keys[i],p->font_small)+12;
         if(badge_width<30)badge_width=30;
-        box_alpha(p,x,681,badge_width,28,ar,ag,ab,1.f,9);
+        int round=(!strcmp(keys[i],"A")||!strcmp(keys[i],"B")||
+                   !strcmp(keys[i],"X")||!strcmp(keys[i],"Y"));
+        box_alpha(p,x,681,badge_width,28,ar,ag,ab,1.f,round?14:5);
         text_center(p,keys[i],x,682,badge_width,p->font_small,.09f,.11f,.13f);
         text_font(p,labels[i],x+badge_width+8,681,widths[i]-badge_width-8,
                   p->font_small,ar,ag,ab);
@@ -463,11 +466,11 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             button(p,"‹  Назад",1106,98,142,44,0);
             int start=chosen/12*12;
             for(int i=start;i<n && i<start+12;i++){
-                int k=i-start,x=54+k%6*201,y=151+k/6*256;
-                if(i==chosen)selection_frame(p,x,y,135,200);
-                poster(p,&movies[i],x,y,135,200,&poster_budget);
-                card_title(p,movies[i].title,x,y+204,171);
+                int k=i-start,x=54+k%6*201,y=153+k/6*246;
+                if(i==chosen)selection_frame(p,x,y,138,206);
+                poster(p,&movies[i],x,y,138,206,&poster_budget);
             }
+            if(n)text_muted(p,movies[chosen].title,54,635,1150);
         }else{
             int active=chosen>=0 && chosen<n?chosen:0;
             box_alpha(p,UI_EDGE,92,1216,222,.09f,.11f,.14f,1.f,22);
@@ -499,8 +502,8 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         footer(p,status);
     } else if(page==SETTINGS){
         screen_header(p,"Налаштування","UAPlay");
-        const char *items[]={"Інтерфейс","Каталог","Плеєр","Джерела"};
-        for(int i=0;i<4;i++){
+        const char *items[]={"Інтерфейс","Плеєр","Джерела"};
+        for(int i=0;i<3;i++){
             int y=136+i*88;
             box_alpha(p,32,y,417,72,i==settings_selected?.20f:.09f,
                       i==settings_selected?.29f:.11f,
@@ -513,16 +516,14 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         headline(p,items[settings_selected],513,174,685);
         char description[240];
         if(settings_selected==0)snprintf(description,sizeof(description),"Акцент: %s",ui_accent_alt?"Блакитний":"Золотистий");
-        else if(settings_selected==1)snprintf(description,sizeof(description),"Поточний розділ: %s",heading);
-        else if(settings_selected==2)snprintf(description,sizeof(description),"Швидкість: %.2f · гучність: %.0f",video_options[0],video_options[1]);
+        else if(settings_selected==1)snprintf(description,sizeof(description),"Швидкість: %.2f · гучність: %.0f",video_options[0],video_options[1]);
         else snprintf(description,sizeof(description),"Пріоритет: %s",source_mode==0?"Усі джерела":source_mode==1?"UAFlix":"UASerials");
         text(p,description,516,255,682);
         const char *help[]={"Змінює колір виділення на всіх екранах.",
-            "Перемикає каталог на наступний розділ.",
             "Налаштуйте відео, гучність та субтитри.",
             "Оберіть порядок відображення джерел відео."};
         wrapped(p,help[settings_selected],517,315,675,3,29,p->font_small,.73f,.78f,.84f);
-        button(p,settings_selected==2?"Відкрити параметри":"Змінити",515,537,258,55,1);
+        button(p,settings_selected==1?"Відкрити параметри":"Змінити",515,537,258,55,1);
         footer(p,status);
     } else if (page==DETAILS) {
         screen_header(p,movies[chosen].series?"Про серіал":"Про фільм","UAPlay");
@@ -845,10 +846,11 @@ int main(void) {
                     else if(ty<78 && tx>=1058 && tx<1111)key=SDL_CONTROLLER_BUTTON_BACK;
                     else if(expanded_catalog){
                         if(ty>=95 && ty<145 && tx>=1090){expanded_catalog=0;chosen=0;continue;}
-                        if(ty>=151 && ty<665 && tx>=54){
-                            int col=(tx-54)/201,row=(ty-151)/256;
+                        if(ty>=153 && ty<613 && tx>=54){
+                            int col=(tx-54)/201,row=(ty-153)/246;
                             int index=chosen/12*12+row*6+col;
-                            if(col<6 && row<2 && index<n && (tx-54)%201<171){
+                            if(col<6 && row<2 && index<n && (tx-54)%201<138 &&
+                               (ty-153)%246<206){
                                 chosen=index;key=SDL_CONTROLLER_BUTTON_A;
                             }
                         }
@@ -908,9 +910,9 @@ int main(void) {
                         key=tx<640?SDL_CONTROLLER_BUTTON_DPAD_LEFT:SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
                     }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==SETTINGS){
-                    if(tx>=32 && tx<449 && ty>=136 && ty<472 && (ty-136)%88<72){
+                    if(tx>=32 && tx<449 && ty>=136 && ty<384 && (ty-136)%88<72){
                         settings_selected=(ty-136)/88;
-                        if(settings_selected>=4)settings_selected=3;
+                        if(settings_selected>=3)settings_selected=2;
                         key=SDL_CONTROLLER_BUTTON_A;
                     }else if(ty>=537 && ty<592 && tx>=515 && tx<773)key=SDL_CONTROLLER_BUTTON_A;
                     else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
@@ -1024,18 +1026,14 @@ int main(void) {
             if(page==SETTINGS){
                 if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){page=CATALOG;continue;}
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && settings_selected>0)settings_selected--;
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && settings_selected<3)settings_selected++;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && settings_selected<2)settings_selected++;
                 if(key==SDL_CONTROLLER_BUTTON_A){
                     if(settings_selected==0)ui_accent_alt=!ui_accent_alt;
                     else if(settings_selected==1){
-                        category=(category+1)%CATEGORY_COUNT;
-                        n=load_category(category,query,movies,message,sizeof(message));
-                        chosen=0;expanded_catalog=0;page=CATALOG;
-                    }else if(settings_selected==2){
                         selected_video_option=0;
                         video_settings_from_menu=1;
                         page=VIDEO_SETTINGS;
-                    }else if(settings_selected==3)source_mode=(source_mode+1)%3;
+                    }else if(settings_selected==2)source_mode=(source_mode+1)%3;
                 }
                 continue;
             }

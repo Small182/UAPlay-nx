@@ -213,7 +213,8 @@ int catalog_load(const char *category, const char *query, Movie *items, int max,
     if (!key[0]) { snprintf(error, error_size, "TMDB API key is empty"); return 0; }
 
     char url[1800];
-    char *q = query && *query ? encode(query) : NULL;
+    int searching=query && *query;
+    char *q = searching ? encode(query) : NULL;
     if (q) {
         snprintf(url, sizeof(url), "https://api.themoviedb.org/3/search/multi?api_key=%s&language=uk-UA&include_adult=false&query=%s", key, q);
     } else {
@@ -228,6 +229,13 @@ int catalog_load(const char *category, const char *query, Movie *items, int max,
     free(q);
     char *json = request(url, error, error_size);
     if (!json) {
+        /* Never show the unrelated offline home catalogue as the result of
+           a failed search query. That was the "wrong movie" regression. */
+        if(searching){
+            char reason[160];snprintf(reason,sizeof(reason),"%s",error);
+            snprintf(error,error_size,"Пошук TMDB недоступний: %.155s",reason);
+            return 0;
+        }
         json = read_offline_catalog(category);
         if (json) {
             snprintf(error, error_size, "Offline catalog (network unavailable): %s", category);
@@ -265,15 +273,13 @@ int catalog_load(const char *category, const char *query, Movie *items, int max,
     return count;
 }
 
-/* In November 2026 UAFresh explicitly excludes the old uakino.best source.
-   Its current enabled providers include UAFlix and UASerials. We use the
-   plugin's public worker proxy, but execute no remote JavaScript. */
+/* Use UAFlix and UASerials sources. The experimental UAKino.best provider
+   is disabled: it produced unreliable search failures on the console. */
 static char *fetch_uafresh(const char *upstream, char *error, int error_size) {
     /* Native homebrew does not have browser CORS restrictions. A direct
        request originates from the Switch user's Ukrainian network, unlike
        the Cloudflare worker; UAFlix episode availability is geo-dependent. */
     if(!strncmp(upstream,"https://uafix.net/",18) ||
-       !strncmp(upstream,"https://uakino.best/",20) ||
        !strncmp(upstream,"https://zetvideo.net/",21) ||
        !strncmp(upstream,"https://hdvbua.pro/",19) ||
        !strncmp(upstream,"https://ashdi.vip/",18)){
@@ -299,7 +305,8 @@ static char *fetch_uafresh(const char *upstream, char *error, int error_size) {
     return html;
 }
 
-static int looks_like_result(const char *url, const char *host, int provider) {
+static int looks_like_result(const char *url, const char *host, int provider,
+                             int want_series) {
     size_t hostlen = strlen(host);
     if (strncmp(url, host, hostlen)) return 0;
     const char *path = url + hostlen;
@@ -311,6 +318,10 @@ static int looks_like_result(const char *url, const char *host, int provider) {
                        ((size_t)(end-(path+1)) == 7 && !strncmp(path+1, "serials", 7)) ||
                        ((size_t)(end-(path+1)) == 5 && !strncmp(path+1, "anime", 5));
         if (!group_ok || end[1] == 0) return 0;
+        /* A search for a TV series must not list unrelated film cards (and
+           vice versa), even when the provider returns both in one search. */
+        int films=(size_t)(end-(path+1))==5 && !strncmp(path+1,"films",5);
+        if ((want_series && films) || (!want_series && !films))return 0;
         const char *slug_end = strchr(end+1, '/');
         if (!slug_end || slug_end[1] != 0 || slug_end == end+1) return 0;
         for (const char *p=end+1; p<slug_end; p++)
@@ -332,8 +343,25 @@ static int looks_like_result(const char *url, const char *host, int provider) {
     return *p == '-' && strstr(p, ".html") != NULL;
 }
 
+static void html_title(const char *source,char *target,size_t capacity){
+    size_t written=0;
+    while(*source && written+1<capacity){
+        const char *replacement=NULL;
+        size_t consumed=0;
+        if(!strncmp(source,"&#039;",6)){replacement="'";consumed=6;}
+        else if(!strncmp(source,"&apos;",6)){replacement="'";consumed=6;}
+        else if(!strncmp(source,"&quot;",6)){replacement="\"";consumed=6;}
+        else if(!strncmp(source,"&amp;",5)){replacement="&";consumed=5;}
+        else if(!strncmp(source,"&nbsp;",6)){replacement=" ";consumed=6;}
+        if(replacement){target[written++]=*replacement;source+=consumed;}
+        else target[written++]=*source++;
+    }
+    target[written]=0;
+}
+
 static void search_provider(const char *host, const char *name, int provider,
-                            const char *query, Source *items, int *count, int limit,
+                            const char *query, int want_series,
+                            Source *items, int *count, int limit,
                             char *error, int error_size) {
     char *q = encode(query);
     if (!q) return;
@@ -346,7 +374,20 @@ static void search_provider(const char *host, const char *name, int provider,
     free(search_url);
     if (!html) return;
     const char *p = html;
-    while (*count < limit && (p = strstr(p, "href=")) != NULL) {
+    /* UAFlix includes its entire category-navigation menu BEFORE the search
+       results. Scanning every href mistakenly returned films/action/ and
+       serials/school/ as playable titles, filling the list with folders.
+       Real search result cards are <a class="sres-wrap ..." href="...">. */
+    while (*count < limit &&
+           (p = strstr(p,provider==0?"class=\"sres-wrap":"href=")) != NULL) {
+        const char *card=p;
+        if(provider==0){
+            const char *tag_end=strchr(card,'>');
+            if(!tag_end)break;
+            const char *href=strstr(card,"href=");
+            if(!href || href>=tag_end){p=tag_end+1;continue;}
+            p=href;
+        }
         p += 5;
         if (*p != '"' && *p != '\'') continue;
         char quote = *p++;
@@ -361,14 +402,33 @@ static void search_provider(const char *host, const char *name, int provider,
                 memcpy(candidate,p,n);
                 candidate[n]=0;
             }
-            if (looks_like_result(candidate, host, provider)) {
+            if (looks_like_result(candidate, host, provider,want_series)) {
                 int exists=0;
                 for (int i=0; i<*count; i++)
                     if (!strcmp(items[i].url,candidate)) exists=1;
                 if (!exists) {
                     Source *dst = &items[(*count)++];
                     snprintf(dst->url,sizeof(dst->url),"%s",candidate);
-                    snprintf(dst->title,sizeof(dst->title),"%s: %s",name,candidate+strlen(host)+1);
+                    /* Use the card's real human-readable title, not URL slug. */
+                    const char *title_start=NULL,*title_end=NULL;
+                    if(provider==0){
+                        const char *heading=strstr(end,"<h2>");
+                        if(heading && heading-end<800){
+                            title_start=heading+4;
+                            title_end=strstr(title_start,"</h2>");
+                            if(!title_end || title_end-title_start>300)title_start=NULL;
+                        }
+                    }
+                    if(title_start){
+                        char label[176];size_t len=(size_t)(title_end-title_start);
+                        if(len>=sizeof(label))len=sizeof(label)-1;
+                        /* Never cut inside a UTF-8 continuation byte. */
+                        while(len && ((unsigned char)title_start[len]&0xC0)==0x80)len--;
+                        memcpy(label,title_start,len);label[len]=0;
+                        char human[176];html_title(label,human,sizeof(human));
+                        snprintf(dst->title,sizeof(dst->title),"%s: %s",name,human);
+                    }else snprintf(dst->title,sizeof(dst->title),"%s: %s",name,
+                                  candidate+strlen(host)+1);
                 }
             }
         }
@@ -382,11 +442,9 @@ int uakino_search(const Movie *movie, Source *items, int max,
     int count=0;
     const char *search = movie->original[0] ? movie->original : movie->title;
     error[0]=0;
-    search_provider("https://uafix.net", "UAFlix", 0, search,
+    search_provider("https://uafix.net", "UAFlix", 0, search,movie->series,
                     items, &count, max, error, error_size);
-    search_provider("https://uaserials.my", "UASerials", 1, search,
-                    items, &count, max, error, error_size);
-    search_provider("https://uakino.best", "UAKino (експ.)", 2, search,
+    search_provider("https://uaserials.my", "UASerials", 1, search,movie->series,
                     items, &count, max, error, error_size);
     if (count) error[0]=0;
     else if (!error[0]) snprintf(error,error_size,"UAFresh: no matching pages");

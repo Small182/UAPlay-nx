@@ -404,7 +404,8 @@ static void footer(Paint *p,const char *message) {
         x+=widths[i]+12;
     }
     /* Notification occupies its own safe zone, never the last selectable row. */
-    if(message && *message && strncmp(message,"A:",2) &&
+    if(message && *message && strncmp(message,"Offline catalog",15) &&
+       strncmp(message,"A:",2) &&
        strncmp(message,"B:",2) && strncmp(message,"Вліво",10)){
         box_alpha(p,UI_EDGE,617,1216,43,.11f,.16f,.19f,.98f,11);
         text_small(p,message,50,626,1170);
@@ -490,6 +491,8 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             button(p,"▶  Дивитися",62,264,180,39,1);
             button(p,"+  До списку",254,264,189,39,0);
             text(p,heading,UI_EDGE,336,930);
+            if(status && !strncmp(status,"Offline catalog",15))
+                text_tiny(p,"Офлайн",1026,340,77);
             button(p,"Усі  ›",1110,329,138,42,0);
             int start=chosen/6*6;
             for(int i=start;i<n && i<start+6;i++){
@@ -540,7 +543,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                320,526,255,58,0);
         footer(p,status);
     } else if (page==SOURCES) {
-        screen_header(p,"Джерела відео","UAFlix · UASerials · UAKino");
+        screen_header(p,"Джерела відео","UAFlix · UASerials");
         int first=source/UI_ROWS*UI_ROWS;
         for(int i=first;i<sn && i<first+UI_ROWS;i++){
             list_row(p,sources[i].title,UI_ROW_Y+(i-first)*UI_ROW_STEP,i==source,NULL);

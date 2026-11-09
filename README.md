@@ -15,7 +15,7 @@ TMDB works out of the box using the public client key from the [official Lampa s
 - Movies, TV, top-rated and genre categories (action, comedy, drama, horror, sci-fi, animation, romance, documentary).
 - Ukrainian TMDB titles, metadata descriptions, search via Switch software keyboard, live TMDB posters with in-session cache.
 - Local-only **favorites**, **watch history**, and **resume position** stored at `sdmc:/switch/uaflix/library.tsv`.
-- Source search via **UAFlix, UASerials, and experimental UAKino.best**. The native app requests UAFlix/UAKino pages directly from the Switch first, falling back to the existing UAFresh Worker when direct HTTP fails. This matters for geo-dependent UAFlix episodes: the Worker's region can differ from the Switch's Ukrainian network. Embedded video resolution includes Zetvideo HLS and bounded nested iframe players.
+- Source search via **UAFlix and UASerials**. Experimental UAKino.best integration has been disabled at the user's request. The native app requests UAFlix pages directly from the Switch first, falling back to the existing UAFresh Worker when direct HTTP fails. This matters for geo-dependent UAFlix episodes: the Worker's region can differ from the Switch's Ukrainian network. UAFlix results are parsed from actual search-result cards (not its site navigation categories), filtered by film/series type and labeled using their real titles. Embedded video resolution includes Zetvideo HLS and bounded nested iframe players.
 - Native **season/episode browser** for UAFresh sources exposing episode-page links. Actual video playback depends on the episode's stream being discoverable; UAFlix web playback does not require a login.
 - Player pause, ±10 second seek, **separate audio-track and subtitle-track lists** built from libmpv `track-list` with language/title and selected-track state.
 - Netflix-TV-inspired navigation concept (native UAPlay branding): top-level category tabs, selected-title hero with synopsis/actions, matching poster shelf, full collection browser, full-page settings and title details. No Netflix assets or proprietary UI code are included.
@@ -42,11 +42,11 @@ TMDB works out of the box using the public client key from the [official Lampa s
 | Video | A pause, D-pad/stick left/right seek ±10 seconds, **hold R with left/right to seek ±60 seconds**, X subtitle list, Y audio list, Minus video settings, B stop/save position |
 | Track selection | Up/down choose audio or subtitles, A apply, B return to video |
 | Video settings | Up/down choose property, left/right adjust, B return |
-| Settings | Up/down choose Interface/Catalog/Player/Sources, A open/change, B return |
+| Settings | Up/down choose Interface/Player/Sources, A open/change, B return |
 
 ## UAFresh adapter
 
-This is **not** the original UAFresh JavaScript plugin running inside Lampa. That plugin relies on the browser and the global `Lampa.*` runtime. The native adapter implements selected functionality directly in C. **UAKino.best is experimental**: it may return 403/404 or a bot-protection page; UAPlay does not bypass the site's access controls, and the site may not expose a playable direct video URL.
+This is **not** the original UAFresh JavaScript plugin running inside Lampa. That plugin relies on the browser and the global `Lampa.*` runtime. The native adapter implements selected functionality directly in C. **UAKino.best is disabled.** When TMDB is temporarily inaccessible, the app can display a small offline home catalogue but does not misrepresent that static catalogue as actual search results.
 
 On 2026-11-09 a Linux test searched *Avatar*, received 14 results, and successfully resolved a direct HLS stream from UAFlix's embedded Zetvideo player. A separate test found 15 episodes across two seasons for UAFlix's *Avatar: The Last Airbender*. You can repeat these host-side tests with:
 

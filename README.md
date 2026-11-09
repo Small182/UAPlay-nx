@@ -27,12 +27,12 @@ TMDB works out of the box using the public client key from the [official Lampa s
 
 | Screen | Buttons |
 |---|---|
-| Catalog | D-pad choose, L/R change section, A details, X search, Y refresh, Minus settings, Plus exit |
+| Catalog | D-pad or either analog stick choose, L/R change section, A details, X search, Y refresh, Minus settings, Plus exit |
 | Details | A find UAFresh streams, X toggle favorite, Y mark watched, B back |
 | UAFresh sources | Up/down select, A choose source (for TV with structured episodes: seasons), B back |
 | Seasons | Up/down choose season, A episodes, B sources |
 | Episodes | Up/down select episode, A resolve/play, B seasons |
-| Video | A pause, left/right seek, X subtitle list, Y audio list, Minus video settings, B stop/save position |
+| Video | A pause, D-pad/stick left/right seek, X subtitle list, Y audio list, Minus video settings, B stop/save position |
 | Track selection | Up/down choose audio or subtitles, A apply, B return to video |
 | Video settings | Up/down choose property, left/right adjust, B return |
 | Settings | B return |
@@ -53,6 +53,8 @@ cc -O2 -Isource source/catalog.c tests/episodes_smoke.c \
 ```
 
 ## Important limitations
+
+Nintendo-labelled ABXY now match the physical Switch buttons (the SDL controller events are remapped from their Xbox-style positions). Both sticks have deadzone and held-direction repeat. Playback initially requests an approximately 1 Mbit/s HLS variant to reduce software-decoder load on Switch; the video-settings menu can raise it. An mpv error or a 30-second startup timeout returns to the source list with a diagnostic instead of a permanently black screen. Some hosts can still reject streams despite a valid playlist.
 
 This remains an **experimental native app**, not an exact feature-for-feature reimplementation of Lampa. Episode discovery depends on UAFresh providers exposing identifiable episode links; not all video hosts resolve to direct streams, and some pages are trailers only or geo/auth restricted. The player offers audio/subtitle selection only for tracks actually present in the stream. HLS bitrate presets depend on what variants are offered by the source and mpv's demuxer; they may have no effect on a fixed-bitrate playlist. Native decoding and settings must be tested on a real Switch and Eden; successful CI compilation is not a runtime guarantee.
 

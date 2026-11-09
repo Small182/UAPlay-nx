@@ -21,7 +21,7 @@ static int episode_count,season_ids[64],season_count,selected_season,selected_ep
 static MediaTrack tracks[TRACKS_MAX];
 static int track_count,selected_track,subtitle_picker;
 static int selected_video_option;
-static double video_options[]={1.0,100.0,0.0,0.0,48.0,0.0,0.0};
+static double video_options[]={1.0,100.0,0.0,0.0,48.0,0.0,2.0};
 static const char *video_props[]={"speed","volume","brightness","contrast",
                                   "sub-font-size","sub-delay","hls-bitrate"};
 static const char *video_titles[]={"Швидкість","Гучність","Яскравість","Контраст",
@@ -295,6 +295,42 @@ static void seek(mpv_handle *player,const char *seconds) {
     const char *args[]={"seek",seconds,"relative",NULL};
     if(player) mpv_command_async(player,0,args);
 }
+static int native_button(int button) {
+    /* SDL uses Xbox-style face button names; Switch prints the opposite labels. */
+    switch(button) {
+        case SDL_CONTROLLER_BUTTON_A:return SDL_CONTROLLER_BUTTON_B;
+        case SDL_CONTROLLER_BUTTON_B:return SDL_CONTROLLER_BUTTON_A;
+        case SDL_CONTROLLER_BUTTON_X:return SDL_CONTROLLER_BUTTON_Y;
+        case SDL_CONTROLLER_BUTTON_Y:return SDL_CONTROLLER_BUTTON_X;
+        default:return button;
+    }
+}
+static void stick_arrow(SDL_GameController *pad,Uint32 *last_time,int *last_key) {
+    if(!pad || !SDL_GameControllerGetAttached(pad))return;
+    const int deadzone=19000;
+    int lx=SDL_GameControllerGetAxis(pad,SDL_CONTROLLER_AXIS_LEFTX);
+    int ly=SDL_GameControllerGetAxis(pad,SDL_CONTROLLER_AXIS_LEFTY);
+    int rx=SDL_GameControllerGetAxis(pad,SDL_CONTROLLER_AXIS_RIGHTX);
+    int ry=SDL_GameControllerGetAxis(pad,SDL_CONTROLLER_AXIS_RIGHTY);
+    int key=0;
+    if(abs(ly)>deadzone || abs(lx)>deadzone)
+        key=abs(ly)>=abs(lx)?(ly>0?SDLK_DOWN:SDLK_UP):(lx>0?SDLK_RIGHT:SDLK_LEFT);
+    else if(abs(ry)>deadzone || abs(rx)>deadzone)
+        key=abs(ry)>=abs(rx)?(ry>0?SDLK_DOWN:SDLK_UP):(rx>0?SDLK_RIGHT:SDLK_LEFT);
+    Uint32 now=SDL_GetTicks();
+    if(!key){*last_key=0;return;}
+    if(key==*last_key && now-*last_time<175)return;
+    *last_key=key;*last_time=now;
+    SDL_Event event={0};event.type=SDL_KEYDOWN;event.key.keysym.sym=key;
+    SDL_PushEvent(&event);
+}
+static void configure_stream(mpv_handle *player,const char *url) {
+    if(!player)return;
+    mpv_set_property_string(player,"user-agent","Mozilla/5.0 (Nintendo Switch; Uaflix/1.0)");
+    if(strstr(url,"zetvideo.net"))
+        mpv_set_property_string(player,"referrer","https://zetvideo.net/");
+    else mpv_set_property_string(player,"referrer","");
+}
 static int keyboard(char *value,size_t size) {
     SwkbdConfig cfg;
     if(R_FAILED(swkbdCreate(&cfg,0))) return 0;
@@ -328,6 +364,11 @@ int main(void) {
         mpv_set_option_string(player,"vo","libmpv");
         mpv_set_option_string(player,"hwdec","auto-safe");
         mpv_set_option_string(player,"terminal","no");
+        mpv_set_option_string(player,"network-timeout","20");
+        mpv_set_option_string(player,"cache","yes");
+        mpv_set_option_string(player,"demuxer-max-bytes","16MiB");
+        mpv_set_option_string(player,"video-sync","audio");
+        mpv_request_log_messages(player,"warn");
         if(mpv_initialize(player)>=0){
             mpv_opengl_init_params gl_init={.get_proc_address=proc};
             mpv_render_param init[]={{MPV_RENDER_PARAM_API_TYPE,MPV_RENDER_API_TYPE_OPENGL},
@@ -347,12 +388,17 @@ int main(void) {
     char pending_subtitle[1024]={0};
     char playing_url[2048]={0};
     Page player_return_page=SOURCES;
+    Uint32 video_started_at=0;
+    int video_loaded=0;
+    Uint32 stick_last_time=0;
+    int stick_last_key=0;
     while(running){
+        stick_arrow(pad,&stick_last_time,&stick_last_key);
         SDL_Event e;
         while(SDL_PollEvent(&e)){
             if(e.type==SDL_QUIT)running=0;
             int key=-1;
-            if(e.type==SDL_CONTROLLERBUTTONDOWN)key=e.cbutton.button;
+            if(e.type==SDL_CONTROLLERBUTTONDOWN)key=native_button(e.cbutton.button);
             if(e.type==SDL_KEYDOWN){
                 switch(e.key.keysym.sym){
                     case SDLK_RETURN:key=SDL_CONTROLLER_BUTTON_A;break;
@@ -453,10 +499,12 @@ int main(void) {
                             library_mark_watched(&playing_movie);
                             snprintf(playing_url,sizeof(playing_url),"%s",url);
                             apply_hls_quality(player);
+                            configure_stream(player,url);
                             command(player,"loadfile",url);
+                            video_started_at=SDL_GetTicks();video_loaded=0;
                             player_return_page=EPISODES;page=PLAYER;
                         }
-                    }
+                    } else if(!render) snprintf(message,sizeof(message),"Плеєр mpv не ініціалізовано");
                 }
                 continue;
             }
@@ -526,14 +574,18 @@ int main(void) {
                     }
                     char url[2048]={0};
                     message[0]=0;
-                    if(render && uakino_resolve(&sources[source],url,sizeof(url),message,sizeof(message))){
+                    if(!render){
+                        snprintf(message,sizeof(message),"Плеєр mpv не ініціалізовано");
+                    }else if(uakino_resolve(&sources[source],url,sizeof(url),message,sizeof(message))){
                         snprintf(pending_subtitle,sizeof(pending_subtitle),"%s",uakino_resolved_subtitle());
                         playing_movie=movies[chosen];
                         resume_at=library_progress(&playing_movie);
                         library_mark_watched(&playing_movie);
                         snprintf(playing_url,sizeof(playing_url),"%s",url);
                         apply_hls_quality(player);
+                        configure_stream(player,url);
                         command(player,"loadfile",url);
+                        video_started_at=SDL_GetTicks();video_loaded=0;
                         player_return_page=SOURCES;page=PLAYER;
                     }
                 }
@@ -548,11 +600,24 @@ int main(void) {
                     mpv_command_async(player,0,args);
                     pending_subtitle[0]=0;
                 }
+                if(event->event_id==MPV_EVENT_FILE_LOADED)video_loaded=1;
                 if(event->event_id==MPV_EVENT_FILE_LOADED && resume_at>1){
                     char seconds[40];snprintf(seconds,sizeof(seconds),"%.1f",resume_at);
                     const char *args[]={"seek",seconds,"absolute",NULL};
                     mpv_command_async(player,0,args);
                     resume_at=0;
+                }
+                if(event->event_id==MPV_EVENT_END_FILE && page==PLAYER){
+                    mpv_event_end_file *end=(mpv_event_end_file*)event->data;
+                    if(end && end->reason==MPV_END_FILE_REASON_ERROR){
+                        snprintf(message,sizeof(message),"Помилка відео: %s (%d)",
+                                 mpv_error_string(end->error),end->error);
+                        page=player_return_page;
+                    }
+                }
+                if(event->event_id==MPV_EVENT_LOG_MESSAGE){
+                    mpv_event_log_message *log=(mpv_event_log_message*)event->data;
+                    if(log && log->text) fprintf(stderr,"mpv [%s]: %s",log->prefix,log->text);
                 }
             }
         }
@@ -561,7 +626,19 @@ int main(void) {
             mpv_render_param frame[]={{MPV_RENDER_PARAM_OPENGL_FBO,&fbo},
                                       {MPV_RENDER_PARAM_FLIP_Y,&flip},
                                       {MPV_RENDER_PARAM_INVALID,NULL}};
-            mpv_render_context_render(render,frame);
+            int render_result=mpv_render_context_render(render,frame);
+            if(!video_loaded){
+                box(&paint,0,0,1280,720,.06f,.07f,.09f);
+                text(&paint,"Uaflix: завантаження відео...",88,295,1050);
+                text(&paint,"B: повернутися до вибору джерела",88,345,1050);
+                if(video_started_at && SDL_GetTicks()-video_started_at>30000){
+                    snprintf(message,sizeof(message),"Час очікування відео вичерпано (30 с)");
+                    command(player,"stop",NULL);page=player_return_page;
+                }
+            }else if(render_result<0){
+                snprintf(message,sizeof(message),"Помилка відеорендерера mpv: %s",mpv_error_string(render_result));
+                command(player,"stop",NULL);page=player_return_page;
+            }
         }else draw(&paint,page,movies,n,chosen,sources,sn,source,headings[category],message);
         SDL_GL_SwapWindow(window);SDL_Delay(16);
     }

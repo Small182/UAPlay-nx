@@ -40,5 +40,10 @@ int uakino_resolve(const Source *source, char *stream, int size,
 const char *uakino_resolved_subtitle(void);
 int uakino_episodes(const Source *source, Episode *items, int max,
                     char *error, int error_size);
+/* Optional UAFlix login, as supported by the user's UAFresh worker.
+   Only the session cookie is kept on the SD card; never the password. */
+int uaflix_login(const char *login,const char *password,char *error,int error_size);
+int uaflix_logged_in(void);
+void uaflix_logout(void);
 
 #endif

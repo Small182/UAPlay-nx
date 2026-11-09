@@ -247,7 +247,12 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         text(p,"Плеєр: libmpv / FFmpeg, HLS",45,320,1100);
         text(p,"Управління відео: A пауза, X субтитри, Y аудіо",45,385,1100);
         text(p,"Обране та історія зберігаються на SD-карті",45,450,1100);
-        footer(p,"B: Повернутися до каталогу");
+        text(p,uaflix_logged_in()?"UAFlix: акаунт підключено":"UAFlix: без входу серії можуть бути лише трейлерами",45,502,1130);
+        box_alpha(p,42,548,490,63,.17f,.50f,.62f,.95f,18);
+        text(p,"A: Увійти до UAFlix",63,560,455);
+        box_alpha(p,556,548,420,63,.15f,.21f,.31f,.95f,18);
+        text(p,"Y: Вийти з акаунта",581,560,370);
+        footer(p,*status?status:"B: Каталог  A: Вхід UAFlix  Y: Вихід");
     } else if (page==SEASONS) {
         text(p,"‹",18,45,42);
         text(p,"UAFLIX — вибір сезону",42,45,1120);
@@ -386,6 +391,14 @@ static int keyboard(char *value,size_t size) {
     SwkbdConfig cfg;
     if(R_FAILED(swkbdCreate(&cfg,0))) return 0;
     swkbdConfigMakePresetDefault(&cfg);
+    Result result=swkbdShow(&cfg,value,size);
+    swkbdClose(&cfg);
+    return R_SUCCEEDED(result) && value[0];
+}
+static int keyboard_password(char *value,size_t size){
+    SwkbdConfig cfg;
+    if(R_FAILED(swkbdCreate(&cfg,0)))return 0;
+    swkbdConfigMakePresetPassword(&cfg);
     Result result=swkbdShow(&cfg,value,size);
     swkbdClose(&cfg);
     return R_SUCCEEDED(result) && value[0];
@@ -544,7 +557,11 @@ int main(void) {
                         selected_video_option=slot;
                         key=tx<640?SDL_CONTROLLER_BUTTON_DPAD_LEFT:SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
                     }else if(ty<100)key=SDL_CONTROLLER_BUTTON_B;
-                }else if(page==SETTINGS)key=SDL_CONTROLLER_BUTTON_B;
+                }else if(page==SETTINGS){
+                    if(ty>540 && ty<630 && tx<545)key=SDL_CONTROLLER_BUTTON_A;
+                    else if(ty>540 && ty<630 && tx<990)key=SDL_CONTROLLER_BUTTON_Y;
+                    else if(ty<100 || ty>665)key=SDL_CONTROLLER_BUTTON_B;
+                }
             }
             if(page==PLAYER && key>=0)controls_until=SDL_GetTicks()+3000;
             if(key<0)continue;
@@ -644,6 +661,16 @@ int main(void) {
             }
             if(page==SETTINGS){
                 if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK)page=CATALOG;
+                if(key==SDL_CONTROLLER_BUTTON_A){
+                    char login[128]={0},password[128]={0};
+                    if(keyboard(login,sizeof(login)) && keyboard_password(password,sizeof(password)))
+                        uaflix_login(login,password,message,sizeof(message));
+                    memset(password,0,sizeof(password));
+                }
+                if(key==SDL_CONTROLLER_BUTTON_Y){
+                    uaflix_logout();
+                    snprintf(message,sizeof(message),"UAFlix: вихід виконано");
+                }
                 continue;
             }
             if(key==SDL_CONTROLLER_BUTTON_START){running=0;continue;}

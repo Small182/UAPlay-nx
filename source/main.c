@@ -21,15 +21,18 @@ static int episode_count,season_ids[64],season_count,selected_season,selected_ep
 static MediaTrack tracks[TRACKS_MAX];
 static int track_count,selected_track,subtitle_picker;
 static int selected_video_option;
-static double video_options[]={1.0,100.0,0.0,0.0,48.0,0.0};
+static double video_options[]={1.0,100.0,0.0,0.0,48.0,0.0,0.0};
 static const char *video_props[]={"speed","volume","brightness","contrast",
-                                  "sub-font-size","sub-delay"};
+                                  "sub-font-size","sub-delay","hls-bitrate"};
 static const char *video_titles[]={"Швидкість","Гучність","Яскравість","Контраст",
-                                   "Розмір субтитрів","Затримка субтитрів"};
-static const double video_steps[]={0.25,5,5,5,4,0.25};
-static const double video_min[]={0.5,0,-100,-100,20,-10};
-static const double video_max[]={2.0,130,100,100,100,10};
-#define VIDEO_OPTION_COUNT 6
+                                   "Розмір субтитрів","Затримка субтитрів","Якість HLS"};
+static const double video_steps[]={0.25,5,5,5,4,0.25,1};
+static const double video_min[]={0.5,0,-100,-100,20,-10,0};
+static const double video_max[]={2.0,130,100,100,100,10,4};
+static const char *hls_presets[]={"max","min","1000000","2000000","4000000"};
+static const char *hls_labels[]={"Авто / найвища","Економія","До 1 Мбіт/с",
+                                 "До 2 Мбіт/с","До 4 Мбіт/с"};
+#define VIDEO_OPTION_COUNT 7
 
 static void rebuild_seasons(void) {
     season_count=0;
@@ -271,7 +274,9 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             box(p,40,y,1180,62,i==selected_video_option?.22f:.10f,
                 i==selected_video_option?.40f:.14f,i==selected_video_option?.49f:.19f);
             char label[256];
-            snprintf(label,sizeof(label),"%s: %.2f",video_titles[i],video_options[i]);
+            if(i==6)snprintf(label,sizeof(label),"%s: %s",video_titles[i],
+                              hls_labels[(int)video_options[i]]);
+            else snprintf(label,sizeof(label),"%s: %.2f",video_titles[i],video_options[i]);
             text(p,label,56,y+16,1130);
         }
         footer(p,"Вліво / вправо: змінити параметр   B: Назад");
@@ -280,6 +285,11 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
 static void command(mpv_handle *player,const char *verb,const char *arg) {
     const char *args[]={verb,arg,NULL};
     if(player) mpv_command_async(player,0,args);
+}
+static void apply_hls_quality(mpv_handle *player) {
+    if(!player)return;
+    const char *args[]={"set","hls-bitrate",hls_presets[(int)video_options[6]],NULL};
+    mpv_command_async(player,0,args);
 }
 static void seek(mpv_handle *player,const char *seconds) {
     const char *args[]={"seek",seconds,"relative",NULL};
@@ -335,6 +345,7 @@ int main(void) {
     Movie playing_movie={0};
     double resume_at=0;
     char pending_subtitle[1024]={0};
+    char playing_url[2048]={0};
     Page player_return_page=SOURCES;
     while(running){
         SDL_Event e;
@@ -401,7 +412,17 @@ int main(void) {
                     video_options[i]+=direction*video_steps[i];
                     if(video_options[i]<video_min[i])video_options[i]=video_min[i];
                     if(video_options[i]>video_max[i])video_options[i]=video_max[i];
-                    playback_set_value(player,video_props[i],video_options[i]);
+                    if(i==6){
+                        apply_hls_quality(player);
+                        if(playing_url[0]){
+                            double pos=0;
+                            if(mpv_get_property(player,"time-pos",MPV_FORMAT_DOUBLE,&pos)>=0)
+                                resume_at=pos;
+                            snprintf(pending_subtitle,sizeof(pending_subtitle),"%s",
+                                     uakino_resolved_subtitle());
+                            command(player,"loadfile",playing_url);
+                        }
+                    } else playback_set_value(player,video_props[i],video_options[i]);
                 }
                 continue;
             }
@@ -430,6 +451,8 @@ int main(void) {
                             playing_movie=movies[chosen];
                             resume_at=0;
                             library_mark_watched(&playing_movie);
+                            snprintf(playing_url,sizeof(playing_url),"%s",url);
+                            apply_hls_quality(player);
                             command(player,"loadfile",url);
                             player_return_page=EPISODES;page=PLAYER;
                         }
@@ -508,6 +531,8 @@ int main(void) {
                         playing_movie=movies[chosen];
                         resume_at=library_progress(&playing_movie);
                         library_mark_watched(&playing_movie);
+                        snprintf(playing_url,sizeof(playing_url),"%s",url);
+                        apply_hls_quality(player);
                         command(player,"loadfile",url);
                         player_return_page=SOURCES;page=PLAYER;
                     }

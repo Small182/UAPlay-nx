@@ -18,7 +18,7 @@ TMDB works out of the box using the public client key from the [official Lampa s
 - UAFresh searching from its current UAFlix and UASerials providers through the worker HTTP proxy; embedded video resolution including Zetvideo HLS; libmpv playback.
 - Native **season/episode browser** for UAFresh sources exposing episode-page links (tested on UAFlix); play selected episode when its stream can be resolved.
 - Player pause, ±10 second seek, **separate audio-track and subtitle-track lists** built from libmpv `track-list` with language/title and selected-track state.
-- Playback settings overlay: speed, volume, brightness, contrast, subtitle text size and subtitle timing, applied immediately via libmpv.
+- Playback settings overlay: speed, volume, brightness, contrast, subtitle text size, subtitle timing, and **HLS bitrate preset** (auto/highest, economy, ≤1/2/4 Mbps). Changing bitrate reloads the stream and tries to restore playback position.
 - Adds an external WebVTT subtitle track from UAFresh embedded players when the provider supplies one (for example Zetvideo's Ukrainian subtitles).
 - Settings/information screen.
 - Original user-supplied Lampa icon retained for now; homebrew display name is **Uaflix**.
@@ -54,7 +54,7 @@ cc -O2 -Isource source/catalog.c tests/episodes_smoke.c \
 
 ## Important limitations
 
-This remains an **experimental native app**, not an exact feature-for-feature reimplementation of Lampa. Episode discovery depends on UAFresh providers exposing identifiable episode links; not all video hosts resolve to direct streams, and some pages are trailers only or geo/auth restricted. The player offers audio/subtitle selection only for tracks actually present in the stream. Adaptive HLS bitrate is negotiated automatically; explicit variant-quality selection is not yet implemented. Native decoding and settings must be tested on a real Switch and Eden; successful CI compilation is not a runtime guarantee.
+This remains an **experimental native app**, not an exact feature-for-feature reimplementation of Lampa. Episode discovery depends on UAFresh providers exposing identifiable episode links; not all video hosts resolve to direct streams, and some pages are trailers only or geo/auth restricted. The player offers audio/subtitle selection only for tracks actually present in the stream. HLS bitrate presets depend on what variants are offered by the source and mpv's demuxer; they may have no effect on a fixed-bitrate playlist. Native decoding and settings must be tested on a real Switch and Eden; successful CI compilation is not a runtime guarantee.
 
 Metadata is provided by TMDB: **This product uses the TMDB API but is not endorsed or certified by TMDB.** No copyrighted video is bundled; only links returned by third-party services are resolved. Use content you have the right to access.
 

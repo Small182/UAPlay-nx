@@ -13,12 +13,13 @@
 typedef struct {
     int id;
     GLuint texture;
-    int attempted;
+    unsigned long long last_used;
 } PosterEntry;
 
 typedef struct { unsigned char *data; size_t used; } ImageData;
 static PosterEntry cache[POSTER_CACHE_MAX];
 static int used = 0;
+static unsigned long long cache_clock=0;
 
 static size_t receive(char *pointer, size_t size, size_t count, void *ctx) {
     ImageData *image = ctx;
@@ -80,13 +81,23 @@ GLuint poster_texture(const Movie *movie, int *budget) {
     if (!movie || !movie->poster[0] || !strcmp(movie->poster, "null")) return 0;
     int identity = movie->series ? -movie->id : movie->id;
     for (int i = 0; i < used; i++) {
-        if (cache[i].id == identity) return cache[i].texture;
+        if (cache[i].id == identity) {
+            cache[i].last_used=++cache_clock;
+            return cache[i].texture;
+        }
     }
-    if (*budget <= 0 || used == POSTER_CACHE_MAX) return 0;
+    if (*budget <= 0) return 0;
     --*budget;
-    PosterEntry *entry = &cache[used++];
+    int full=used==POSTER_CACHE_MAX;
+    int slot=full?0:used++;
+    if(full){
+        for(int i=1;i<used;i++)
+            if(cache[i].last_used<cache[slot].last_used)slot=i;
+        if(cache[slot].texture)glDeleteTextures(1,&cache[slot].texture);
+    }
+    PosterEntry *entry = &cache[slot];
     entry->id = identity;
-    entry->attempted = 1;
+    entry->last_used=++cache_clock;
     entry->texture = download_texture(movie->poster);
     return entry->texture;
 }
@@ -96,4 +107,5 @@ void posters_destroy(void) {
         if (cache[i].texture) glDeleteTextures(1, &cache[i].texture);
     }
     used = 0;
+    cache_clock=0;
 }

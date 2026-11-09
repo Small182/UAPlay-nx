@@ -108,6 +108,26 @@ static const char *object_end(const char *p) {
     return NULL;
 }
 
+static char *read_offline_catalog(const char *category) {
+    const char *name = !strcmp(category, "series") ? "series" :
+                       !strcmp(category, "top") ? "top" : "movies";
+    char path[80];
+    snprintf(path, sizeof(path), "romfs:/%s.json", name);
+    FILE *file = fopen(path, "rb");
+    if (!file) return NULL;
+    if (fseek(file, 0, SEEK_END)) { fclose(file); return NULL; }
+    long length = ftell(file);
+    if (length < 1 || length > 3 * 1024 * 1024) { fclose(file); return NULL; }
+    rewind(file);
+    char *result = malloc((size_t)length + 1);
+    if (!result) { fclose(file); return NULL; }
+    size_t got = fread(result, 1, (size_t)length, file);
+    fclose(file);
+    result[got] = 0;
+    if (got != (size_t)length) { free(result); return NULL; }
+    return result;
+}
+
 int catalog_load(const char *category, const char *query, Movie *items, int max,
                  char *error, int error_size) {
     char key[256] = LAMPA_PUBLIC_TMDB_KEY;
@@ -132,7 +152,12 @@ int catalog_load(const char *category, const char *query, Movie *items, int max,
     }
     free(q);
     char *json = request(url, error, error_size);
-    if (!json) return 0;
+    if (!json) {
+        json = read_offline_catalog(category);
+        if (json) {
+            snprintf(error, error_size, "Offline catalog (network unavailable): %s", category);
+        } else return 0;
+    } else error[0] = 0;
     const char *results = strstr(json, "\"results\"");
     if (!results || !(results = strchr(results, '['))) { free(json); snprintf(error, error_size, "Bad TMDB response"); return 0; }
     const char *p = results + 1;

@@ -16,6 +16,11 @@ The catalog uses the **public client API key embedded in the open-source
 You do not need to supply your own key. To override it, create the text file
 `sdmc:/switch/lampa-nx/tmdb.key` containing your TMDB v3 API key.
 
+Network sockets are initialized using libnx. If a Switch emulator cannot access
+the internet, the application falls back to a bundled snapshot of the three
+catalog categories, so the catalog UI can still be tested. Search and UAKino
+still require a working network connection; an offline snapshot is not live data.
+
 ## Controls
 
 | Screen | Buttons |

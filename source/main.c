@@ -7,6 +7,7 @@
 #include <GLES2/gl2.h>
 #include <mpv/client.h>
 #include <mpv/render_gl.h>
+#include <curl/curl.h>
 #include "catalog.h"
 
 typedef enum { CATALOG, DETAILS, SOURCES, PLAYER } Page;
@@ -157,6 +158,8 @@ static int keyboard(char *value,size_t size) {
 }
 int main(void) {
     romfsInit();
+    Result network_result = socketInitializeDefault();
+    if (R_SUCCEEDED(network_result)) curl_global_init(CURL_GLOBAL_DEFAULT);
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS,"1");
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_GAMECONTROLLER)) return 1;
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,SDL_GL_CONTEXT_PROFILE_ES);
@@ -285,5 +288,6 @@ int main(void) {
 cleanup:
     SDL_GL_DeleteContext(gl);
     SDL_DestroyWindow(window);SDL_Quit();romfsExit();
+    if (R_SUCCEEDED(network_result)) { curl_global_cleanup(); socketExit(); }
     return 0;
 }

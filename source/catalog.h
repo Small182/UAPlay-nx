@@ -23,7 +23,7 @@ typedef struct {
 int catalog_load(const char *category, const char *query, Movie *items, int max,
                  char *error, int error_size);
 
-/* UAFresh integration: uses its worker proxy and UAKino search pages. */
+/* UAFresh integration: current UAFlix/UASerials sources via UAFresh worker. */
 int uakino_search(const Movie *movie, Source *items, int max,
                   char *error, int error_size);
 int uakino_resolve(const Source *source, char *stream, int size,

@@ -47,7 +47,8 @@ static char *request(const char *url, char *error, int error_size) {
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
     curl_easy_cleanup(curl);
     if (result != CURLE_OK || status < 200 || status >= 300) {
-        snprintf(error, error_size, "HTTP %ld: %s", status, curl_easy_strerror(result));
+        if (result == CURLE_OK) snprintf(error, error_size, "Server returned HTTP %ld", status);
+        else snprintf(error, error_size, "HTTP %ld: %s", status, curl_easy_strerror(result));
         free(r.data);
         return NULL;
     }
@@ -190,80 +191,154 @@ int catalog_load(const char *category, const char *query, Movie *items, int max,
     return count;
 }
 
-/* The UAFresh JS plugin can't run inside libnx: bridge its HTTP proxy and
-   retrieve UAKino candidates without evaluating arbitrary JavaScript. */
-int uakino_search(const Movie *movie, Source *items, int max,
-                  char *error, int error_size) {
-    char *query = encode(movie->original[0] ? movie->original : movie->title);
-    if (!query) return 0;
-    char target[1024];
-    snprintf(target, sizeof(target), "https://uakino.best/index.php?do=search&subaction=search&story=%s", query);
-    free(query);
-    char *encoded = encode(target);
-    if (!encoded) return 0;
-    char url[1700];
-    snprintf(url, sizeof(url), UAFRESH_WORKER "/proxy?url=%s", encoded);
+/* In November 2026 UAFresh explicitly excludes the old uakino.best source.
+   Its current enabled providers include UAFlix and UASerials. We use the
+   plugin's public worker proxy, but execute no remote JavaScript. */
+static char *fetch_uafresh(const char *upstream, char *error, int error_size) {
+    char *encoded = encode(upstream);
+    if (!encoded) { snprintf(error, error_size, "URL encoding failed"); return NULL; }
+    size_t length = strlen(encoded) + strlen(UAFRESH_WORKER) + 24;
+    char *url = malloc(length);
+    if (!url) { free(encoded); return NULL; }
+    snprintf(url, length, UAFRESH_WORKER "/proxy?url=%s", encoded);
     free(encoded);
     char *html = request(url, error, error_size);
-    if (!html) return 0;
-    int count = 0;
+    free(url);
+    return html;
+}
+
+static int looks_like_result(const char *url, const char *host, int provider) {
+    size_t hostlen = strlen(host);
+    if (strncmp(url, host, hostlen)) return 0;
+    const char *path = url + hostlen;
+    if (*path != '/') return 0;
+    if (provider == 0) { /* UAFlix: film/series slug, not category or menu */
+        const char *end = strchr(path+1, '/');
+        if (!end) return 0;
+        int group_ok = ((size_t)(end-(path+1)) == 5 && !strncmp(path+1, "films", 5)) ||
+                       ((size_t)(end-(path+1)) == 7 && !strncmp(path+1, "serials", 7)) ||
+                       ((size_t)(end-(path+1)) == 5 && !strncmp(path+1, "anime", 5));
+        if (!group_ok || end[1] == 0) return 0;
+        const char *slug_end = strchr(end+1, '/');
+        if (!slug_end || slug_end[1] != 0 || slug_end == end+1) return 0;
+        for (const char *p=end+1; p<slug_end; p++)
+            if (!(isalnum((unsigned char)*p) || *p=='-')) return 0;
+        return 1;
+    }
+    /* UASerials: /2389-avatar-2009.html */
+    const char *p = path+1;
+    if (!isdigit((unsigned char)*p)) return 0;
+    while (isdigit((unsigned char)*p)) p++;
+    return *p == '-' && strstr(p, ".html") != NULL;
+}
+
+static void search_provider(const char *host, const char *name, int provider,
+                            const char *query, Source *items, int *count, int limit,
+                            char *error, int error_size) {
+    char *q = encode(query);
+    if (!q) return;
+    size_t length = strlen(q)+strlen(host)+92;
+    char *search_url = malloc(length);
+    if (!search_url) { free(q); return; }
+    snprintf(search_url, length, "%s/index.php?do=search&subaction=search&story=%s", host, q);
+    free(q);
+    char *html = fetch_uafresh(search_url, error, error_size);
+    free(search_url);
+    if (!html) return;
     const char *p = html;
-    while (count < max && count < UAKINO_MAX && (p = strstr(p, "href=\""))) {
-        p += 6;
-        const char *end = strchr(p, '"');
+    while (*count < limit && (p = strstr(p, "href=")) != NULL) {
+        p += 5;
+        if (*p != '"' && *p != '\'') continue;
+        char quote = *p++;
+        const char *end = strchr(p, quote);
         if (!end) break;
-        size_t n = (size_t)(end - p);
-        if (n > 10 && n < 950 && (strstr(p, "/films/") == p || strstr(p, "https://uakino.best/") == p)) {
-            char link[1024];
-            memcpy(link, p, n); link[n] = 0;
-            int duplicate = 0;
-            for (int i = 0; i < count; i++) if (!strcmp(link, items[i].url)) duplicate = 1;
-            if (!duplicate) {
-                snprintf(items[count].url, sizeof(items[count].url), "%s%s",
-                         link[0] == '/' ? "https://uakino.best" : "", link);
-                snprintf(items[count].title, sizeof(items[count].title), "UAKino #%d", count + 1);
-                count++;
+        size_t n = (size_t)(end-p);
+        char candidate[1024];
+        if (n > 12 && n < sizeof(candidate)) {
+            memcpy(candidate, p, n);
+            candidate[n]=0;
+            if (looks_like_result(candidate, host, provider)) {
+                int exists=0;
+                for (int i=0; i<*count; i++)
+                    if (!strcmp(items[i].url,candidate)) exists=1;
+                if (!exists) {
+                    Source *dst = &items[(*count)++];
+                    snprintf(dst->url,sizeof(dst->url),"%s",candidate);
+                    snprintf(dst->title,sizeof(dst->title),"%s: %s",name,candidate+strlen(host)+1);
+                }
             }
         }
-        p = end + 1;
+        p=end+1;
     }
     free(html);
-    if (!count) snprintf(error, error_size, "UAKino found no matching pages (or blocked search)");
+}
+
+int uakino_search(const Movie *movie, Source *items, int max,
+                  char *error, int error_size) {
+    int count=0;
+    const char *search = movie->original[0] ? movie->original : movie->title;
+    error[0]=0;
+    search_provider("https://uafix.net", "UAFlix", 0, search,
+                    items, &count, max, error, error_size);
+    search_provider("https://uaserials.my", "UASerials", 1, search,
+                    items, &count, max, error, error_size);
+    if (count) error[0]=0;
+    else if (!error[0]) snprintf(error,error_size,"UAFresh: no matching pages");
     return count;
+}
+
+static int extract_media(const char *html, char *stream, int size) {
+    const char *p=html;
+    while ((p=strstr(p,"https://")) != NULL) {
+        const char *end=p;
+        while (*end && *end!='"' && *end!='\'' && *end!='<' &&
+               *end!=' ' && *end!='\\' && end-p<2047) end++;
+        size_t length=(size_t)(end-p);
+        if (length < (size_t)size && length > 12) {
+            char url[2048];
+            memcpy(url,p,length);url[length]=0;
+            if ((strstr(url,".m3u8") || strstr(url,".mp4") || strstr(url,".mpd")) &&
+                !strstr(url,"trailer")) {
+                snprintf(stream,(size_t)size,"%s",url);
+                return 1;
+            }
+        }
+        p+=8;
+    }
+    return 0;
+}
+
+static int find_embed(const char *html, char *url, int size) {
+    const char *hosts[]={"https://zetvideo.net/vod/", "https://hdvbua.pro/",
+                          "https://ashdi.vip/", "https://tortuga."};
+    for (size_t i=0; i<sizeof(hosts)/sizeof(hosts[0]); i++) {
+        const char *p=strstr(html,hosts[i]);
+        if (!p) continue;
+        const char *end=p;
+        while (*end && *end!='"' && *end!='\'' && *end!='<' &&
+               *end!=' ' && end-p<size-1) end++;
+        if (end==p || !*end || end-p>=size) continue;
+        memcpy(url,p,(size_t)(end-p));url[end-p]=0;
+        if (!strstr(url,"trailer") && !strstr(url,"youtube")) return 1;
+    }
+    return 0;
 }
 
 int uakino_resolve(const Source *source, char *stream, int size,
                    char *error, int error_size) {
-    char *encoded = encode(source->url);
-    if (!encoded) return 0;
-    char proxy[1800];
-    snprintf(proxy, sizeof(proxy), UAFRESH_WORKER "/proxy?url=%s", encoded);
-    free(encoded);
-    char *html = request(proxy, error, error_size);
-    if (!html) return 0;
-    /* Only accept an explicit direct video URL; never send an HTML page to mpv. */
-    const char *extensions[] = {".m3u8", ".mp4", ".mpd"};
-    int found = 0;
-    for (int e = 0; e < 3 && !found; e++) {
-        const char *ext = strstr(html, extensions[e]);
-        while (ext) {
-            const char *start = ext;
-            while (start > html && ext - start < 1000 && *start != '"' && *start != '\'' && *start != ' ') start--;
-            if (*start == '"' || *start == '\'') start++;
-            if (!strncmp(start, "https://", 8) || !strncmp(start, "http://", 7)) {
-                const char *finish = ext + strlen(extensions[e]);
-                while (*finish && *finish != '"' && *finish != '\'' && *finish != '<' && *finish != ' ') finish++;
-                if (finish - start < size) {
-                    memcpy(stream, start, (size_t)(finish - start));
-                    stream[finish - start] = 0;
-                    found = 1;
-                }
-                break;
-            }
-            ext = strstr(ext + strlen(extensions[e]), extensions[e]);
-        }
+    char *page = fetch_uafresh(source->url,error,error_size);
+    if (!page) return 0;
+    if (extract_media(page,stream,size)) { free(page);return 1; }
+    char embed[1024];
+    int found = find_embed(page,embed,sizeof(embed));
+    free(page);
+    if (found) {
+        char *player = fetch_uafresh(embed,error,error_size);
+        if (!player) return 0;
+        found = extract_media(player,stream,size);
+        free(player);
+        if (found) return 1;
     }
-    free(html);
-    if (!found) snprintf(error, error_size, "This UAKino page has no direct playable stream");
-    return found;
+    snprintf(error,error_size,"UAFresh: this title has no direct video (possibly trailer-only)");
+    return 0;
 }

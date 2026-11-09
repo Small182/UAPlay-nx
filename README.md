@@ -39,16 +39,27 @@ cannot contain posters. A small placeholder is shown when an image is unavailabl
 
 The URL `https://uakino.ofreshofresh.workers.dev/uakino.js` is a **Lampa JavaScript plugin**, not a standalone native API. We cannot execute it as-is without Lampa's JavaScript runtime and its `Lampa.*` interfaces.
 
-This native prototype therefore implements **only an experimental HTTP adapter**:
-it requests UAKino search pages through the plugin's public UAFresh worker proxy,
-enumerates candidate pages, and looks for direct MP4/HLS/DASH stream URLs to pass
-to `libmpv`. It does **not** yet reproduce the full plugin's providers, obfuscated
-players, episode selection, authentication, or runtime behavior.
+This native prototype implements **a tested HTTP adapter for the current UAFresh
+sources UAFlix and UASerials**. The plugin itself deliberately excludes the old
+`uakino.best` provider, which gave us an HTTP 403. We now search providers through
+UAFresh's public proxy and follow known player embeds (for example Zetvideo) to
+resolve direct HLS streams for `libmpv`.
 
-At the time of development, the UAKino proxy test received a Cloudflare browser
-challenge. **That means catalog browsing should work, but actual UAKino video
-playback is not yet verified and may be blocked.** No claim of full UAKino
-compatibility is made. Never ship passwords/cookies in source control.
+An end-to-end host-side smoke test on 2026-11-09 found 14 pages for *Avatar*
+and successfully resolved the UAFlix *Avatar (2009)* player to an `.m3u8` URL.
+Run it on a Linux PC using:
+
+```sh
+cc -O2 -Isource source/catalog.c tests/uafresh_smoke.c \
+    $(pkg-config --cflags --libs libcurl) -o /tmp/lampa-uafresh-smoke
+/tmp/lampa-uafresh-smoke
+```
+
+**Limitations:** this does not execute the complete JavaScript plugin; it does
+not yet implement all UAFresh providers, obfuscated player links, episode
+selection, authorization, or geo-restricted streams. Successful resolution on a
+PC does not prove actual decoding on Switch/Eden. Never ship passwords/cookies
+in source control.
 
 ## Notes
 

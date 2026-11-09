@@ -147,11 +147,12 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         }
         footer(p,*status?status:"A: Шукати на UAKino / UAFresh    B: Назад");
     } else if (page==SOURCES) {
-        text(p,"UAKino / UAFresh",40,45,1100);
-        for (int i=0;i<sn && i<10;i++) {
-            int y=110+i*51;
+        text(p,"UAKino / UAFresh — джерела",40,45,1100);
+        int first=source/10*10;
+        for (int i=first;i<sn && i<first+10;i++) {
+            int y=110+(i-first)*51;
             box(p,35,y,1200,46,i==source?.22f:.11f,i==source?.42f:.14f,i==source?.51f:.19f);
-            text(p,sources[i].url,50,y+8,1160);
+            text(p,sources[i].title,50,y+8,1160);
         }
         footer(p,*status?status:"A: Відкрити відео    B: Назад");
     }

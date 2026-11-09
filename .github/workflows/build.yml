@@ -14,7 +14,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify preinstalled native player dependencies
         run: |
-          dkp-pacman -Q switch-sdl2 switch-libmpv switch-pkg-config
+          dkp-pacman -Q switch-sdl2 switch-sdl2_ttf switch-libmpv switch-curl switch-pkg-config
       - name: Compile native NRO
         run: |
           export DEVKITPRO=/opt/devkitpro
@@ -27,6 +27,6 @@ jobs:
           test -s Lampa-nx.nro
       - uses: actions/upload-artifact@v4
         with:
-          name: Lampa-nx-native-player
+          name: Lampa-nx-catalog-uakino
           path: Lampa-nx.nro
           if-no-files-found: error

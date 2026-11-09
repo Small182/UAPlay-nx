@@ -13,24 +13,27 @@ export PKG_CONFIG_LIBDIR
 TARGET := Lampa-nx
 ARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -fPIE
 COMMON := -O2 -g -Wall -Wextra -ffunction-sections -fdata-sections $(ARCH)
-CFLAGS := $(COMMON) -D__SWITCH__ -I$(LIBNX)/include -I$(PORTLIBS)/include $(shell pkg-config --cflags sdl2 mpv)
+CFLAGS := $(COMMON) -D__SWITCH__ -I$(LIBNX)/include -I$(PORTLIBS)/include $(shell pkg-config --cflags sdl2 SDL2_ttf mpv libcurl)
 LDFLAGS := -specs=$(LIBNX)/switch.specs $(ARCH) -Wl,--gc-sections
-LIBS := $(shell pkg-config --libs mpv sdl2) -llzma -lzstd -L$(LIBNX)/lib -lnx -lm
+LIBS := $(shell pkg-config --libs mpv sdl2 SDL2_ttf libcurl) -llzma -lzstd -L$(LIBNX)/lib -lnx -lm
 
 .PHONY: all clean
 all: $(TARGET).nro
 
-main.o: source/main.c
+main.o: source/main.c source/catalog.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(TARGET).elf: main.o
-	$(CC) $(LDFLAGS) $< $(LIBS) -o $@
+catalog.o: source/catalog.c source/catalog.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TARGET).elf: main.o catalog.o
+	$(CC) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(TARGET).nacp:
 	nacptool --create "Lampa Native" "Small182" "0.1.0" $@
 
 $(TARGET).nro: $(TARGET).elf $(TARGET).nacp
-	elf2nro $< $@ --nacp=$(TARGET).nacp --icon=icon.jpg
+	elf2nro $< $@ --nacp=$(TARGET).nacp --icon=icon.jpg --romfsdir=romfs
 
 clean:
-	rm -f main.o $(TARGET).elf $(TARGET).nacp $(TARGET).nro
+	rm -f main.o catalog.o $(TARGET).elf $(TARGET).nacp $(TARGET).nro

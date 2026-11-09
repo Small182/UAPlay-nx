@@ -24,7 +24,7 @@ TMDB works out of the box using the public client key from the [official Lampa s
 - Adds an external WebVTT subtitle track from UAFresh embedded players when the provider supplies one (for example Zetvideo's Ukrainian subtitles).
 - Settings/information screen.
 - Optional **UAFlix account sign-in** under Settings (`Minus` → `A`). The native app uses the same UAFresh worker `/login` endpoint as the supplied Lampa plugin, then sends its cookie to `/proxy` on UAFlix requests. This is important for series: the plugin explicitly warns that UAFlix serves only trailers without logging in on browser-style clients. `Y` signs out. Passwords are not saved, but the session cookie is stored in plaintext on the SD card at `sdmc:/switch/uaflix/uaflix.cookie`; anyone with access to the SD card can copy it. Do not use a password you share with other important accounts.
-- Original user-supplied Lampa icon retained for now; homebrew display name is **Uaflix**.
+- Custom cyan-on-midnight **Uaflix** icon based on the user's supplied transparent geometric mark; homebrew display name is **Uaflix**.
 
 ## Controls
 

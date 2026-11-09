@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
+#include <sys/stat.h>
 #include <switch.h>
 #include <SDL.h>
 #include <SDL_ttf.h>
@@ -61,19 +63,44 @@ static Episode *selected_episode_item(void) {
 
 static const char *categories[]={"movies","series","top","genre_28","genre_35",
     "genre_18","genre_27","genre_878","genre_16","genre_10749","genre_99",
-    "favorites","history"};
+    "favorites","history","cartoons","cartoon_series","anime"};
 static const char *headings[]={"Популярні фільми","Популярні серіали","Найкращі фільми",
     "Бойовики","Комедії","Драми","Жахи","Фантастика","Анімація",
-    "Романтика","Документальні","Вибране","Історія переглядів"};
+    "Романтика","Документальні","Вибране","Історія переглядів",
+    "Мультфільми","Мультсеріали","Аніме"};
 #define CATEGORY_COUNT ((int)(sizeof(categories)/sizeof(categories[0])))
+#define ANIMATION_FIRST 13
+#define ANIMATION_LAST 15
 static int expanded_catalog=0;
 /* 0: posters, 1: Watch, 2: Add to favorites, 3: All (catalog controls). */
 static int catalog_hero_focus=0;
 /* 0: Watch, 1: Add to favorites (details buttons). */
 static int details_button_focus=0;
 static int settings_selected=0,ui_accent_alt=0,source_mode=0;
+static int ui_light_theme=0,ui_theme_enabled=1,ui_gradient_pass=0;
+#define THEME_PATH "sdmc:/switch/uaplay/theme.txt"
+static void theme_load(void){
+    FILE *f=fopen(THEME_PATH,"r");
+    if(f){ui_light_theme=fgetc(f)=='1';fclose(f);}
+}
+static void theme_save(void){
+    mkdir("sdmc:/switch/uaplay",0777);
+    FILE *f=fopen(THEME_PATH,"w");
+    if(f){fputc(ui_light_theme?'1':'0',f);fclose(f);}
+}
 static int video_settings_from_menu=0;
 static int ui_category=0;
+static int tab_for_category(int category){
+    if(category==0)return 0;
+    if(category==1)return 1;
+    if(category>=ANIMATION_FIRST && category<=ANIMATION_LAST)return 3;
+    if(category==11 || category==12)return 4;
+    return 2;
+}
+static int category_for_tab(int tab){
+    const int destinations[]={0,1,2,ANIMATION_FIRST,11};
+    return tab>=0 && tab<5?destinations[tab]:0;
+}
 static void prioritize_sources(Source *items,int count){
     if(source_mode==0)return;
     for(int i=0;i<count;i++)for(int j=i+1;j<count;j++){
@@ -85,20 +112,140 @@ static void prioritize_sources(Source *items,int count){
     }
 }
 
+/* TMDB returns only 20 titles per page. Fetch the remaining pages on an SDL
+   worker so gamepad navigation and drawing never wait for ten HTTP requests. */
+typedef struct {
+    SDL_Thread *thread;
+    SDL_mutex *mutex;
+    SDL_cond *cond;
+    int quit,requested,generation,request_generation,request_page;
+    int ready,ready_generation,ready_count,ready_page;
+    char category[48],query[192];
+    Movie ready_items[CATALOG_PAGE_SIZE];
+} CatalogLoader;
+static CatalogLoader catalog_loader;
+static int catalog_next_page=2,catalog_loading=0;
+
+static int catalog_worker(void *opaque){
+    CatalogLoader *loader=opaque;
+    Movie *batch=calloc(CATALOG_PAGE_SIZE,sizeof(Movie));
+    if(!batch)return 0;
+    for(;;){
+        SDL_LockMutex(loader->mutex);
+        while(!loader->quit && !loader->requested)
+            SDL_CondWait(loader->cond,loader->mutex);
+        if(loader->quit){SDL_UnlockMutex(loader->mutex);break;}
+        char category[48],query[192];
+        snprintf(category,sizeof(category),"%s",loader->category);
+        snprintf(query,sizeof(query),"%s",loader->query);
+        int page=loader->request_page,generation=loader->request_generation;
+        loader->requested=0;
+        SDL_UnlockMutex(loader->mutex);
+        memset(batch,0,CATALOG_PAGE_SIZE*sizeof(Movie));
+        char error[192]={0};
+        int count=catalog_load_page(category,query,page,batch,
+                                    CATALOG_PAGE_SIZE,error,sizeof(error));
+        SDL_LockMutex(loader->mutex);
+        if(!loader->quit && generation==loader->generation){
+            loader->ready=1;
+            loader->ready_generation=generation;
+            loader->ready_page=page;
+            loader->ready_count=count;
+            if(count>0)memcpy(loader->ready_items,batch,count*sizeof(Movie));
+        }
+        SDL_UnlockMutex(loader->mutex);
+    }
+    free(batch);
+    return 0;
+}
+static void catalog_loader_init(void){
+    CatalogLoader *loader=&catalog_loader;
+    loader->mutex=SDL_CreateMutex();
+    loader->cond=SDL_CreateCond();
+    if(loader->mutex && loader->cond)
+        loader->thread=SDL_CreateThread(catalog_worker,"tmdb-pages",loader);
+}
+static void catalog_loader_request(int page,int category,const char *query){
+    CatalogLoader *loader=&catalog_loader;
+    if(!loader->thread || page<2 || page>20)return;
+    SDL_LockMutex(loader->mutex);
+    loader->requested=1;
+    loader->request_generation=loader->generation;
+    loader->request_page=page;
+    snprintf(loader->category,sizeof(loader->category),"%s",categories[category]);
+    snprintf(loader->query,sizeof(loader->query),"%s",query);
+    SDL_CondSignal(loader->cond);
+    SDL_UnlockMutex(loader->mutex);
+    catalog_loading=1;
+}
+static void catalog_loader_reset(int category,const char *query,int count,int online){
+    CatalogLoader *loader=&catalog_loader;
+    catalog_next_page=2;
+    catalog_loading=0;
+    if(!loader->mutex)return;
+    SDL_LockMutex(loader->mutex);
+    loader->generation++;
+    loader->ready=0;
+    loader->requested=0;
+    SDL_UnlockMutex(loader->mutex);
+    if(online && count>0 && count<CATALOG_MAX &&
+       strcmp(categories[category],"favorites") &&
+       strcmp(categories[category],"history"))
+        catalog_loader_request(catalog_next_page++,category,query);
+}
+static void catalog_loader_poll(Movie *movies,int *count,int category,const char *query){
+    CatalogLoader *loader=&catalog_loader;
+    if(!loader->mutex)return;
+    int batch_count=0,ready=0;
+    SDL_LockMutex(loader->mutex);
+    if(loader->ready && loader->ready_generation==loader->generation){
+        ready=1;batch_count=loader->ready_count;
+        for(int i=0;i<batch_count && *count<CATALOG_MAX;i++){
+            int duplicate=0;
+            for(int k=0;k<*count;k++)
+                if(movies[k].id==loader->ready_items[i].id &&
+                   movies[k].series==loader->ready_items[i].series){duplicate=1;break;}
+            if(!duplicate)movies[(*count)++]=loader->ready_items[i];
+        }
+        loader->ready=0;
+    }
+    SDL_UnlockMutex(loader->mutex);
+    if(ready){
+        if(batch_count && *count<CATALOG_MAX && catalog_next_page<=20)
+            catalog_loader_request(catalog_next_page++,category,query);
+        else catalog_loading=0;
+    }
+}
+static void catalog_loader_shutdown(void){
+    CatalogLoader *loader=&catalog_loader;
+    if(loader->mutex){
+        SDL_LockMutex(loader->mutex);
+        loader->quit=1;
+        if(loader->cond)SDL_CondSignal(loader->cond);
+        SDL_UnlockMutex(loader->mutex);
+    }
+    if(loader->thread)SDL_WaitThread(loader->thread,NULL);
+    if(loader->cond)SDL_DestroyCond(loader->cond);
+    if(loader->mutex)SDL_DestroyMutex(loader->mutex);
+}
+
 static int load_category(int category,const char *query,Movie *movies,char *message,int size) {
+    int count=0;
     if (!strcmp(categories[category],"favorites")) {
         message[0]=0;
-        return library_list(movies,CATALOG_MAX,1);
-    }
-    if (!strcmp(categories[category],"history")) {
+        count=library_list(movies,CATALOG_MAX,1);
+    }else if (!strcmp(categories[category],"history")) {
         message[0]=0;
-        return library_list(movies,CATALOG_MAX,0);
+        count=library_list(movies,CATALOG_MAX,0);
+    }else{
+        count=catalog_load(categories[category],query,movies,CATALOG_MAX,message,size);
     }
-    return catalog_load(categories[category],query,movies,CATALOG_MAX,message,size);
+    catalog_loader_reset(category,query,count,!message[0]);
+    return count;
 }
 typedef struct {
-    GLuint program, vbo, tex;
-    GLint tint, shape;
+    GLuint program, vbo, tex, solid_tex;
+    GLint tint, shape, gradient;
     TTF_Font *font;
     TTF_Font *font_big;
     TTF_Font *font_small;
@@ -139,11 +286,17 @@ static const char *vs = "attribute vec2 pos;attribute vec2 uv;varying vec2 tc;"
                         "void main(){gl_Position=vec4(pos,0.,1.);tc=uv;}";
 static const char *fs = "precision mediump float;varying vec2 tc;"
                         "uniform vec4 tint;uniform sampler2D image;uniform vec3 shape;"
+                        "uniform float gradient;"
                         "void main(){vec2 p=tc*shape.xy;vec2 q=abs(p-shape.xy*.5)"
                         "-shape.xy*.5+shape.z;float d=length(max(q,0.0))"
                         "+min(max(q.x,q.y),0.0)-shape.z;"
                         "float a=1.0-smoothstep(-1.0,1.5,d);"
-                        "gl_FragColor=texture2D(image,tc)*tint*a;}";
+                        "vec3 rgb=tint.rgb;"
+                        "if(gradient>1.5)rgb=mix(vec3(.995,.984,.971),"
+                        "vec3(.914,.932,.951),tc.y);"
+                        "else if(gradient>.5)rgb=mix(vec3(.079,.112,.164),"
+                        "vec3(.019,.027,.041),tc.y);"
+                        "gl_FragColor=texture2D(image,tc)*vec4(rgb,tint.a)*a;}";
 static void *proc(void *ctx, const char *name) {
     (void)ctx; return SDL_GL_GetProcAddress(name);
 }
@@ -168,8 +321,10 @@ static int paint_init(Paint *p) {
     if (!linked) return 0;
     p->tint=glGetUniformLocation(p->program,"tint");
     p->shape=glGetUniformLocation(p->program,"shape");
+    p->gradient=glGetUniformLocation(p->program,"gradient");
     glGenBuffers(1,&p->vbo);
     glGenTextures(1,&p->tex);
+    p->solid_tex=p->tex;
     glBindTexture(GL_TEXTURE_2D,p->tex);
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
@@ -198,8 +353,13 @@ static void box_alpha(Paint *p,int x,int y,int w,int h,float r,float g,float b,f
     float vertices[]={x0,y0,0,0, x1,y0,1,0, x0,y1,0,1,
                       x1,y0,1,0, x1,y1,1,1, x0,y1,0,1};
     glUseProgram(p->program);
+    /* Solid UI colors invert for the light palette, not poster/video pixels. */
+    if(ui_theme_enabled && ui_light_theme && p->tex==p->solid_tex && !ui_gradient_pass){
+        r=1.f-r;g=1.f-g;b=1.f-b;
+    }
     glUniform4f(p->tint,r,g,b,a);
     glUniform3f(p->shape,(float)w,(float)h,(float)radius);
+    glUniform1f(p->gradient,ui_gradient_pass?(ui_light_theme?2.f:1.f):0.f);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D,p->tex);
     glBindBuffer(GL_ARRAY_BUFFER,p->vbo);
@@ -215,6 +375,7 @@ static void box(Paint *p,int x,int y,int w,int h,float r,float g,float b) {
 static void text_color(Paint *p,const char *str,int x,int y,int limit,
                        float r,float g,float b) {
     if (!str || !*str) return;
+    if(ui_theme_enabled && ui_light_theme){r=1.f-r;g=1.f-g;b=1.f-b;}
     SDL_Color color={255,255,255,255};
     SDL_Surface *surface=TTF_RenderUTF8_Blended(choose_font(p,str),str,color);
     if (!surface) return;
@@ -325,13 +486,57 @@ static void button(Paint *p,const char *label,int x,int y,int w,int h,int primar
     text_center(p,label,x,y+(h-23)/2,w,p->font_small,
                 primary?.08f:.95f,primary?.10f:.96f,primary?.13f:.98f);
 }
-/* UI icons are drawn with primitives: no missing-font placeholder squares. */
+/* Solid vector polygons for crisp icons, independent of font glyph support. */
+static void polygon(Paint *p,const float *points,int count,float r,float g,float b){
+    if(count<3 || count>60)return;
+    float vertices[(60+2)*4];
+    float cx=0,cy=0;
+    for(int i=0;i<count;i++){cx+=points[2*i];cy+=points[2*i+1];}
+    cx/=count;cy/=count;
+    vertices[0]=cx/640.f-1.f;vertices[1]=1.f-cy/360.f;
+    vertices[2]=vertices[3]=.5f;
+    for(int i=0;i<=count;i++){
+        int j=i%count;
+        vertices[(i+1)*4]=points[j*2]/640.f-1.f;
+        vertices[(i+1)*4+1]=1.f-points[j*2+1]/360.f;
+        vertices[(i+1)*4+2]=vertices[(i+1)*4+3]=.5f;
+    }
+    if(ui_theme_enabled && ui_light_theme){r=1.f-r;g=1.f-g;b=1.f-b;}
+    glUseProgram(p->program);
+    glUniform4f(p->tint,r,g,b,1.f);
+    glUniform3f(p->shape,100.f,100.f,0.f);
+    glUniform1f(p->gradient,0.f);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D,p->solid_tex);
+    glBindBuffer(GL_ARRAY_BUFFER,p->vbo);
+    glBufferData(GL_ARRAY_BUFFER,(count+2)*4*sizeof(float),vertices,GL_STREAM_DRAW);
+    glEnableVertexAttribArray(0);glEnableVertexAttribArray(1);
+    glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,4*sizeof(float),(void*)0);
+    glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,4*sizeof(float),(void*)(2*sizeof(float)));
+    glDrawArrays(GL_TRIANGLE_FAN,0,count+2);
+}
+static void search_icon(Paint *p,int cx,int cy,float bg_r,float bg_g,float bg_b){
+    const float fg=.96f;
+    box_alpha(p,cx-15,cy-15,30,30,fg,fg,fg,1.f,15);
+    box_alpha(p,cx-9,cy-9,18,18,bg_r,bg_g,bg_b,1.f,9);
+    const float handle[]={cx+9,cy+9,cx+14,cy+4,cx+25,cy+16,cx+20,cy+21};
+    polygon(p,handle,4,fg,fg,fg);
+}
+/* Eight sturdy teeth + circular opening, matching the supplied gear image. */
 static void gear_icon(Paint *p,int cx,int cy,float bg_r,float bg_g,float bg_b){
-    const float fg=.95f;
-    box_alpha(p,cx-3,cy-18,6,36,fg,fg,fg,1.f,2);
-    box_alpha(p,cx-18,cy-3,36,6,fg,fg,fg,1.f,2);
-    box_alpha(p,cx-13,cy-13,26,26,fg,fg,fg,1.f,13);
-    box_alpha(p,cx-6,cy-6,12,12,bg_r,bg_g,bg_b,1.f,6);
+    const float fg=.96f,pi=3.14159265f;
+    float teeth[8*6*2];
+    for(int k=0;k<8;k++){
+        const float angles[]={-.37f,-.22f,-.15f,.15f,.22f,.37f};
+        const float radii[]={14.f,14.f,20.f,20.f,14.f,14.f};
+        for(int j=0;j<6;j++){
+            float angle=k*pi/4.f+angles[j];
+            teeth[(k*6+j)*2]=cx+cosf(angle)*radii[j];
+            teeth[(k*6+j)*2+1]=cy+sinf(angle)*radii[j];
+        }
+    }
+    polygon(p,teeth,48,fg,fg,fg);
+    box_alpha(p,cx-7,cy-7,14,14,bg_r,bg_g,bg_b,1.f,7);
 }
 static void screen_header(Paint *p,const char *name,const char *context){
     box_alpha(p,0,0,1280,92,.058f,.069f,.083f,1.f,0);
@@ -434,7 +639,10 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
     glViewport(0,0,1280,720);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
-    box(p,0,0,1280,720,.034f,.042f,.054f);
+    ui_theme_enabled=1;
+    ui_gradient_pass=1;
+    box_alpha(p,0,0,1280,720,.034f,.042f,.054f,1.f,0);
+    ui_gradient_pass=0;
     footer_position=page==CATALOG?(n?chosen+1:0):page==SOURCES?(sn?source+1:0):
                     page==EPISODES?(episode_count?selected_episode+1:0):
                     page==SEASONS?(season_count?selected_season+1:0):0;
@@ -445,21 +653,24 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
     int poster_budget=1;
     if (page==CATALOG) {
         box_alpha(p,0,0,1280,80,.059f,.070f,.081f,1.f,0);
-        headline(p,"UAPlay",32,18,175);
-        const char *tabs[]={"Головна","Серіали","Фільми","Вибране"};
-        for(int i=0;i<4;i++){
-            int x=229+i*131;
+        headline(p,"UAPlay",25,18,166);
+        const char *tabs[]={"Головна","Серіали","Фільми","Анімація","Вибране"};
+        const int tab_x[]={205,307,410,502,630};
+        const int tab_w[]={96,95,89,120,112};
+        for(int i=0;i<5;i++){
+            int x=tab_x[i];
             int active=(i==0 && ui_category==0) ||
-                       (i==1 && ui_category==1) || (i==2 && ui_category>=2 && ui_category<11) ||
-                       (i==3 && ui_category>=11);
-            if(active)box_alpha(p,x-12,19,124,43,.19f,.24f,.28f,1.f,16);
-            text_small(p,tabs[i],x,27,114);
+                       (i==1 && ui_category==1) ||
+                       (i==2 && ui_category>=2 && ui_category<=10) ||
+                       (i==3 && ui_category>=ANIMATION_FIRST && ui_category<=ANIMATION_LAST) ||
+                       (i==4 && (ui_category==11 || ui_category==12));
+            if(active)box_alpha(p,x-12,19,tab_w[i],43,.19f,.24f,.28f,1.f,16);
+            if(catalog_hero_focus==i+7)selection_frame(p,x-12,19,tab_w[i],43);
+            text_small(p,tabs[i],x,27,tab_w[i]-8);
         }
         /* Search is a real touch target, not a missing Unicode glyph. */
         box_alpha(p,767,17,277,47,.13f,.16f,.19f,1.f,15);
-        box_alpha(p,787,27,22,22,.91f,.93f,.96f,1.f,11);
-        box_alpha(p,791,31,14,14,.13f,.16f,.19f,1.f,7);
-        box_alpha(p,805,44,11,5,.91f,.93f,.96f,1.f,2);
+        search_icon(p,799,37,.13f,.16f,.19f);
         text_small(p,"Пошук",831,27,177);
         box_alpha(p,1058,17,53,47,.13f,.16f,.19f,1.f,15);
         gear_icon(p,1085,40,.13f,.16f,.19f);
@@ -467,9 +678,16 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         struct tm *local=localtime(&now);
         char clock_label[32]="--:--";
         if(local)strftime(clock_label,sizeof(clock_label),"%H:%M",local);
-        text_small(p,clock_label,1154,29,105);
+        text_font(p,clock_label,1140,21,116,p->font_big,.95f,.97f,.99f);
         if(expanded_catalog){
             headline(p,heading,UI_EDGE,97,960);
+            if(strcmp(categories[ui_category],"favorites") &&
+               strcmp(categories[ui_category],"history")){
+                char count_label[32];
+                snprintf(count_label,sizeof(count_label),"%d / %d%s",n,CATALOG_MAX,
+                         catalog_loading?"…":"");
+                text_tiny(p,count_label,941,113,145);
+            }
             button(p,"‹  Назад",1106,98,142,44,0);
             int start=chosen/12*12;
             for(int i=start;i<n && i<start+12;i++){
@@ -499,7 +717,20 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             button(p,"▶  Дивитися",62,264,180,39,1);
             button(p,n && library_favorite(&movies[active])?
                    "✓  У вибраному":"+  До списку",254,264,189,39,0);
-            text(p,heading,UI_EDGE,336,930);
+            if(ui_category>=ANIMATION_FIRST && ui_category<=ANIMATION_LAST){
+                const char *animation_tabs[]={"Мультфільми","Мультсеріали","Аніме"};
+                const int anim_x[]={32,240,465},anim_w[]={191,208,134};
+                for(int i=0;i<3;i++){
+                    int active=ui_category==ANIMATION_FIRST+i;
+                    box_alpha(p,anim_x[i],328,anim_w[i],43,
+                              active?.20f:.12f,active?.28f:.15f,
+                              active?.35f:.19f,1.f,13);
+                    if(catalog_hero_focus==i+4)
+                        selection_frame(p,anim_x[i],328,anim_w[i],43);
+                    text_center(p,animation_tabs[i],anim_x[i],337,anim_w[i],
+                                p->font_small,.96f,.97f,.99f);
+                }
+            }else text(p,heading,UI_EDGE,336,930);
             if(status && (!strncmp(status,"Offline catalog",15) ||
                           !strncmp(status,"Офлайн-пошук",strlen("Офлайн-пошук"))))
                 text_tiny(p,"Офлайн",1026,340,77);
@@ -516,8 +747,8 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         footer(p,status);
     } else if(page==SETTINGS){
         screen_header(p,"Налаштування","UAPlay");
-        const char *items[]={"Інтерфейс","Плеєр","Джерела"};
-        for(int i=0;i<3;i++){
+        const char *items[]={"Тема","Інтерфейс","Плеєр","Джерела"};
+        for(int i=0;i<4;i++){
             int y=136+i*88;
             box_alpha(p,32,y,417,72,i==settings_selected?.20f:.09f,
                       i==settings_selected?.29f:.11f,
@@ -529,15 +760,17 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         box_alpha(p,475,136,773,480,.10f,.12f,.15f,1.f,20);
         headline(p,items[settings_selected],513,174,685);
         char description[240];
-        if(settings_selected==0)snprintf(description,sizeof(description),"Акцент: %s",ui_accent_alt?"Блакитний":"Золотистий");
-        else if(settings_selected==1)snprintf(description,sizeof(description),"Швидкість: %.2f · гучність: %.0f",video_options[0],video_options[1]);
+        if(settings_selected==0)snprintf(description,sizeof(description),"Оформлення: %s",ui_light_theme?"Світла тема":"Темна тема");
+        else if(settings_selected==1)snprintf(description,sizeof(description),"Акцент: %s",ui_accent_alt?"Блакитний":"Золотистий");
+        else if(settings_selected==2)snprintf(description,sizeof(description),"Швидкість: %.2f · гучність: %.0f",video_options[0],video_options[1]);
         else snprintf(description,sizeof(description),"Пріоритет: %s",source_mode==0?"Усі джерела":source_mode==1?"UAFlix":"UASerials");
         text(p,description,516,255,682);
-        const char *help[]={"Змінює колір виділення на всіх екранах.",
+        const char *help[]={"Перемикає темну та світлу теми. Вибір зберігається на SD-карті.",
+            "Змінює колір виділення на всіх екранах.",
             "Налаштуйте відео, гучність та субтитри.",
             "Оберіть порядок відображення джерел відео."};
         wrapped(p,help[settings_selected],517,315,675,3,29,p->font_small,.73f,.78f,.84f);
-        button(p,settings_selected==1?"Відкрити параметри":"Змінити",515,537,258,55,1);
+        button(p,settings_selected==2?"Відкрити параметри":"Змінити",515,537,258,55,1);
         footer(p,status);
     } else if (page==DETAILS) {
         screen_header(p,movies[chosen].series?"Про серіал":"Про фільм","UAPlay");
@@ -629,6 +862,7 @@ static void seek(mpv_handle *player,const char *seconds) {
     if(player) mpv_command_async(player,0,args);
 }
 static void draw_player_controls(Paint *p,mpv_handle *player) {
+    ui_theme_enabled=0; /* Video playback controls remain readable in both themes. */
     double pos=0,duration=0;
     int paused=0;
     if(player){
@@ -721,6 +955,7 @@ static int keyboard(char *value,size_t size) {
 int main(void) {
     romfsInit();
     library_init();
+    theme_load();
     Result network_result = socketInitializeDefault();
     if (R_SUCCEEDED(network_result)) curl_global_init(CURL_GLOBAL_DEFAULT);
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS,"1");
@@ -758,11 +993,12 @@ int main(void) {
             mpv_render_context_create(&render,player,init);
         }
     }
-    Movie movies[CATALOG_MAX]={0};
+    static Movie movies[CATALOG_MAX];
     Source sources[UAKINO_MAX]={0};
     int n=0,sn=0,chosen=0,source=0,category=0,running=1;
     Page page=CATALOG;
     char query[192]={0},message[256]={0};
+    catalog_loader_init();
     n=load_category(category,query,movies,message,sizeof(message));
     Movie playing_movie={0};
     double resume_at=0;
@@ -848,14 +1084,20 @@ int main(void) {
                         else if(tx>=1029 && tx<1123)key=SDL_CONTROLLER_BUTTON_X;
                     }else continue;
                 }else if(page==CATALOG){
-                    if(ty<78 && tx>=217 && tx<742){
-                        int tab=(tx-217)/131;
-                        int next=tab==1?1:tab==2?2:tab==3?11:0;
+                    if(ty<78 && tx>=193 && tx<742){
+                        const int tab_x[]={193,295,398,490,618};
+                        const int tab_w[]={96,95,89,120,124};
+                        int next=category;
+                        int focused=-1;
+                        for(int i=0;i<5;i++)
+                            if(tx>=tab_x[i] && tx<tab_x[i]+tab_w[i])
+                                {next=category_for_tab(i);focused=i;break;}
                         if(next!=category){
                             category=next;query[0]=message[0]=0;
                             n=load_category(category,query,movies,message,sizeof(message));
                             chosen=0;expanded_catalog=0;catalog_hero_focus=0;
                         }
+                        if(focused>=0)catalog_hero_focus=7+focused;
                         continue;
                     }
                     if(ty<78 && tx>=767 && tx<1044)key=SDL_CONTROLLER_BUTTON_X;
@@ -872,6 +1114,18 @@ int main(void) {
                         }
                     }else{
                         if(ty>=326 && ty<375 && tx>=1095){expanded_catalog=1;chosen=0;catalog_hero_focus=0;continue;}
+                        if(category>=ANIMATION_FIRST && category<=ANIMATION_LAST &&
+                           ty>=326 && ty<375){
+                            const int anim_x[]={32,240,465},anim_w[]={191,208,134};
+                            for(int i=0;i<3;i++)if(tx>=anim_x[i] && tx<anim_x[i]+anim_w[i]){
+                                category=ANIMATION_FIRST+i;
+                                query[0]=message[0]=0;
+                                n=load_category(category,query,movies,message,sizeof(message));
+                                chosen=0;catalog_hero_focus=4+i;
+                                break;
+                            }
+                            continue;
+                        }
                         if(ty>=260 && ty<307 && tx>=254 && tx<444 && n){
                             catalog_hero_focus=2;
                             library_toggle_favorite(&movies[chosen]);continue;
@@ -932,9 +1186,9 @@ int main(void) {
                         key=tx<640?SDL_CONTROLLER_BUTTON_DPAD_LEFT:SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
                     }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==SETTINGS){
-                    if(tx>=32 && tx<449 && ty>=136 && ty<384 && (ty-136)%88<72){
+                    if(tx>=32 && tx<449 && ty>=136 && ty<472 && (ty-136)%88<72){
                         settings_selected=(ty-136)/88;
-                        if(settings_selected>=3)settings_selected=2;
+                        if(settings_selected>=4)settings_selected=3;
                         key=SDL_CONTROLLER_BUTTON_A;
                     }else if(ty>=537 && ty<592 && tx>=515 && tx<773)key=SDL_CONTROLLER_BUTTON_A;
                     else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
@@ -1048,14 +1302,15 @@ int main(void) {
             if(page==SETTINGS){
                 if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){page=CATALOG;continue;}
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && settings_selected>0)settings_selected--;
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && settings_selected<2)settings_selected++;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && settings_selected<3)settings_selected++;
                 if(key==SDL_CONTROLLER_BUTTON_A){
-                    if(settings_selected==0)ui_accent_alt=!ui_accent_alt;
-                    else if(settings_selected==1){
+                    if(settings_selected==0){ui_light_theme=!ui_light_theme;theme_save();}
+                    else if(settings_selected==1)ui_accent_alt=!ui_accent_alt;
+                    else if(settings_selected==2){
                         selected_video_option=0;
                         video_settings_from_menu=1;
                         page=VIDEO_SETTINGS;
-                    }else if(settings_selected==2)source_mode=(source_mode+1)%3;
+                    }else if(settings_selected==3)source_mode=(source_mode+1)%3;
                 }
                 continue;
             }
@@ -1073,24 +1328,61 @@ int main(void) {
                     n=load_category(category,query,movies,message,sizeof(message));
                     chosen=0;catalog_hero_focus=0;continue;
                 }
-                if(!expanded_catalog && catalog_hero_focus){
-                    if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus>1)
+                if(catalog_hero_focus>=7){
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus>7)
                         catalog_hero_focus--;
-                    if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && catalog_hero_focus<3)
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && catalog_hero_focus<11)
                         catalog_hero_focus++;
-                    if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)catalog_hero_focus=0;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)
+                        catalog_hero_focus=expanded_catalog?0:
+                            (category>=ANIMATION_FIRST && category<=ANIMATION_LAST?
+                             4+category-ANIMATION_FIRST:1);
+                }else if(!expanded_catalog && catalog_hero_focus){
+                    if(catalog_hero_focus>=4){
+                        if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus>4)
+                            catalog_hero_focus--;
+                        if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && catalog_hero_focus<6)
+                            catalog_hero_focus++;
+                        if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)catalog_hero_focus=1;
+                        if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)catalog_hero_focus=0;
+                    }else{
+                        if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus>1)
+                            catalog_hero_focus--;
+                        if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && catalog_hero_focus<3)
+                            catalog_hero_focus++;
+                        if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)
+                            catalog_hero_focus=7+tab_for_category(category);
+                        if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)
+                            catalog_hero_focus=category>=ANIMATION_FIRST &&
+                              category<=ANIMATION_LAST?4+category-ANIMATION_FIRST:0;
+                    }
                 }else{
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && chosen>0)chosen--;
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && chosen<n-1)chosen++;
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_UP){
                         if(chosen>=6)chosen-=6;
-                        else if(!expanded_catalog && n)
-                            catalog_hero_focus=chosen%6>=4?3:1;
+                        else if(expanded_catalog)
+                            catalog_hero_focus=7+tab_for_category(category);
+                        else if(n ||
+                                (category>=ANIMATION_FIRST && category<=ANIMATION_LAST)))
+                            catalog_hero_focus=category>=ANIMATION_FIRST &&
+                                category<=ANIMATION_LAST?4+category-ANIMATION_FIRST:
+                                (chosen%6>=4?3:1);
                     }
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && chosen+6<n)chosen+=6;
                 }
-                if(key==SDL_CONTROLLER_BUTTON_A && n){
-                    if(!expanded_catalog && catalog_hero_focus==3){
+                if(key==SDL_CONTROLLER_BUTTON_A && (n || catalog_hero_focus>=4)){
+                    if(catalog_hero_focus>=7){
+                        category=category_for_tab(catalog_hero_focus-7);
+                        query[0]=message[0]=0;
+                        n=load_category(category,query,movies,message,sizeof(message));
+                        chosen=0;expanded_catalog=0;
+                    }else if(!expanded_catalog && catalog_hero_focus>=4){
+                        category=ANIMATION_FIRST+catalog_hero_focus-4;
+                        query[0]=message[0]=0;
+                        n=load_category(category,query,movies,message,sizeof(message));
+                        chosen=0;
+                    }else if(!expanded_catalog && catalog_hero_focus==3){
                         expanded_catalog=1;chosen=0;catalog_hero_focus=0;message[0]=0;
                     }else if(!expanded_catalog && catalog_hero_focus==2){
                         library_toggle_favorite(&movies[chosen]);
@@ -1210,7 +1502,9 @@ int main(void) {
                 }
             }
         }
+        catalog_loader_poll(movies,&n,category,query);
         if(page==PLAYER && render){
+            ui_theme_enabled=0;
             mpv_opengl_fbo fbo={.fbo=0,.w=1280,.h=720};int flip=1;
             mpv_render_param frame[]={{MPV_RENDER_PARAM_OPENGL_FBO,&fbo},
                                       {MPV_RENDER_PARAM_FLIP_Y,&flip},
@@ -1245,6 +1539,7 @@ int main(void) {
         }
         SDL_GL_SwapWindow(window);SDL_Delay(16);
     }
+    catalog_loader_shutdown();
     if(render)mpv_render_context_free(render);
     if(player)mpv_terminate_destroy(player);
     if(pad)SDL_GameControllerClose(pad);

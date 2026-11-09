@@ -1,7 +1,8 @@
 #ifndef LAMPA_CATALOG_H
 #define LAMPA_CATALOG_H
 
-#define CATALOG_MAX 40
+#define CATALOG_MAX 200
+#define CATALOG_PAGE_SIZE 20
 #define UAKINO_MAX 20
 #define EPISODES_MAX 128
 
@@ -30,6 +31,9 @@ typedef struct {
 /* Key is loaded from sdmc:/switch/lampa-nx/tmdb.key; never bundled. */
 int catalog_load(const char *category, const char *query, Movie *items, int max,
                  char *error, int error_size);
+/* TMDB paginates 20 titles per page; used for asynchronous catalog expansion. */
+int catalog_load_page(const char *category, const char *query, int page,
+                      Movie *items, int max, char *error, int error_size);
 
 /* UAFresh integration: current UAFlix/UASerials sources via UAFresh worker. */
 int uakino_search(const Movie *movie, Source *items, int max,

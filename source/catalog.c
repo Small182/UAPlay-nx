@@ -229,8 +229,9 @@ static int contains_title(const char *haystack,const char *needle){
     return 0;
 }
 
-int catalog_load(const char *category, const char *query, Movie *items, int max,
-                 char *error, int error_size) {
+int catalog_load_page(const char *category, const char *query, int page,
+                      Movie *items, int max, char *error, int error_size) {
+    if (page<1 || page>500) return 0;
     char key[256] = LAMPA_PUBLIC_TMDB_KEY;
     FILE *f = fopen(TMDB_KEY_PATH, "r");
     if (f) {
@@ -248,7 +249,13 @@ int catalog_load(const char *category, const char *query, Movie *items, int max,
     if (q) {
         snprintf(url, sizeof(url), "https://api.themoviedb.org/3/search/multi?api_key=%s&language=uk-UA&include_adult=false&query=%s", key, q);
     } else {
-        if (!strncmp(category,"genre_",6))
+        if (!strcmp(category,"cartoon_series"))
+            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/tv?api_key=%s&language=uk-UA&sort_by=popularity.desc&with_genres=16",key);
+        else if (!strcmp(category,"anime"))
+            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/tv?api_key=%s&language=uk-UA&sort_by=popularity.desc&with_genres=16&with_original_language=ja",key);
+        else if (!strcmp(category,"cartoons"))
+            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/movie?api_key=%s&language=uk-UA&sort_by=popularity.desc&with_genres=16",key);
+        else if (!strncmp(category,"genre_",6))
             snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/movie?api_key=%s&language=uk-UA&sort_by=popularity.desc&with_genres=%s",key,category+6);
         else {
             const char *path = !strcmp(category, "series") ? "trending/tv/week" :
@@ -257,9 +264,14 @@ int catalog_load(const char *category, const char *query, Movie *items, int max,
         }
     }
     free(q);
+    /* The TMDB API defaults to page 1. Explicitly request subsequent pages. */
+    size_t used=strlen(url);
+    if (used+24<sizeof(url))snprintf(url+used,sizeof(url)-used,"&page=%d",page);
     char *json = request(url, error, error_size);
     int offline_search=0;
     if (!json) {
+        /* Never repeat the offline page in background pagination. */
+        if(page>1)return 0;
         json = read_offline_catalog(category);
         if (json) {
             offline_search=searching;
@@ -295,7 +307,10 @@ int catalog_load(const char *category, const char *query, Movie *items, int max,
         if (!date[0]) json_field(p, end, "first_air_date", date, sizeof(date));
         memcpy(m.year, date, strlen(date) >= 4 ? 4 : strlen(date));
         m.id = atoi(number);
-        m.series = !strcmp(type, "tv") || (!q && !strcmp(category, "series"));
+        m.series = !strcmp(type, "tv") || (!searching &&
+                    (!strcmp(category,"series") ||
+                     !strcmp(category,"cartoon_series") ||
+                     !strcmp(category,"anime")));
         if (m.id && m.title[0] && strcmp(type, "person") &&
             (!offline_search || contains_title(m.title,query) ||
              contains_title(m.original,query)))items[count++] = m;
@@ -304,6 +319,11 @@ int catalog_load(const char *category, const char *query, Movie *items, int max,
     free(json);
     if (!count && !offline_search) snprintf(error, error_size, "No titles found");
     return count;
+}
+
+int catalog_load(const char *category, const char *query, Movie *items, int max,
+                 char *error, int error_size) {
+    return catalog_load_page(category,query,1,items,max,error,error_size);
 }
 
 /* Use UAFlix and UASerials sources. The experimental UAKino.best provider

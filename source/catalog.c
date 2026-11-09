@@ -269,6 +269,15 @@ int catalog_load(const char *category, const char *query, Movie *items, int max,
    Its current enabled providers include UAFlix and UASerials. We use the
    plugin's public worker proxy, but execute no remote JavaScript. */
 static char *fetch_uafresh(const char *upstream, char *error, int error_size) {
+    /* Native homebrew does not have browser CORS restrictions. A direct
+       request originates from the Switch user's Ukrainian network, unlike
+       the Cloudflare worker; UAFlix episode availability is geo-dependent. */
+    if(!strncmp(upstream,"https://uafix.net/",18) ||
+       !strncmp(upstream,"https://uakino.best/",20)){
+        char *direct=request(upstream,error,error_size);
+        if(direct)return direct;
+        /* Existing public UAFresh worker remains a normal network fallback. */
+    }
     char *encoded = encode(upstream);
     if (!encoded) { snprintf(error, error_size, "URL encoding failed"); return NULL; }
     load_cookie();
@@ -305,6 +314,14 @@ static int looks_like_result(const char *url, const char *host, int provider) {
             if (!(isalnum((unsigned char)*p) || *p=='-')) return 0;
         return 1;
     }
+    if(provider==2){ /* UAKino DLE: category/.../123-title.html */
+        const char *last=strrchr(path,'/');
+        if(!last || last==path)return 0;
+        last++;
+        if(!isdigit((unsigned char)*last))return 0;
+        while(isdigit((unsigned char)*last))last++;
+        return *last=='-' && strstr(last,".html")!=NULL;
+    }
     /* UASerials: /2389-avatar-2009.html */
     const char *p = path+1;
     if (!isdigit((unsigned char)*p)) return 0;
@@ -335,8 +352,12 @@ static void search_provider(const char *host, const char *name, int provider,
         size_t n = (size_t)(end-p);
         char candidate[1024];
         if (n > 12 && n < sizeof(candidate)) {
-            memcpy(candidate, p, n);
-            candidate[n]=0;
+            if(*p=='/' && n+strlen(host)+1<sizeof(candidate))
+                snprintf(candidate,sizeof(candidate),"%s%.*s",host,(int)n,p);
+            else{
+                memcpy(candidate,p,n);
+                candidate[n]=0;
+            }
             if (looks_like_result(candidate, host, provider)) {
                 int exists=0;
                 for (int i=0; i<*count; i++)
@@ -361,6 +382,8 @@ int uakino_search(const Movie *movie, Source *items, int max,
     search_provider("https://uafix.net", "UAFlix", 0, search,
                     items, &count, max, error, error_size);
     search_provider("https://uaserials.my", "UASerials", 1, search,
+                    items, &count, max, error, error_size);
+    search_provider("https://uakino.best", "UAKino (експ.)", 2, search,
                     items, &count, max, error, error_size);
     if (count) error[0]=0;
     else if (!error[0]) snprintf(error,error_size,"UAFresh: no matching pages");

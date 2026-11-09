@@ -15,7 +15,7 @@ TMDB works out of the box using the public client key from the [official Lampa s
 - Movies, TV, top-rated and genre categories (action, comedy, drama, horror, sci-fi, animation, romance, documentary).
 - Ukrainian TMDB titles, metadata descriptions, search via Switch software keyboard, live TMDB posters with in-session cache.
 - Local-only **favorites**, **watch history**, and **resume position** stored at `sdmc:/switch/uaflix/library.tsv`.
-- UAFresh searching from its current UAFlix and UASerials providers through the worker HTTP proxy; embedded video resolution including Zetvideo HLS; libmpv playback. Episode resolution now follows up to two levels of bounded embedded iframe players instead of relying on one hard-coded host.
+- Source search via **UAFlix, UASerials, and experimental UAKino.best**. The native app requests UAFlix/UAKino pages directly from the Switch first, falling back to the existing UAFresh Worker when direct HTTP fails. This matters for geo-dependent UAFlix episodes: the Worker's region can differ from the Switch's Ukrainian network. Embedded video resolution includes Zetvideo HLS and bounded nested iframe players.
 - Native **season/episode browser** for UAFresh sources exposing episode-page links. Actual video playback depends on the episode's stream being discoverable; UAFlix web playback does not require a login.
 - Player pause, ±10 second seek, **separate audio-track and subtitle-track lists** built from libmpv `track-list` with language/title and selected-track state.
 - Netflix-TV-inspired navigation concept (native UAPlay branding): top-level category tabs, selected-title hero with synopsis/actions, matching poster shelf, full collection browser, full-page settings and title details. No Netflix assets or proprietary UI code are included.
@@ -44,7 +44,7 @@ TMDB works out of the box using the public client key from the [official Lampa s
 
 ## UAFresh adapter
 
-This is **not** the original UAFresh JavaScript plugin running inside Lampa. That plugin relies on the browser and the global `Lampa.*` runtime. The native adapter implements selected functionality directly in C. The older `uakino.best` source returned HTTP 403 and is deliberately excluded in the current plugin; UAFlix/UASerials work through the plugin's worker.
+This is **not** the original UAFresh JavaScript plugin running inside Lampa. That plugin relies on the browser and the global `Lampa.*` runtime. The native adapter implements selected functionality directly in C. **UAKino.best is experimental**: it may return 403/404 or a bot-protection page; UAPlay does not bypass the site's access controls, and the site may not expose a playable direct video URL.
 
 On 2026-11-09 a Linux test searched *Avatar*, received 14 results, and successfully resolved a direct HLS stream from UAFlix's embedded Zetvideo player. A separate test found 15 episodes across two seasons for UAFlix's *Avatar: The Last Airbender*. You can repeat these host-side tests with:
 

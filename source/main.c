@@ -11,8 +11,48 @@
 #include "catalog.h"
 #include "posters.h"
 #include "library.h"
+#include "playback.h"
 
-typedef enum { CATALOG, DETAILS, SOURCES, PLAYER, SETTINGS } Page;
+typedef enum { CATALOG, DETAILS, SOURCES, PLAYER, SETTINGS,
+               SEASONS, EPISODES, TRACK_PICKER, VIDEO_SETTINGS } Page;
+
+static Episode episodes[EPISODES_MAX];
+static int episode_count,season_ids[64],season_count,selected_season,selected_episode;
+static MediaTrack tracks[TRACKS_MAX];
+static int track_count,selected_track,subtitle_picker;
+static int selected_video_option;
+static double video_options[]={1.0,100.0,0.0,0.0,48.0,0.0};
+static const char *video_props[]={"speed","volume","brightness","contrast",
+                                  "sub-font-size","sub-delay"};
+static const char *video_titles[]={"Швидкість","Гучність","Яскравість","Контраст",
+                                   "Розмір субтитрів","Затримка субтитрів"};
+static const double video_steps[]={0.25,5,5,5,4,0.25};
+static const double video_min[]={0.5,0,-100,-100,20,-10};
+static const double video_max[]={2.0,130,100,100,100,10};
+#define VIDEO_OPTION_COUNT 6
+
+static void rebuild_seasons(void) {
+    season_count=0;
+    for (int i=0;i<episode_count;i++) {
+        int seen=0;
+        for(int j=0;j<season_count;j++) if(season_ids[j]==episodes[i].season)seen=1;
+        if(!seen && season_count<64)season_ids[season_count++]=episodes[i].season;
+    }
+    selected_season=selected_episode=0;
+}
+static int episodes_in_season(int season) {
+    int count=0;
+    for(int i=0;i<episode_count;i++) if(episodes[i].season==season)count++;
+    return count;
+}
+static Episode *selected_episode_item(void) {
+    if(selected_season>=season_count)return NULL;
+    int season=season_ids[selected_season],nth=0;
+    for(int i=0;i<episode_count;i++) if(episodes[i].season==season) {
+        if(nth++==selected_episode)return &episodes[i];
+    }
+    return NULL;
+}
 
 static const char *categories[]={"movies","series","top","genre_28","genre_35",
     "genre_18","genre_27","genre_878","genre_16","genre_10749","genre_99",
@@ -185,6 +225,56 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         text(p,"Управління відео: A пауза, X субтитри, Y аудіо",45,385,1100);
         text(p,"Обране та історія зберігаються на SD-карті",45,450,1100);
         footer(p,"B: Повернутися до каталогу");
+    } else if (page==SEASONS) {
+        text(p,"UAFLIX — вибір сезону",42,45,1120);
+        for(int i=0;i<season_count && i<10;i++) {
+            int y=125+i*48;
+            box(p,40,y,1180,43,i==selected_season?.22f:.10f,
+                i==selected_season?.40f:.14f,i==selected_season?.49f:.19f);
+            char label[128];
+            snprintf(label,sizeof(label),"Сезон %d  ·  %d серій",season_ids[i],
+                     episodes_in_season(season_ids[i]));
+            text(p,label,57,y+5,1090);
+        }
+        footer(p,*status?status:"A: Серії сезону   B: Повернутися до джерел");
+    } else if (page==EPISODES) {
+        char heading[128];
+        snprintf(heading,sizeof(heading),"UAFLIX — сезон %d: вибір серії",season_ids[selected_season]);
+        text(p,heading,42,45,1130);
+        int idx=0,first=selected_episode/10*10;
+        for(int i=0;i<episode_count;i++) {
+            if(episodes[i].season!=season_ids[selected_season])continue;
+            if(idx>=first && idx<first+10) {
+                int y=118+(idx-first)*51;
+                box(p,40,y,1190,46,idx==selected_episode?.22f:.10f,
+                    idx==selected_episode?.40f:.14f,idx==selected_episode?.49f:.19f);
+                text(p,episodes[i].title,56,y+7,1130);
+            }
+            idx++;
+        }
+        footer(p,*status?status:"A: Дивитися серію   B: Вибір сезону");
+    } else if (page==TRACK_PICKER) {
+        text(p,subtitle_picker?"UAFLIX — субтитри":"UAFLIX — аудіодоріжки",45,50,1110);
+        int first=selected_track/10*10;
+        for(int i=first;i<track_count && i<first+10;i++) {
+            int y=125+(i-first)*50;
+            box(p,38,y,1190,44,i==selected_track?.22f:.10f,
+                i==selected_track?.40f:.14f,i==selected_track?.49f:.19f);
+            text(p,tracks[i].label,55,y+7,1140);
+        }
+        if (!track_count) text(p,"Немає доступних доріжок",60,200,1050);
+        footer(p,"A: Вибрати   B: Назад до відео");
+    } else if (page==VIDEO_SETTINGS) {
+        text(p,"UAFLIX — параметри відео",45,50,1140);
+        for(int i=0;i<VIDEO_OPTION_COUNT;i++) {
+            int y=130+i*70;
+            box(p,40,y,1180,62,i==selected_video_option?.22f:.10f,
+                i==selected_video_option?.40f:.14f,i==selected_video_option?.49f:.19f);
+            char label[256];
+            snprintf(label,sizeof(label),"%s: %.2f",video_titles[i],video_options[i]);
+            text(p,label,56,y+16,1130);
+        }
+        footer(p,"Вліво / вправо: змінити параметр   B: Назад");
     }
 }
 static void command(mpv_handle *player,const char *verb,const char *arg) {
@@ -244,6 +334,7 @@ int main(void) {
     n=load_category(category,query,movies,message,sizeof(message));
     Movie playing_movie={0};
     double resume_at=0;
+    Page player_return_page=SOURCES;
     while(running){
         SDL_Event e;
         while(SDL_PollEvent(&e)){
@@ -271,13 +362,77 @@ int main(void) {
                     double position=0;
                     if (player && mpv_get_property(player,"time-pos",MPV_FORMAT_DOUBLE,&position)>=0)
                         library_set_progress(&playing_movie,position);
-                    command(player,"stop",NULL);page=SOURCES;
+                    command(player,"stop",NULL);page=player_return_page;
                 }
                 if(key==SDL_CONTROLLER_BUTTON_A)command(player,"cycle","pause");
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT)seek(player,"-10");
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT)seek(player,"10");
-                if(key==SDL_CONTROLLER_BUTTON_X)command(player,"cycle","sid");
-                if(key==SDL_CONTROLLER_BUTTON_Y)command(player,"cycle","aid");
+                if(key==SDL_CONTROLLER_BUTTON_X || key==SDL_CONTROLLER_BUTTON_Y){
+                    subtitle_picker=key==SDL_CONTROLLER_BUTTON_X;
+                    track_count=playback_tracks(player,subtitle_picker,tracks,TRACKS_MAX);
+                    selected_track=0;
+                    for(int i=0;i<track_count;i++) if(tracks[i].selected)selected_track=i;
+                    page=TRACK_PICKER;
+                }
+                if(key==SDL_CONTROLLER_BUTTON_BACK){
+                    selected_video_option=0;
+                    page=VIDEO_SETTINGS;
+                }
+                continue;
+            }
+            if(page==TRACK_PICKER){
+                if(key==SDL_CONTROLLER_BUTTON_B)page=PLAYER;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && selected_track>0)selected_track--;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && selected_track<track_count-1)selected_track++;
+                if(key==SDL_CONTROLLER_BUTTON_A && track_count){
+                    playback_select_track(player,subtitle_picker,tracks[selected_track].id);
+                    page=PLAYER;
+                }
+                continue;
+            }
+            if(page==VIDEO_SETTINGS){
+                if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK)page=PLAYER;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && selected_video_option>0)selected_video_option--;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && selected_video_option<VIDEO_OPTION_COUNT-1)selected_video_option++;
+                int direction=(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT)-(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT);
+                if(direction){
+                    int i=selected_video_option;
+                    video_options[i]+=direction*video_steps[i];
+                    if(video_options[i]<video_min[i])video_options[i]=video_min[i];
+                    if(video_options[i]>video_max[i])video_options[i]=video_max[i];
+                    playback_set_value(player,video_props[i],video_options[i]);
+                }
+                continue;
+            }
+            if(page==SEASONS){
+                if(key==SDL_CONTROLLER_BUTTON_B)page=SOURCES;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && selected_season>0)selected_season--;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && selected_season<season_count-1)selected_season++;
+                if(key==SDL_CONTROLLER_BUTTON_A && season_count){
+                    selected_episode=0;page=EPISODES;
+                }
+                continue;
+            }
+            if(page==EPISODES){
+                if(key==SDL_CONTROLLER_BUTTON_B)page=SEASONS;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && selected_episode>0)selected_episode--;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN &&
+                   selected_episode<episodes_in_season(season_ids[selected_season])-1)selected_episode++;
+                if(key==SDL_CONTROLLER_BUTTON_A){
+                    Episode *episode=selected_episode_item();
+                    if(episode && render){
+                        Source episode_source={0};
+                        snprintf(episode_source.url,sizeof(episode_source.url),"%s",episode->url);
+                        char url[2048]={0};message[0]=0;
+                        if(uakino_resolve(&episode_source,url,sizeof(url),message,sizeof(message))){
+                            playing_movie=movies[chosen];
+                            resume_at=0;
+                            library_mark_watched(&playing_movie);
+                            command(player,"loadfile",url);
+                            player_return_page=EPISODES;page=PLAYER;
+                        }
+                    }
+                }
                 continue;
             }
             if(page==SETTINGS){
@@ -336,13 +491,22 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && source>0)source--;
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && source<sn-1)source++;
                 if(key==SDL_CONTROLLER_BUTTON_A && sn){
+                    if(movies[chosen].series){
+                        message[0]=0;
+                        episode_count=uakino_episodes(&sources[source],episodes,
+                                                      EPISODES_MAX,message,sizeof(message));
+                        if(episode_count){
+                            rebuild_seasons();page=SEASONS;continue;
+                        }
+                    }
                     char url[2048]={0};
                     message[0]=0;
                     if(render && uakino_resolve(&sources[source],url,sizeof(url),message,sizeof(message))){
                         playing_movie=movies[chosen];
                         resume_at=library_progress(&playing_movie);
                         library_mark_watched(&playing_movie);
-                        command(player,"loadfile",url);page=PLAYER;
+                        command(player,"loadfile",url);
+                        player_return_page=SOURCES;page=PLAYER;
                     }
                 }
             }

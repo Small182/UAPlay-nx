@@ -20,7 +20,7 @@ LIBS := $(shell pkg-config --libs mpv sdl2 SDL2_ttf SDL2_image libcurl) -lGLESv2
 .PHONY: all clean
 all: $(TARGET).nro
 
-main.o: source/main.c source/catalog.h source/posters.h source/library.h
+main.o: source/main.c source/catalog.h source/posters.h source/library.h source/playback.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 catalog.o: source/catalog.c source/catalog.h
@@ -32,7 +32,10 @@ posters.o: source/posters.c source/posters.h source/catalog.h
 library.o: source/library.c source/library.h source/catalog.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(TARGET).elf: main.o catalog.o posters.o library.o
+playback.o: source/playback.c source/playback.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TARGET).elf: main.o catalog.o posters.o library.o playback.o
 	$(CC) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(TARGET).nacp:
@@ -42,4 +45,4 @@ $(TARGET).nro: $(TARGET).elf $(TARGET).nacp
 	elf2nro $< $@ --nacp=$(TARGET).nacp --icon=icon.jpg --romfsdir=romfs
 
 clean:
-	rm -f main.o catalog.o posters.o library.o $(TARGET).elf $(TARGET).nacp $(TARGET).nro
+	rm -f main.o catalog.o posters.o library.o playback.o $(TARGET).elf $(TARGET).nacp $(TARGET).nro

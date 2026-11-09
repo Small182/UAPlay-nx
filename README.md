@@ -16,7 +16,9 @@ TMDB works out of the box using the public client key from the [official Lampa s
 - Ukrainian TMDB titles, metadata descriptions, search via Switch software keyboard, live TMDB posters with in-session cache.
 - Local-only **favorites**, **watch history**, and **resume position** stored at `sdmc:/switch/uaflix/library.tsv`.
 - UAFresh searching from its current UAFlix and UASerials providers through the worker HTTP proxy; embedded video resolution including Zetvideo HLS; libmpv playback.
-- Player pause, ±10 second seek, switching audio/subtitle tracks offered by the source.
+- Native **season/episode browser** for UAFresh sources exposing episode-page links (tested on UAFlix); play selected episode when its stream can be resolved.
+- Player pause, ±10 second seek, **separate audio-track and subtitle-track lists** built from libmpv `track-list` with language/title and selected-track state.
+- Playback settings overlay: speed, volume, brightness, contrast, subtitle text size and subtitle timing, applied immediately via libmpv.
 - Settings/information screen.
 - Original user-supplied Lampa icon retained for now; homebrew display name is **Uaflix**.
 
@@ -26,25 +28,32 @@ TMDB works out of the box using the public client key from the [official Lampa s
 |---|---|
 | Catalog | D-pad choose, L/R change section, A details, X search, Y refresh, Minus settings, Plus exit |
 | Details | A find UAFresh streams, X toggle favorite, Y mark watched, B back |
-| UAFresh sources | Up/down select, A resolve/play, B back |
-| Video | A pause, left/right seek, X cycle subtitles, Y cycle audio tracks, B stop/save position |
+| UAFresh sources | Up/down select, A choose source (for TV with structured episodes: seasons), B back |
+| Seasons | Up/down choose season, A episodes, B sources |
+| Episodes | Up/down select episode, A resolve/play, B seasons |
+| Video | A pause, left/right seek, X subtitle list, Y audio list, Minus video settings, B stop/save position |
+| Track selection | Up/down choose audio or subtitles, A apply, B return to video |
+| Video settings | Up/down choose property, left/right adjust, B return |
 | Settings | B return |
 
 ## UAFresh adapter
 
 This is **not** the original UAFresh JavaScript plugin running inside Lampa. That plugin relies on the browser and the global `Lampa.*` runtime. The native adapter implements selected functionality directly in C. The older `uakino.best` source returned HTTP 403 and is deliberately excluded in the current plugin; UAFlix/UASerials work through the plugin's worker.
 
-On 2026-11-09 a Linux test searched *Avatar*, received 14 results, and successfully resolved a direct HLS stream from UAFlix's embedded Zetvideo player. You can repeat this host-side test with:
+On 2026-11-09 a Linux test searched *Avatar*, received 14 results, and successfully resolved a direct HLS stream from UAFlix's embedded Zetvideo player. A separate test found 15 episodes across two seasons for UAFlix's *Avatar: The Last Airbender*. You can repeat these host-side tests with:
 
 ```sh
 cc -O2 -Isource source/catalog.c tests/uafresh_smoke.c \
   $(pkg-config --cflags --libs libcurl) -o /tmp/uafresh-smoke
 /tmp/uafresh-smoke
+cc -O2 -Isource source/catalog.c tests/episodes_smoke.c \
+  $(pkg-config --cflags --libs libcurl) -o /tmp/uaflix-episodes-smoke
+/tmp/uaflix-episodes-smoke
 ```
 
 ## Important limitations
 
-This remains an **experimental native app**, not an exact feature-for-feature reimplementation of Lampa. In particular, full TV episode/season selection, multi-provider source ranking, account-gated sites, detailed stream-quality menus, external arbitrary JS plugins, and automatic progress marking at every playback checkpoint need additional implementation and device-level verification. The player supports subtitles/audio tracks when provided, but language availability depends on the stream. Native playback must be tested on a real Switch and Eden; a successful CI compilation is not a runtime guarantee.
+This remains an **experimental native app**, not an exact feature-for-feature reimplementation of Lampa. Episode discovery depends on UAFresh providers exposing identifiable episode links; not all video hosts resolve to direct streams, and some pages are trailers only or geo/auth restricted. The player offers audio/subtitle selection only for tracks actually present in the stream. Adaptive HLS bitrate is negotiated automatically; explicit variant-quality selection is not yet implemented. Native decoding and settings must be tested on a real Switch and Eden; successful CI compilation is not a runtime guarantee.
 
 Metadata is provided by TMDB: **This product uses the TMDB API but is not endorsed or certified by TMDB.** No copyrighted video is bundled; only links returned by third-party services are resolved. Use content you have the right to access.
 

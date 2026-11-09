@@ -3,6 +3,7 @@
 
 #define CATALOG_MAX 40
 #define UAKINO_MAX 20
+#define EPISODES_MAX 128
 
 typedef struct {
     int id;
@@ -19,6 +20,13 @@ typedef struct {
     char url[1024];
 } Source;
 
+typedef struct {
+    int season;
+    int number;
+    char title[192];
+    char url[1024];
+} Episode;
+
 /* Key is loaded from sdmc:/switch/lampa-nx/tmdb.key; never bundled. */
 int catalog_load(const char *category, const char *query, Movie *items, int max,
                  char *error, int error_size);
@@ -28,5 +36,7 @@ int uakino_search(const Movie *movie, Source *items, int max,
                   char *error, int error_size);
 int uakino_resolve(const Source *source, char *stream, int size,
                    char *error, int error_size);
+int uakino_episodes(const Source *source, Episode *items, int max,
+                    char *error, int error_size);
 
 #endif

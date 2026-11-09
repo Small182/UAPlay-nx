@@ -346,3 +346,53 @@ int uakino_resolve(const Source *source, char *stream, int size,
     snprintf(error,error_size,"UAFresh: this title has no direct video (possibly trailer-only)");
     return 0;
 }
+
+static int episode_order(const void *a, const void *b) {
+    const Episode *one=a, *two=b;
+    if (one->season != two->season) return one->season - two->season;
+    return one->number - two->number;
+}
+
+int uakino_episodes(const Source *source, Episode *items, int max,
+                    char *error, int error_size) {
+    char *html=fetch_uafresh(source->url,error,error_size);
+    if (!html) return 0;
+    int count=0;
+    const char *p=html;
+    while (count<max && (p=strstr(p,"href="))) {
+        p+=5;
+        if (*p!='"' && *p!='\'') continue;
+        char quote=*p++;
+        const char *end=strchr(p,quote);
+        if (!end) break;
+        size_t len=(size_t)(end-p);
+        char url[1024];
+        if (len>15 && len<sizeof(url)) {
+            memcpy(url,p,len);url[len]=0;
+            const char *token=strstr(url,"/season-");
+            int season=0,episode=0;
+            if (token && sscanf(token,"/season-%d-episode-%d/",&season,&episode)==2 &&
+                season>=1 && season<100 && episode>=1 && episode<1000 &&
+                !strncmp(url,"https://uafix.net/",18)) {
+                int exists=0;
+                for (int i=0;i<count;i++)
+                    if (items[i].season==season && items[i].number==episode) exists=1;
+                if (!exists) {
+                    Episode *new_episode=&items[count++];
+                    new_episode->season=season;
+                    new_episode->number=episode;
+                    snprintf(new_episode->url,sizeof(new_episode->url),"%s",url);
+                    snprintf(new_episode->title,sizeof(new_episode->title),
+                             "Сезон %d · Серія %d",season,episode);
+                }
+            }
+        }
+        p=end+1;
+    }
+    free(html);
+    if (count) {
+        qsort(items,(size_t)count,sizeof(*items),episode_order);
+        error[0]=0;
+    } else snprintf(error,error_size,"No structured episodes in this source");
+    return count;
+}

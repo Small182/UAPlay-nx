@@ -15,7 +15,7 @@ ARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -fPIE
 COMMON := -O2 -g -Wall -Wextra -ffunction-sections -fdata-sections $(ARCH)
 CFLAGS := $(COMMON) -D__SWITCH__ -I$(LIBNX)/include -I$(PORTLIBS)/include $(shell pkg-config --cflags sdl2 SDL2_ttf SDL2_image mpv libcurl)
 LDFLAGS := -specs=$(LIBNX)/switch.specs $(ARCH) -Wl,--gc-sections
-LIBS := $(shell pkg-config --libs mpv sdl2 SDL2_ttf SDL2_image libcurl) -lGLESv2 -lharfbuzz -lfreetype -llzma -lzstd -L$(LIBNX)/lib -lnx -lm
+LIBS := $(shell pkg-config --libs mpv sdl2 SDL2_ttf SDL2_image libcurl) -lGLESv2 -lharfbuzz -lfreetype -ljpeg -lwebp -llzma -lzstd -L$(LIBNX)/lib -lnx -lm
 
 .PHONY: all clean
 all: $(TARGET).nro

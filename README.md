@@ -45,24 +45,7 @@ TMDB works out of the box using the public client key from the [official Lampa s
 
 ## UAFresh adapter
 
-This is **not** the original UAFresh JavaScript plugin running inside Lampa. That plugin relies on the browser and the global `Lampa.*` runtime. The native adapter implements selected functionality directly in C. **UAKino.best is disabled.** When TMDB is temporarily inaccessible, the app can display a small offline home catalogue. If the user searches while offline, results are filtered by the requested Ukrainian/English title from that limited snapshot rather than incorrectly showing unrelated movies. Offline mode is identified by a small label instead of a toast covering the poster shelf.
-
-On 2026-11-09 a Linux test searched *Avatar*, received 14 results, and successfully resolved a direct HLS stream from UAFlix's embedded Zetvideo player. A separate test found 15 episodes across two seasons for UAFlix's *Avatar: The Last Airbender*. You can repeat these host-side tests with:
-
-```sh
-cc -O2 -Isource source/catalog.c tests/uafresh_smoke.c \
-  $(pkg-config --cflags --libs libcurl) -o /tmp/uafresh-smoke
-/tmp/uafresh-smoke
-cc -O2 -Isource source/catalog.c tests/episodes_smoke.c \
-  $(pkg-config --cflags --libs libcurl) -o /tmp/uaflix-episodes-smoke
-/tmp/uaflix-episodes-smoke
-```
-
-## Important limitations
-
-Nintendo-labelled ABXY now match the physical Switch buttons (the SDL controller events are remapped from their Xbox-style positions). Both sticks have deadzone and held-direction repeat. Playback initially requests an approximately 1 Mbit/s HLS variant to reduce software-decoder load on Switch; the video-settings menu can raise it. An mpv error or a 30-second startup timeout returns to the source list with a diagnostic instead of a permanently black screen. Some hosts can still reject streams despite a valid playlist.
-
-This remains an **experimental native app**, not an exact feature-for-feature reimplementation of Lampa. Episode discovery depends on UAFresh providers exposing identifiable episode links; not all video hosts resolve to direct streams, and some pages are trailers only or geo/auth restricted. For example, the provider's **Avatar: The Last Airbender (2024)** season-1 episode-1 page contains only a YouTube trailer when fetched without an account; the supplied UAFresh plugin explicitly recommends signing in for UAFlix series. An account cannot guarantee availability if a video has been removed or is region-locked. The player offers audio/subtitle selection only for tracks actually present in the stream. HLS bitrate presets depend on what variants are offered by the source and mpv's demuxer; they may have no effect on a fixed-bitrate playlist. Native decoding and settings must be tested on a real Switch and Eden; successful CI compilation is not a runtime guarantee.
+This is **not** the original UAFresh JavaScript plugin running inside Lampa. 
 
 Metadata is provided by TMDB: **This product uses the TMDB API but is not endorsed or certified by TMDB.** No copyrighted video is bundled; only links returned by third-party services are resolved. Use content you have the right to access.
 

@@ -61,6 +61,20 @@ int main(void){
     if(count!=3 || examples[1].season!=1 || examples[2].number!=2){
         fprintf(stderr,"UAFlix archive episode collection failed: %d\n",count);return 5;
     }
+    memset(examples,0,sizeof(examples));
+    examples[0].season=1; examples[0].number=1;
+    snprintf(examples[0].voice,sizeof(examples[0].voice),"Голос A");
+    examples[1].season=1; examples[1].number=2;
+    snprintf(examples[1].voice,sizeof(examples[1].voice),"Голос B");
+    examples[2].season=1; examples[2].number=2;
+    snprintf(examples[2].voice,sizeof(examples[2].voice),"Голос A");
+    examples[3].season=2; examples[3].number=1;
+    snprintf(examples[3].voice,sizeof(examples[3].voice),"Голос A");
+    if(catalog_next_episode(examples,4,0)!=2 ||
+       catalog_next_episode(examples,4,2)!=3 ||
+       catalog_next_episode(examples,4,3)!=-1){
+        fprintf(stderr,"Next episode/voice selection failed\n");return 6;
+    }
     puts("Playerjs serial playlist parser: OK");
     return 0;
 }

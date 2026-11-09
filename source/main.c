@@ -67,6 +67,20 @@ static Episode *selected_episode_item(void) {
     }
     return NULL;
 }
+static void focus_episode_index(int index){
+    if(index<0 || index>=episode_count)return;
+    int season=episodes[index].season,number=episodes[index].number;
+    for(int i=0;i<season_count;i++)if(season_ids[i]==season){
+        selected_season=i;break;
+    }
+    selected_episode=0;
+    for(int i=0;i<episode_count;i++)if(episodes[i].season==season){
+        if(i>0 && episodes[i-1].season==season &&
+           episodes[i-1].number==episodes[i].number)continue;
+        if(episodes[i].number==number)break;
+        selected_episode++;
+    }
+}
 
 static const char *categories[]={"movies","series","top","genre_28","genre_35",
     "genre_18","genre_27","genre_878","genre_16","genre_10749","genre_99",
@@ -84,16 +98,28 @@ static int catalog_hero_focus=0;
 /* 0: Watch, 1: Add to favorites (details buttons). */
 static int details_button_focus=0;
 static int settings_selected=0,ui_accent_alt=0,source_mode=0;
+static int autoplay_episodes=1;
 static int ui_light_theme=0,ui_theme_enabled=1,ui_gradient_pass=0;
 #define THEME_PATH "sdmc:/switch/uaplay/theme.txt"
 static void theme_load(void){
     FILE *f=fopen(THEME_PATH,"r");
-    if(f){ui_light_theme=fgetc(f)=='1';fclose(f);}
+    if(f){
+        ui_light_theme=fgetc(f)=='1';
+        /* Older installations have a one-character theme file. For those,
+           autoplay remains enabled by default. */
+        if(fgetc(f)=='0')autoplay_episodes=0;
+        fclose(f);
+    }
 }
 static void theme_save(void){
     mkdir("sdmc:/switch/uaplay",0777);
     FILE *f=fopen(THEME_PATH,"w");
-    if(f){fputc(ui_light_theme?'1':'0',f);fclose(f);}
+    if(f){
+        fputc(ui_light_theme?'1':'0',f);
+        fputc(autoplay_episodes?'1':'0',f);
+        fputc('\n',f);
+        fclose(f);
+    }
 }
 static int video_settings_from_menu=0;
 static int ui_category=0;
@@ -781,8 +807,8 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         footer(p,status);
     } else if(page==SETTINGS){
         screen_header(p,"Налаштування","UAPlay");
-        const char *items[]={"Тема","Інтерфейс","Плеєр","Джерела"};
-        for(int i=0;i<4;i++){
+        const char *items[]={"Тема","Інтерфейс","Плеєр","Джерела","Автовідтворення"};
+        for(int i=0;i<5;i++){
             int y=136+i*88;
             box_alpha(p,32,y,417,72,i==settings_selected?.20f:.09f,
                       i==settings_selected?.29f:.11f,
@@ -800,12 +826,14 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             else snprintf(description,sizeof(description),"Акцент: %s",ui_accent_alt?"Блакитний":"Золотистий");
         }
         else if(settings_selected==2)snprintf(description,sizeof(description),"Швидкість: %.2f · гучність: %.0f",video_options[0],video_options[1]);
-        else snprintf(description,sizeof(description),"Пріоритет: %s",source_mode==0?"Усі джерела":source_mode==1?"UAFlix":"UASerials");
+        else if(settings_selected==3)snprintf(description,sizeof(description),"Пріоритет: %s",source_mode==0?"Усі джерела":source_mode==1?"UAFlix":"UASerials");
+        else snprintf(description,sizeof(description),"Наступна серія: %s",autoplay_episodes?"Автоматично":"Вручну");
         text(p,description,516,255,682);
         const char *help[]={"Перемикає темну та світлу теми. Вибір зберігається на SD-карті.",
             "Змінює колір виділення на всіх екранах.",
             "Налаштуйте відео, гучність та субтитри.",
-            "Оберіть порядок відображення джерел відео."};
+            "Оберіть порядок відображення джерел відео.",
+            "Після завершення серії пропонує наступну через 5 секунд. Кнопка B скасовує перехід. Вибір зберігається."};
         wrapped(p,help[settings_selected],517,315,675,3,29,p->font_small,.73f,.78f,.84f);
         button(p,settings_selected==2?"Відкрити параметри":"Змінити",515,537,258,55,1);
         footer(p,status);
@@ -914,8 +942,17 @@ static void draw_player_controls(Paint *p,mpv_handle *player) {
     glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
     box_alpha(p,32,27,141,49,.045f,.063f,.079f,.92f,14);
     text_center(p,"‹  Назад",32,37,141,p->font_small,.96f,.97f,.99f);
+    if(active_episode_variant>=0 &&
+       catalog_next_episode(episodes,episode_count,active_episode_variant)>=0){
+        box_alpha(p,969,27,275,49,.045f,.063f,.079f,.92f,14);
+        text_center(p,"»  Наступна серія",969,37,275,
+                    p->font_small,.96f,.97f,.99f);
+    }
     box_alpha(p,0,507,1280,213,.027f,.034f,.044f,.93f,0);
     text_tiny(p,"UAPlay  ·  Відтворення",35,519,430);
+    if(active_episode_variant>=0 &&
+       catalog_next_episode(episodes,episode_count,active_episode_variant)>=0)
+        text_tiny(p,"L — Наступна серія",790,519,310);
     box_alpha(p,126,566,1028,6,.34f,.39f,.44f,1.f,3);
     int filled=duration>0?(int)(1028.0*pos/duration):0;
     if(filled<0)filled=0;if(filled>1028)filled=1028;
@@ -946,6 +983,20 @@ static void draw_player_controls(Paint *p,mpv_handle *player) {
         if(i==3)gear_icon(p,centers[i],639,.18f,.22f,.26f);
         text_center(p,labels[i],centers[i]-72,678,144,p->font_tiny,.78f,.84f,.89f);
     }
+}
+static void draw_next_episode_prompt(Paint *p,const Episode *next,int seconds){
+    ui_theme_enabled=0;
+    box_alpha(p,0,0,1280,720,.012f,.018f,.027f,.88f,0);
+    box_alpha(p,242,190,796,341,.105f,.144f,.194f,.98f,24);
+    headline(p,"Наступна серія",282,223,700);
+    char episode_name[120];
+    snprintf(episode_name,sizeof(episode_name),"Сезон %d · Серія %d",
+             next->season,next->number);
+    text(p,episode_name,286,302,697);
+    char timer[128];
+    snprintf(timer,sizeof(timer),"Автозапуск через %d с",seconds);
+    text_small(p,timer,286,376,681);
+    text_small(p,"A — дивитися зараз     B — скасувати",286,448,690);
 }
 static int native_button(int button) {
     /* SDL uses Xbox-style face button names; Switch prints the opposite labels. */
@@ -1053,8 +1104,11 @@ int main(void) {
     Uint32 video_started_at=0;
     int video_loaded=0;
     Uint32 controls_until=0;
+    int pending_next_episode=-1,next_episode_request=-1;
+    Uint32 next_episode_countdown_at=0;
     Uint32 stick_last_time=0;
     int stick_last_key=0;
+    int media_playback_mode=0;
     while(running){
         stick_arrow(pad,&stick_last_time,&stick_last_key);
         SDL_Event e;
@@ -1102,6 +1156,11 @@ int main(void) {
                     controls_until=SDL_GetTicks()+3000;
                     if(!was_visible)continue;
                     if(ty>=24 && ty<=83 && tx>=27 && tx<=180)key=SDL_CONTROLLER_BUTTON_B;
+                    else if(ty>=24 && ty<=83 && tx>=969 && tx<=1244 &&
+                            active_episode_variant>=0 &&
+                            catalog_next_episode(episodes,episode_count,
+                                                 active_episode_variant)>=0)
+                        key=SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
                     else if(ty>=547 && ty<=594 && tx>=118 && tx<=1161){
                         double duration=0;
                         if(player && mpv_get_property(player,"duration",MPV_FORMAT_DOUBLE,&duration)>=0
@@ -1231,9 +1290,9 @@ int main(void) {
                         key=tx<640?SDL_CONTROLLER_BUTTON_DPAD_LEFT:SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
                     }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==SETTINGS){
-                    if(tx>=32 && tx<449 && ty>=136 && ty<472 && (ty-136)%88<72){
+                    if(tx>=32 && tx<449 && ty>=136 && ty<560 && (ty-136)%88<72){
                         settings_selected=(ty-136)/88;
-                        if(settings_selected>=4)settings_selected=3;
+                        if(settings_selected>=5)settings_selected=4;
                         key=SDL_CONTROLLER_BUTTON_A;
                     }else if(ty>=537 && ty<592 && tx>=515 && tx<773)key=SDL_CONTROLLER_BUTTON_A;
                     else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
@@ -1241,13 +1300,35 @@ int main(void) {
             }
             if(page==PLAYER && key>=0)controls_until=SDL_GetTicks()+3000;
             if(key<0)continue;
+            if(page==PLAYER && pending_next_episode>=0){
+                if(key==SDL_CONTROLLER_BUTTON_A){
+                    next_episode_request=pending_next_episode;
+                    pending_next_episode=-1;
+                }else if(key==SDL_CONTROLLER_BUTTON_B){
+                    pending_next_episode=-1;
+                    page=EPISODES;
+                }
+                /* Ignore normal seek/pause actions during the countdown. */
+                continue;
+            }
             if(page==PLAYER){
                 if(key==SDL_CONTROLLER_BUTTON_B){
                     double position=0;
                     if (player && mpv_get_property(player,"time-pos",MPV_FORMAT_DOUBLE,&position)>=0)
-                        library_set_progress(&playing_movie,position);
+                        { /* Position belongs to a particular episode. */
+                            if(active_episode_variant>=0 && player_return_page==EPISODES)
+                                library_set_episode_progress(&playing_movie,
+                                    episodes[active_episode_variant].season,
+                                    episodes[active_episode_variant].number,position);
+                            else library_set_progress(&playing_movie,position);
+                        }
+                    pending_next_episode=-1;
                     command(player,"stop",NULL);page=player_return_page;
                 }
+                if(key==SDL_CONTROLLER_BUTTON_LEFTSHOULDER &&
+                   active_episode_variant>=0 && player_return_page==EPISODES)
+                    next_episode_request=catalog_next_episode(
+                        episodes,episode_count,active_episode_variant);
                 if(key==SDL_CONTROLLER_BUTTON_A)command(player,"cycle","pause");
                 int fast=pad && SDL_GameControllerGetAttached(pad) &&
                     SDL_GameControllerGetButton(pad,SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
@@ -1372,8 +1453,15 @@ int main(void) {
                             active_episode_variant=(int)(episode-episodes);
                             snprintf(pending_subtitle,sizeof(pending_subtitle),"%s",uakino_resolved_subtitle());
                             playing_movie=movies[chosen];
-                            resume_at=0;
+                            int saved_season=0,saved_episode=0;
+                            double saved_seconds=0;
+                            resume_at=(library_last_episode(&playing_movie,
+                                       &saved_season,&saved_episode,&saved_seconds) &&
+                                       saved_season==episode->season &&
+                                       saved_episode==episode->number)?saved_seconds:0;
                             library_mark_watched(&playing_movie);
+                            library_set_episode_progress(&playing_movie,
+                                episode->season,episode->number,resume_at);
                             snprintf(playing_url,sizeof(playing_url),"%s",url);
                             apply_hls_quality(player);
                             configure_stream(player,url);
@@ -1389,7 +1477,7 @@ int main(void) {
             if(page==SETTINGS){
                 if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){page=CATALOG;continue;}
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && settings_selected>0)settings_selected--;
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && settings_selected<3)settings_selected++;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && settings_selected<4)settings_selected++;
                 if(key==SDL_CONTROLLER_BUTTON_A){
                     if(settings_selected==0){ui_light_theme=!ui_light_theme;theme_save();}
                     else if(settings_selected==1)ui_accent_alt=!ui_accent_alt;
@@ -1398,6 +1486,7 @@ int main(void) {
                         video_settings_from_menu=1;
                         page=VIDEO_SETTINGS;
                     }else if(settings_selected==3)source_mode=(source_mode+1)%3;
+                    else if(settings_selected==4){autoplay_episodes=!autoplay_episodes;theme_save();}
                 }
                 continue;
             }
@@ -1542,7 +1631,16 @@ int main(void) {
                         episode_count=uakino_episodes(&sources[source],episodes,
                                                       EPISODES_MAX,message,sizeof(message));
                         if(episode_count){
-                            rebuild_seasons();page=SEASONS;continue;
+                            rebuild_seasons();
+                            int last_season=0,last_episode=0;
+                            if(library_last_episode(&movies[chosen],&last_season,
+                                                    &last_episode,NULL))
+                                for(int i=0;i<episode_count;i++)
+                                    if(episodes[i].season==last_season &&
+                                       episodes[i].number==last_episode){
+                                        focus_episode_index(i);break;
+                                    }
+                            page=SEASONS;continue;
                         }
                     }
                     char url[2048]={0};
@@ -1587,6 +1685,19 @@ int main(void) {
                         snprintf(message,sizeof(message),"Помилка відео: %s (%d)",
                                  mpv_error_string(end->error),end->error);
                         page=player_return_page;
+                    }else if(end && end->reason==MPV_END_FILE_REASON_EOF){
+                        if(player_return_page==EPISODES && active_episode_variant>=0)
+                            library_set_episode_progress(&playing_movie,
+                                episodes[active_episode_variant].season,
+                                episodes[active_episode_variant].number,0);
+                        int following=player_return_page==EPISODES &&
+                                      active_episode_variant>=0 ?
+                            catalog_next_episode(episodes,episode_count,
+                                                 active_episode_variant):-1;
+                        if(autoplay_episodes && following>=0){
+                            pending_next_episode=following;
+                            next_episode_countdown_at=SDL_GetTicks();
+                        }else page=player_return_page;
                     }
                 }
                 if(event->event_id==MPV_EVENT_LOG_MESSAGE){
@@ -1595,7 +1706,48 @@ int main(void) {
                 }
             }
         }
+        if(page!=PLAYER){pending_next_episode=-1;next_episode_request=-1;}
+        if(page==PLAYER && pending_next_episode>=0 &&
+           SDL_GetTicks()-next_episode_countdown_at>=5000){
+            next_episode_request=pending_next_episode;
+            pending_next_episode=-1;
+        }
+        if(page==PLAYER && next_episode_request>=0){
+            int index=next_episode_request;
+            next_episode_request=-1;
+            Source upcoming={0};
+            snprintf(upcoming.url,sizeof(upcoming.url),"%s",episodes[index].url);
+            char url[2048]={0};
+            message[0]=0;
+            if(uakino_resolve(&upcoming,url,sizeof(url),message,sizeof(message))){
+                focus_episode_index(index);
+                active_episode_variant=index;
+                resume_at=0;
+                snprintf(pending_subtitle,sizeof(pending_subtitle),"%s",
+                         uakino_resolved_subtitle());
+                snprintf(playing_url,sizeof(playing_url),"%s",url);
+                library_mark_watched(&playing_movie);
+                library_set_episode_progress(&playing_movie,
+                    episodes[index].season,episodes[index].number,0);
+                apply_hls_quality(player);
+                configure_stream(player,url);
+                mpv_set_property_string(player,"pause","no");
+                command(player,"loadfile",url);
+                video_started_at=SDL_GetTicks();video_loaded=0;
+                controls_until=SDL_GetTicks()+3000;
+            }else page=EPISODES;
+        }
         catalog_loader_poll(&movies,&n,&movie_capacity,chosen,category,query);
+        /* While the user watches a video without touching the controls, the
+           Switch otherwise treats it as idle and progressively dims the
+           display. libnx's media playback state inhibits that idle dimming
+           and auto-sleep only for the duration of video playback. */
+        int watching_video=(page==PLAYER || page==TRACK_PICKER ||
+                            (page==VIDEO_SETTINGS && !video_settings_from_menu));
+        if(watching_video!=media_playback_mode){
+            appletSetMediaPlaybackState(watching_video!=0);
+            media_playback_mode=watching_video;
+        }
         if(page==PLAYER && render){
             ui_theme_enabled=0;
             mpv_opengl_fbo fbo={.fbo=0,.w=1280,.h=720};int flip=1;
@@ -1626,6 +1778,11 @@ int main(void) {
                 command(player,"stop",NULL);page=player_return_page;
             }
             if(video_loaded && SDL_GetTicks()<controls_until)draw_player_controls(&paint,player);
+            if(pending_next_episode>=0){
+                Uint32 elapsed=SDL_GetTicks()-next_episode_countdown_at;
+                int remaining=elapsed<5000?(int)((5000-elapsed+999)/1000):0;
+                draw_next_episode_prompt(&paint,&episodes[pending_next_episode],remaining);
+            }
         }else{
             ui_category=category;
             draw(&paint,page,movies,n,chosen,sources,sn,source,
@@ -1633,6 +1790,7 @@ int main(void) {
         }
         SDL_GL_SwapWindow(window);SDL_Delay(16);
     }
+    if(media_playback_mode)appletSetMediaPlaybackState(false);
     catalog_loader_shutdown();
     free(movies);
     if(render)mpv_render_context_free(render);

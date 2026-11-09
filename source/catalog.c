@@ -5,32 +5,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #define TMDB_KEY_PATH "sdmc:/switch/lampa-nx/tmdb.key"
 /* Public client-side key from yumata/lampa-source src/core/tmdb/tmdb.js.
    Users may override it with their own tmdb.key. */
 #define LAMPA_PUBLIC_TMDB_KEY "4ef0d7355d9ffb5151e987764708ce96"
 #define UAFRESH_WORKER "https://uakino.ofreshofresh.workers.dev"
-#define UAFLIX_COOKIE_PATH "sdmc:/switch/uaflix/uaflix.cookie"
-static char uaflix_cookie[2048];
-static int cookie_loaded=0;
-
-static void load_cookie(void) {
-    if(cookie_loaded)return;
-    cookie_loaded=1;
-    FILE *file=fopen(UAFLIX_COOKIE_PATH,"rb");
-    if(file){
-        if(fgets(uaflix_cookie,sizeof(uaflix_cookie),file))
-            uaflix_cookie[strcspn(uaflix_cookie,"\r\n")]=0;
-        fclose(file);
-    }
-}
-int uaflix_logged_in(void){load_cookie();return uaflix_cookie[0]!=0;}
-void uaflix_logout(void){
-    cookie_loaded=1;uaflix_cookie[0]=0;
-    remove(UAFLIX_COOKIE_PATH);
-}
 
 typedef struct { char *data; size_t length, capacity; } Response;
 static void json_field(const char *object,const char *end,const char *key,
@@ -85,54 +65,6 @@ static char *encode(const char *value) {
     curl_free(encoded);
     curl_easy_cleanup(curl);
     return result;
-}
-
-int uaflix_login(const char *login,const char *password,char *error,int error_size){
-    if(!login || !password || !*login || !*password){
-        snprintf(error,error_size,"Введіть логін і пароль UAFlix");return 0;
-    }
-    CURL *curl=curl_easy_init();
-    if(!curl){snprintf(error,error_size,"Помилка мережі");return 0;}
-    char *user=curl_easy_escape(curl,login,0),*pass=curl_easy_escape(curl,password,0);
-    if(!user || !pass){
-        if(user)curl_free(user);
-        if(pass)curl_free(pass);
-        curl_easy_cleanup(curl);return 0;
-    }
-    size_t size=strlen(user)+strlen(pass)+50;
-    char *body=malloc(size);
-    if(!body){curl_free(user);curl_free(pass);curl_easy_cleanup(curl);return 0;}
-    snprintf(body,size,"site=uaflix&login=%s&password=%s",user,pass);
-    curl_free(user);curl_free(pass);
-    Response response={0};
-    curl_easy_setopt(curl,CURLOPT_URL,UAFRESH_WORKER "/login");
-    curl_easy_setopt(curl,CURLOPT_POSTFIELDS,body);
-    curl_easy_setopt(curl,CURLOPT_TIMEOUT,30L);
-    curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,on_data);
-    curl_easy_setopt(curl,CURLOPT_WRITEDATA,&response);
-    CURLcode result=curl_easy_perform(curl);
-    long status=0;curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status);
-    curl_easy_cleanup(curl);
-    memset(body,0,size);free(body);
-    if(result!=CURLE_OK || status!=200 || !response.data){
-        snprintf(error,error_size,"UAFlix: помилка входу (HTTP %ld)",status);
-        free(response.data);return 0;
-    }
-    char ok[12]={0},cookie[sizeof(uaflix_cookie)]={0};
-    const char *end=response.data+strlen(response.data);
-    json_field(response.data,end,"ok",ok,sizeof(ok));
-    json_field(response.data,end,"cookie",cookie,sizeof(cookie));
-    free(response.data);
-    if(strcmp(ok,"true") || !cookie[0] || strpbrk(cookie,"\r\n")){
-        snprintf(error,error_size,"UAFlix: вхід не виконано. Перевірте дані.");return 0;
-    }
-    snprintf(uaflix_cookie,sizeof(uaflix_cookie),"%s",cookie);
-    cookie_loaded=1;
-    mkdir("sdmc:/switch",0777);mkdir("sdmc:/switch/uaflix",0700);
-    FILE *file=fopen(UAFLIX_COOKIE_PATH,"wb");
-    if(file){fputs(uaflix_cookie,file);fclose(file);}
-    snprintf(error,error_size,"UAFlix: вхід виконано. Спробуйте серію ще раз.");
-    return 1;
 }
 
 /* A compact JSON string reader, safe for escaped quotation marks. */
@@ -351,17 +283,12 @@ static char *fetch_uafresh(const char *upstream, char *error, int error_size) {
     }
     char *encoded = encode(upstream);
     if (!encoded) { snprintf(error, error_size, "URL encoding failed"); return NULL; }
-    load_cookie();
-    int use_cookie=strstr(upstream,"https://uafix.net/")==upstream && uaflix_cookie[0];
-    char *cookie=use_cookie?encode(uaflix_cookie):NULL;
-    size_t length = strlen(encoded) + strlen(UAFRESH_WORKER) + 24 +
-                    (cookie?strlen(cookie)+9:0);
+    /* Public proxy only: never read, store, or forward authentication data. */
+    size_t length = strlen(encoded) + strlen(UAFRESH_WORKER) + 24;
     char *url = malloc(length);
-    if (!url) { free(cookie);free(encoded); return NULL; }
-    snprintf(url, length, UAFRESH_WORKER "/proxy?url=%s%s%s", encoded,
-             cookie?"&cookie=":"",cookie?cookie:"");
+    if (!url) { free(encoded); return NULL; }
+    snprintf(url, length, UAFRESH_WORKER "/proxy?url=%s", encoded);
     free(encoded);
-    free(cookie);
     char *html = request(url, error, error_size);
     free(url);
     if(!html && video_host)return request(upstream,error,error_size);
@@ -690,6 +617,29 @@ static int episode_order(const void *a, const void *b) {
     const Episode *one=a, *two=b;
     if (one->season != two->season) return one->season - two->season;
     return one->number - two->number;
+}
+
+int catalog_next_episode(const Episode *items,int count,int current){
+    if(!items || current<0 || current>=count)return -1;
+    const Episode *now=&items[current];
+    int best=-1;
+    for(int i=0;i<count;i++){
+        const Episode *candidate=&items[i];
+        if(candidate->season<now->season ||
+           (candidate->season==now->season && candidate->number<=now->number))
+            continue;
+        if(best<0 || candidate->season<items[best].season ||
+           (candidate->season==items[best].season &&
+            candidate->number<items[best].number))best=i;
+    }
+    if(best<0)return -1;
+    /* Each dubbing is usually a different streaming URL. Keep the preferred
+       voice on advancing to a new episode whenever that variant exists. */
+    if(now->voice[0])for(int i=0;i<count;i++)
+        if(items[i].season==items[best].season &&
+           items[i].number==items[best].number &&
+           !strcmp(items[i].voice,now->voice))return i;
+    return best;
 }
 
 /* Playerjs serials often contain a JSON tree voice -> season -> episode in

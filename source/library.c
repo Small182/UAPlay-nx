@@ -15,6 +15,7 @@ typedef struct {
     int favorite;
     int watched;
     double progress;
+    int last_season,last_episode;
 } Entry;
 
 static Entry entries[MAX_LIBRARY_ITEMS];
@@ -54,9 +55,10 @@ static void library_save(void) {
         clean_field(title,sizeof(title),e->movie.title);
         clean_field(original,sizeof(original),e->movie.original);
         clean_field(poster,sizeof(poster),e->movie.poster);
-        fprintf(file,"%d|%d|%d|%d|%.1f|%s|%s|%s|%s\n",
+        fprintf(file,"%d|%d|%d|%d|%.1f|%s|%s|%s|%s|%d|%d\n",
                 e->movie.id,e->movie.series,e->favorite,e->watched,
-                e->progress,title,original,e->movie.year,poster);
+                e->progress,title,original,e->movie.year,poster,
+                e->last_season,e->last_episode);
     }
     if (fclose(file)==0) rename(LIBRARY_TMP,LIBRARY_FILE);
 }
@@ -83,6 +85,15 @@ void library_init(void) {
         entry->favorite=atoi(fields[2]);
         entry->watched=atoi(fields[3]);
         entry->progress=atof(fields[4]);
+        /* Legacy records stop after the poster. New records append season
+           and episode, preserving every old favorite and watch-history row. */
+        char *extra=strchr(fields[8],'|');
+        if(extra){
+            *extra++=0;
+            entry->last_season=atoi(extra);
+            char *episode=strchr(extra,'|');
+            if(episode)entry->last_episode=atoi(episode+1);
+        }
         snprintf(entry->movie.title,sizeof(entry->movie.title),"%s",fields[5]);
         snprintf(entry->movie.original,sizeof(entry->movie.original),"%s",fields[6]);
         snprintf(entry->movie.year,sizeof(entry->movie.year),"%s",fields[7]);
@@ -111,6 +122,22 @@ void library_set_progress(const Movie *movie,double seconds) {
 double library_progress(const Movie *movie) {
     Entry *e=entry_for(movie,0);
     return e?e->progress:0;
+}
+void library_set_episode_progress(const Movie *movie,int season,int episode,double seconds){
+    Entry *e=entry_for(movie,1);
+    if(e && season>0 && episode>0){
+        e->watched=1;e->last_season=season;e->last_episode=episode;
+        e->progress=seconds>0?seconds:0;
+        library_save();
+    }
+}
+int library_last_episode(const Movie *movie,int *season,int *episode,double *seconds){
+    Entry *e=entry_for(movie,0);
+    if(!e || e->last_season<1 || e->last_episode<1)return 0;
+    if(season)*season=e->last_season;
+    if(episode)*episode=e->last_episode;
+    if(seconds)*seconds=e->progress;
+    return 1;
 }
 int library_list(Movie *items,int capacity,int favorites) {
     int count=0;

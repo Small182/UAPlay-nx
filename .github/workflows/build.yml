@@ -1,0 +1,29 @@
+name: Build native Lampa with libmpv
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  switch:
+    runs-on: ubuntu-24.04
+    container: devkitpro/devkita64:latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native player dependencies
+        run: |
+          dkp-pacman -Sy --noconfirm --needed switch-sdl2 switch-libmpv switch-pkg-config
+      - name: Compile native NRO
+        run: |
+          export DEVKITPRO=/opt/devkitpro
+          export DEVKITA64=/opt/devkitpro/devkitA64
+          export PATH="$DEVKITA64/bin:$DEVKITPRO/tools/bin:$PATH"
+          make -j2
+          test -s Lampa-nx.nro
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Lampa-nx-native-player
+          path: Lampa-nx.nro
+          if-no-files-found: error

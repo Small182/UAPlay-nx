@@ -312,11 +312,8 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                 card_title(p,movies[i].title,x,y+315,190);
                 text(p,movies[i].year,x,y+375,190);
             }
-            text(p,"Інші у категорії",29,585,800);
-            for(int i=start+6;i<n && i<start+12;i++){
-                int k=i-start-6;
-                poster(p,&movies[i],29+k*208,626,191,301,&poster_budget);
-            }
+            text_color(p,"Повний список — кнопка «Ще» угорі праворуч",30,581,850,
+                       .66f,.71f,.77f);
         }
         if(page==SETTINGS){
             box_alpha(p,0,0,1280,720,0,0,0,.49f,0);

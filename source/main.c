@@ -405,6 +405,7 @@ static void footer(Paint *p,const char *message) {
     }
     /* Notification occupies its own safe zone, never the last selectable row. */
     if(message && *message && strncmp(message,"Offline catalog",15) &&
+       strncmp(message,"Офлайн-пошук",strlen("Офлайн-пошук")) &&
        strncmp(message,"A:",2) &&
        strncmp(message,"B:",2) && strncmp(message,"Вліво",10)){
         box_alpha(p,UI_EDGE,617,1216,43,.11f,.16f,.19f,.98f,11);
@@ -491,7 +492,8 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             button(p,"▶  Дивитися",62,264,180,39,1);
             button(p,"+  До списку",254,264,189,39,0);
             text(p,heading,UI_EDGE,336,930);
-            if(status && !strncmp(status,"Offline catalog",15))
+            if(status && (!strncmp(status,"Offline catalog",15) ||
+                          !strncmp(status,"Офлайн-пошук",strlen("Офлайн-пошук"))))
                 text_tiny(p,"Офлайн",1026,340,77);
             button(p,"Усі  ›",1110,329,138,42,0);
             int start=chosen/6*6;

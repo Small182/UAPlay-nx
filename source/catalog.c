@@ -199,6 +199,36 @@ static char *read_offline_catalog(const char *category) {
     return result;
 }
 
+/* Case-insensitive substring search including Ukrainian Cyrillic, without
+   depending on a console-wide Unicode locale. */
+static unsigned folded_point(const unsigned char **cursor){
+    const unsigned char *s=*cursor;
+    unsigned cp=*s++;
+    if(cp>=0xC0 && cp<=0xDF && s[0]){cp=((cp&31)<<6)|(s[0]&63);s++;}
+    else if(cp>=0xE0 && cp<=0xEF && s[0] && s[1]){
+        cp=((cp&15)<<12)|((s[0]&63)<<6)|(s[1]&63);s+=2;
+    }
+    *cursor=s;
+    if(cp<128)return (unsigned)tolower((unsigned char)cp);
+    if(cp>=0x0410 && cp<=0x042F)return cp+0x20;
+    if(cp==0x0401)return 0x0451;
+    if(cp==0x0404)return 0x0454;
+    if(cp==0x0406)return 0x0456;
+    if(cp==0x0407)return 0x0457;
+    if(cp==0x0490)return 0x0491;
+    return cp;
+}
+static int contains_title(const char *haystack,const char *needle){
+    if(!needle || !*needle)return 1;
+    for(const unsigned char *h=(const unsigned char*)haystack;*h;){
+        const unsigned char *a=h,*b=(const unsigned char*)needle;
+        while(*a && *b && folded_point(&a)==folded_point(&b)){}
+        if(!*b)return 1;
+        folded_point(&h);
+    }
+    return 0;
+}
+
 int catalog_load(const char *category, const char *query, Movie *items, int max,
                  char *error, int error_size) {
     char key[256] = LAMPA_PUBLIC_TMDB_KEY;
@@ -228,18 +258,19 @@ int catalog_load(const char *category, const char *query, Movie *items, int max,
     }
     free(q);
     char *json = request(url, error, error_size);
+    int offline_search=0;
     if (!json) {
-        /* Never show the unrelated offline home catalogue as the result of
-           a failed search query. That was the "wrong movie" regression. */
-        if(searching){
+        json = read_offline_catalog(category);
+        if (json) {
+            offline_search=searching;
+            if(searching)snprintf(error,error_size,
+                                  "Офлайн-пошук: лише збережені назви (TMDB недоступний)");
+            else snprintf(error,error_size,"Offline catalog (network unavailable): %s",category);
+        }else if(searching){
             char reason[160];snprintf(reason,sizeof(reason),"%s",error);
             snprintf(error,error_size,"Пошук TMDB недоступний: %.155s",reason);
             return 0;
-        }
-        json = read_offline_catalog(category);
-        if (json) {
-            snprintf(error, error_size, "Offline catalog (network unavailable): %s", category);
-        } else return 0;
+        }else return 0;
     } else error[0] = 0;
     const char *results = strstr(json, "\"results\"");
     if (!results || !(results = strchr(results, '['))) { free(json); snprintf(error, error_size, "Bad TMDB response"); return 0; }
@@ -265,11 +296,13 @@ int catalog_load(const char *category, const char *query, Movie *items, int max,
         memcpy(m.year, date, strlen(date) >= 4 ? 4 : strlen(date));
         m.id = atoi(number);
         m.series = !strcmp(type, "tv") || (!q && !strcmp(category, "series"));
-        if (m.id && m.title[0] && strcmp(type, "person")) items[count++] = m;
+        if (m.id && m.title[0] && strcmp(type, "person") &&
+            (!offline_search || contains_title(m.title,query) ||
+             contains_title(m.original,query)))items[count++] = m;
         p = end;
     }
     free(json);
-    if (!count) snprintf(error, error_size, "No titles found");
+    if (!count && !offline_search) snprintf(error, error_size, "No titles found");
     return count;
 }
 

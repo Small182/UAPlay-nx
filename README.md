@@ -46,7 +46,7 @@ TMDB works out of the box using the public client key from the [official Lampa s
 
 ## UAFresh adapter
 
-This is **not** the original UAFresh JavaScript plugin running inside Lampa. That plugin relies on the browser and the global `Lampa.*` runtime. The native adapter implements selected functionality directly in C. **UAKino.best is disabled.** When TMDB is temporarily inaccessible, the app can display a small offline home catalogue but does not misrepresent that static catalogue as actual search results.
+This is **not** the original UAFresh JavaScript plugin running inside Lampa. That plugin relies on the browser and the global `Lampa.*` runtime. The native adapter implements selected functionality directly in C. **UAKino.best is disabled.** When TMDB is temporarily inaccessible, the app can display a small offline home catalogue. If the user searches while offline, results are filtered by the requested Ukrainian/English title from that limited snapshot rather than incorrectly showing unrelated movies. Offline mode is identified by a small label instead of a toast covering the poster shelf.
 
 On 2026-11-09 a Linux test searched *Avatar*, received 14 results, and successfully resolved a direct HLS stream from UAFlix's embedded Zetvideo player. A separate test found 15 episodes across two seasons for UAFlix's *Avatar: The Last Airbender*. You can repeat these host-side tests with:
 

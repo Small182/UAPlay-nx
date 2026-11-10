@@ -171,3 +171,11 @@ int library_list(Movie *items,int capacity,int favorites) {
     }
     return count;
 }
+int library_list_to_watch(Movie *items,int capacity) {
+    int count=0;
+    for(int i=total-1;i>=0 && count<capacity;i--){
+        if(entries[i].favorite && !entries[i].watched)
+            items[count++]=entries[i].movie;
+    }
+    return count;
+}

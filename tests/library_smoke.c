@@ -28,6 +28,19 @@ int main(void) {
     assert(movies[0].popularity>98.1f && movies[0].popularity<98.3f);
     assert(!strcmp(movies[0].overview,"Український тестовий опис"));
     assert(library_list(movies,4,0)==1);
-    puts("Local favorites, history and resume persistence OK");
+    assert(library_list_to_watch(movies,4)==0);
+    Movie later={.id=19996,.series=0};
+    snprintf(later.title,sizeof(later.title),"Фільм на майбутнє");
+    library_toggle_favorite(&later);
+    assert(library_list_to_watch(movies,4)==1);
+    assert(movies[0].id==19996);
+    assert(library_list(movies,4,0)==1);
+    library_init();
+    assert(library_list_to_watch(movies,4)==1);
+    assert(movies[0].id==19996);
+    library_mark_watched(&later);
+    assert(library_list_to_watch(movies,4)==0);
+    assert(library_list(movies,4,0)==2);
+    puts("Local favorites, to-watch, history and resume persistence OK");
     return 0;
 }

@@ -90,7 +90,7 @@ static const char *categories[]={"movies","series","films","genre_28","genre_35"
     "favorites","history","cartoons","cartoon_series","anime"};
 static const char *headings[]={"Популярні фільми","Популярні серіали","Усі фільми",
     "Бойовики","Комедії","Драми","Жахи","Фантастика","Мультфільми",
-    "Романтика","Документальні","Вибране","Історія переглядів",
+    "Романтика","Документальні","На майбутнє","Історія",
     "Мультфільми","Мультсеріали","Аніме"};
 #define CATEGORY_COUNT ((int)(sizeof(categories)/sizeof(categories[0])))
 #define ANIMATION_FIRST 13
@@ -158,13 +158,16 @@ static int film_tab(int category){
 }
 static int subsection_count(int category){
     return tab_for_category(category)==2?FILM_TAB_COUNT:
-           tab_for_category(category)==3?3:0;
+           tab_for_category(category)==3?3:
+           tab_for_category(category)==4?2:0;
 }
 static int category_for_subsection(int category,int index){
-    return tab_for_category(category)==2?film_categories[index]:ANIMATION_FIRST+index;
+    return tab_for_category(category)==2?film_categories[index]:
+           tab_for_category(category)==4?11+index:ANIMATION_FIRST+index;
 }
 static int focused_subsection(int category){
     return 16+(tab_for_category(category)==2?film_tab(category):
+               tab_for_category(category)==4?category-11:
                category-ANIMATION_FIRST);
 }
 
@@ -329,7 +332,7 @@ static int load_category(int category,const char *query,Movie *movies,char *mess
     int count=0;
     if (!strcmp(categories[category],"favorites")) {
         message[0]=0;
-        count=library_list(movies,CATALOG_LOCAL_MAX,1);
+        count=library_list_to_watch(movies,CATALOG_LOCAL_MAX);
     }else if (!strcmp(categories[category],"history")) {
         message[0]=0;
         count=library_list(movies,CATALOG_LOCAL_MAX,0);
@@ -1006,13 +1009,15 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             const int hero_poster_x=UI_EDGE+HERO_W-HERO_PAD-HERO_POSTER_W;
             const int hero_button_y=hero_bottom-HERO_BUTTON_H;
             const int hero_favorite_x=hero_left+205+HERO_BUTTON_GAP;
-            const int empty_favorites=(ui_category==11 && !n);
-            box_alpha(p,UI_EDGE,HERO_Y,HERO_W,
-                      empty_favorites?460:HERO_H,.09f,.11f,.14f,1.f,22);
-            if(empty_favorites){
-                text(p,"Вибране",hero_left,hero_top+4,1000);
-                text_center_button(p,"Тут нічого немає",UI_EDGE,HERO_Y+190,HERO_W,65,
-                                   p->font_big,.73f,.77f,.82f);
+            const int empty_library=((ui_category==11 || ui_category==12) && !n);
+            box_alpha(p,UI_EDGE,HERO_Y,HERO_W,HERO_H,.09f,.11f,.14f,1.f,22);
+            if(empty_library){
+                headline(p,ui_category==11?"На майбутнє":"Історія",hero_left,
+                         hero_top+12,1100);
+                text_muted(p,ui_category==11?
+                           "Збережені фільми та серіали, які ви ще не переглянули":
+                           "Фільми та серіали, які ви позначили як переглянуті",
+                           hero_left,hero_top+75,1100);
             }else if(n){
                 /* All four inner edges use the same 12px inset, following
                    the user's corrected Switch-style reference layout. */
@@ -1056,9 +1061,11 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             int section_tabs=subsection_count(ui_category);
             if(section_tabs){
                 const char *animation_tabs[]={"Мультфільми","Мультсеріали","Аніме"};
+                const char *library_tabs[]={"На майбутнє","Історія"};
                 const int anim_x[]={32,240,465},anim_w[]={191,208,134};
                 const int film_x[]={32,197,373,513,672},film_w[]={157,168,132,151,225};
                 int films=tab_for_category(ui_category)==2;
+                int library=tab_for_category(ui_category)==4;
                 for(int i=0;i<section_tabs;i++){
                     int selected=ui_category==category_for_subsection(ui_category,i);
                     int x=films?film_x[i]:anim_x[i],w=films?film_w[i]:anim_w[i];
@@ -1067,17 +1074,23 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                               selected?.35f:.19f,1.f,13);
                     if(catalog_hero_focus==i+16)
                         selection_frame(p,x,328,w,43);
-                    text_center_button(p,films?film_labels[i]:animation_tabs[i],x,328,
+                    text_center_button(p,films?film_labels[i]:
+                                       library?library_tabs[i]:animation_tabs[i],x,328,
                                        w,43,p->font_small,
                                        .96f,.97f,.99f);
                 }
-            }else if(!empty_favorites)text(p,heading,UI_EDGE,336,930);
+            }else if(!empty_library)text(p,heading,UI_EDGE,336,930);
             if(status && (!strncmp(status,"Offline catalog",15) ||
                           !strncmp(status,"Офлайн-пошук",strlen("Офлайн-пошук"))))
                 text_tiny(p,"Офлайн",1026,340,77);
-            if(!empty_favorites){
+            if(!empty_library){
                 if(n && catalog_hero_focus==3)selection_frame(p,1110,329,138,42);
                 button(p,"Усі  ›",1110,329,138,42,0);
+            }
+            if(empty_library){
+                box_alpha(p,UI_EDGE,387,HERO_W,227,.09f,.11f,.14f,1.f,18);
+                text_center_button(p,"Тут нічого немає",UI_EDGE,463,HERO_W,65,
+                                   p->font_big,.73f,.77f,.82f);
             }
             int start=chosen/6*6;
             for(int i=start;i<n && i<start+6;i++){
@@ -1125,14 +1138,21 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         footer(p,status);
     } else if (page==DETAILS) {
         screen_header(p,movies[chosen].series?"Про серіал":"Про фільм","UAPlay");
-        box_alpha(p,32,109,1216,507,.09f,.11f,.14f,1.f,21);
-        poster(p,&movies[chosen],978,121,229,344,&poster_budget);
-        headline(p,movies[chosen].title,65,138,872);
-        text_muted(p,movies[chosen].original,67,198,859);
+        enum { DETAILS_X=32, DETAILS_Y=109, DETAILS_W=1216, DETAILS_H=507,
+               DETAILS_PAD=14, DETAILS_POSTER_H=DETAILS_H-2*DETAILS_PAD,
+               DETAILS_POSTER_W=DETAILS_POSTER_H*2/3,
+               DETAILS_POSTER_X=DETAILS_X+DETAILS_W-DETAILS_PAD-DETAILS_POSTER_W };
+        box_alpha(p,DETAILS_X,DETAILS_Y,DETAILS_W,DETAILS_H,.09f,.11f,.14f,1.f,21);
+        /* Original 2:3 poster ratio, with identical 14 px gaps on the top,
+           right and bottom edges of the information panel. */
+        poster(p,&movies[chosen],DETAILS_POSTER_X,DETAILS_Y+DETAILS_PAD,
+               DETAILS_POSTER_W,DETAILS_POSTER_H,&poster_budget);
+        headline(p,movies[chosen].title,65,138,820);
+        text_muted(p,movies[chosen].original,67,198,815);
         char tag[100];snprintf(tag,sizeof(tag),"%s    ·    %s",movies[chosen].year,
                                 movies[chosen].series?"Серіал":"Фільм");
-        text(p,tag,66,259,835);
-        summary(p,movies[chosen].overview,66,313,858);
+        text(p,tag,66,259,815);
+        summary(p,movies[chosen].overview,66,313,815);
         if(!details_button_focus)selection_frame(p,65,526,238,58);
         else selection_frame(p,320,526,255,58);
         button(p,"▶  Дивитися",65,526,238,58,1);
@@ -1225,6 +1245,14 @@ static void seek(mpv_handle *player,const char *seconds) {
     const char *args[]={"seek",seconds,"relative",NULL};
     if(player) mpv_command_async(player,0,args);
 }
+static void change_volume(mpv_handle *player,int direction){
+    double volume=video_options[1]+direction*5.0;
+    if(volume<0)volume=0;
+    if(volume>130)volume=130;
+    if(volume==video_options[1])return;
+    video_options[1]=volume;
+    playback_set_value(player,"volume",volume);
+}
 static void draw_player_controls(Paint *p,mpv_handle *player) {
     ui_theme_enabled=0; /* Video playback controls remain readable in both themes. */
     double pos=0,duration=0;
@@ -1260,13 +1288,13 @@ static void draw_player_controls(Paint *p,mpv_handle *player) {
     snprintf(right,sizeof(right),"%02d:%02d",(int)duration/60,(int)duration%60);
     text_small(p,left,35,552,85);
     text_small(p,right,1167,552,88);
-    text_tiny(p,"Гучність",67,606,190);
+    text_tiny(p,"↑↓ Гучність",67,606,190);
     box_alpha(p,70,649,178,5,.35f,.42f,.52f,1.f,3);
     int volume=(int)video_options[1];
     if(volume<0)volume=0;if(volume>130)volume=130;
     if(volume>0)box_alpha(p,70,649,volume*178/130,5,.92f,.94f,.97f,1.f,3);
     box_alpha(p,70+volume*178/130-7,641,14,20,.96f,.97f,.98f,1.f,7);
-    char volume_label[24];snprintf(volume_label,sizeof(volume_label),"%d%%",volume*100/130);
+    char volume_label[24];snprintf(volume_label,sizeof(volume_label),"%d%%",volume);
     text_tiny(p,volume_label,122,672,100);
     const int centers[]={354,476,598,832,954,1076};
     const char *icons[]={"−10",paused?"▶":"Ⅱ","+10","","♪","CC"};
@@ -1655,6 +1683,8 @@ int main(void) {
                     SDL_GameControllerGetButton(pad,SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT)seek(player,fast?"-60":"-10");
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT)seek(player,fast?"60":"10");
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)change_volume(player,1);
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)change_volume(player,-1);
                 if(key==SDL_CONTROLLER_BUTTON_X || key==SDL_CONTROLLER_BUTTON_Y){
                     subtitle_picker=key==SDL_CONTROLLER_BUTTON_X;
                     track_count=playback_tracks(player,subtitle_picker,tracks,TRACKS_MAX);

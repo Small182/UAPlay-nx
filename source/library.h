@@ -15,5 +15,7 @@ double library_progress(const Movie *movie);
 void library_set_episode_progress(const Movie *movie,int season,int episode,double seconds);
 int library_last_episode(const Movie *movie,int *season,int *episode,double *seconds);
 int library_list(Movie *items, int capacity, int favorites);
+/* Saved titles that have not been watched yet ("На майбутнє"). */
+int library_list_to_watch(Movie *items, int capacity);
 
 #endif

@@ -101,6 +101,14 @@ static int expanded_catalog=0;
 static int catalog_hero_focus=0;
 /* 0 popularity, 1 TMDB rating, 2 release date. */
 static int catalog_sort_mode=0;
+/* Visible order is Rating, Popularity, Release date; API modes are
+   Popularity=0, Rating=1, Release date=2. */
+static int sort_mode_for_button(int index){
+    return index==0?1:index==1?0:2;
+}
+static int sort_button_for_mode(int mode){
+    return mode==1?0:mode==0?1:2;
+}
 /* 0: Watch, 1: Add to favorites (details buttons). */
 static int details_button_focus=0;
 static int settings_selected=0,ui_accent_alt=0,source_mode=0;
@@ -895,8 +903,8 @@ static void poster(Paint *p,const Movie *movie,int x,int y,int width,int height,
     p->tex=previous;
     if(movie->rating>0.01f){
         char score[28];
-        snprintf(score,sizeof(score),"TMDB %.1f",movie->rating);
-        int badge_width=width<140?91:98;
+        snprintf(score,sizeof(score),"%.1f",movie->rating);
+        int badge_width=50;
         box_alpha(p,x+5,y+height-34,badge_width,28,.035f,.047f,.061f,.91f,7);
         text_center_button(p,score,x+5,y+height-34,badge_width,28,
                            p->font_tiny,.98f,.96f,.88f);
@@ -969,10 +977,11 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             const char *sort_labels[]={"Рейтинг","Популярність","Дата виходу"};
             const int sort_x[]={691,811,957},sort_w[]={112,139,142};
             for(int i=0;i<3;i++){
+                int active=catalog_sort_mode==sort_mode_for_button(i);
                 box_alpha(p,sort_x[i],98,sort_w[i],44,
-                          catalog_sort_mode==i?.20f:.10f,
-                          catalog_sort_mode==i?.27f:.14f,
-                          catalog_sort_mode==i?.33f:.18f,1.f,12);
+                          active?.20f:.10f,
+                          active?.27f:.14f,
+                          active?.33f:.18f,1.f,12);
                 if(catalog_hero_focus==12+i)
                     selection_frame(p,sort_x[i],98,sort_w[i],44);
                 text_center_button(p,sort_labels[i],sort_x[i],98,sort_w[i],44,
@@ -1011,7 +1020,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                        HERO_POSTER_W,hero_bottom-hero_top,&poster_budget);
                 headline(p,movies[active].title,hero_left,hero_top,967);
                 char tag[110];
-                snprintf(tag,sizeof(tag),"%s  ·  %s  ·  TMDB",movies[active].year,
+                snprintf(tag,sizeof(tag),"%s  ·  %s",movies[active].year,
                          movies[active].series?"Серіал":"Фільм");
                 text_muted(p,tag,hero_left,hero_top+50,890);
                 wrapped(p,movies[active].overview,hero_left,hero_top+90,949,2,27,
@@ -1036,11 +1045,11 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                        218,HERO_BUTTON_H,0);
                 if(movies[active].rating>0.f){
                     char score[36];
-                    snprintf(score,sizeof(score),"TMDB  %.1f / 10",movies[active].rating);
+                    snprintf(score,sizeof(score),"%.1f",movies[active].rating);
                     int badge_x=ui_category==11?hero_favorite_x+80:hero_favorite_x+233;
-                    box_alpha(p,badge_x,hero_button_y+9,141,32,
+                    box_alpha(p,badge_x,hero_button_y+9,60,32,
                               .16f,.20f,.24f,1.f,9);
-                    text_center_button(p,score,badge_x,hero_button_y+9,141,32,
+                    text_center_button(p,score,badge_x,hero_button_y+9,60,32,
                                        p->font_tiny,.94f,.96f,.98f);
                 }
             }
@@ -1839,7 +1848,7 @@ int main(void) {
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && catalog_hero_focus<11)
                         catalog_hero_focus++;
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)
-                        catalog_hero_focus=expanded_catalog?12+catalog_sort_mode:
+                        catalog_hero_focus=expanded_catalog?12+sort_button_for_mode(catalog_sort_mode):
                             (subsection_count(category)?focused_subsection(category):n?1:0);
                 }else if(!expanded_catalog && catalog_hero_focus){
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus>1)
@@ -1857,7 +1866,7 @@ int main(void) {
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_UP){
                         if(chosen>=6)chosen-=6;
                         else if(expanded_catalog)
-                            catalog_hero_focus=12+catalog_sort_mode;
+                            catalog_hero_focus=12+sort_button_for_mode(catalog_sort_mode);
                         else if(!n)catalog_hero_focus=7+tab_for_category(category);
                         else catalog_hero_focus=subsection_count(category)?
                             focused_subsection(category):(chosen%6>=4?3:1);
@@ -1872,7 +1881,7 @@ int main(void) {
                         if(catalog_hero_focus==15){
                             expanded_catalog=0;catalog_hero_focus=0;chosen=0;
                         }else{
-                            int next=catalog_hero_focus-12;
+                            int next=sort_mode_for_button(catalog_hero_focus-12);
                             if(next!=catalog_sort_mode){
                                 catalog_sort_mode=next;
                                 n=load_category(category,query,movies,message,sizeof(message));

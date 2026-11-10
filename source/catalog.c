@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef __SWITCH__
 #include <SDL.h>
@@ -189,6 +190,11 @@ static const char *object_end(const char *p) {
     return NULL;
 }
 
+static int already_released(const char *release_date,const char *today){
+    return !today[0] ||
+           (strlen(release_date)>=10 && strncmp(release_date,today,10)<=0);
+}
+
 static char *read_offline_catalog(const char *category) {
     const char *name = !strcmp(category, "series") ? "series" :
                        !strcmp(category, "top") ? "top" : "movies";
@@ -256,6 +262,12 @@ int catalog_load_page_sorted(const char *category, const char *query, int page,
     if (!key[0]) { snprintf(error, error_size, "TMDB API key is empty"); return 0; }
 
     char url[1800];
+    char today[16]={0};
+    if(sort_mode==2){
+        time_t now=time(NULL);
+        struct tm *calendar=localtime(&now);
+        if(calendar)strftime(today,sizeof(today),"%Y-%m-%d",calendar);
+    }
     int searching=query && *query;
     char *q = searching ? encode(query) : NULL;
     const char *movie_sort=sort_mode==1?"vote_average.desc":
@@ -285,6 +297,21 @@ int catalog_load_page_sorted(const char *category, const char *query, int page,
         }
     }
     free(q);
+    /* Discover endpoints accept an upper release-date bound. Without it,
+       sorting newest-first gives unreleased films and premieres priority. */
+    if(sort_mode==2 && today[0] && !searching){
+        int tv_category=!strcmp(category,"series") ||
+                        !strcmp(category,"cartoon_series") ||
+                        !strcmp(category,"anime");
+        int movie_category=!strcmp(category,"films") ||
+                           !strcmp(category,"cartoons") ||
+                           !strncmp(category,"genre_",6);
+        if(tv_category || movie_category){
+            size_t used=strlen(url);
+            snprintf(url+used,sizeof(url)-used,"&%s.lte=%s",
+                     tv_category?"first_air_date":"primary_release_date",today);
+        }
+    }
     /* The TMDB API defaults to page 1. Explicitly request subsequent pages. */
     size_t used=strlen(url);
     if (used+24<sizeof(url))snprintf(url+used,sizeof(url)-used,"&page=%d",page);
@@ -333,6 +360,12 @@ int catalog_load_page_sorted(const char *category, const char *query, int page,
         m.popularity=(float)atof(popularity);
         json_field(p, end, "release_date", date, sizeof(date));
         if (!date[0]) json_field(p, end, "first_air_date", date, sizeof(date));
+        /* Apply this check even to search/offline responses, which cannot use
+           discover filters, so future releases never enter date-sorted lists. */
+        if(sort_mode==2 && !already_released(date,today)){
+            p=end;
+            continue;
+        }
         memcpy(m.year, date, strlen(date) >= 4 ? 4 : strlen(date));
         m.id = atoi(number);
         m.series = !strcmp(type, "tv") || (!searching &&

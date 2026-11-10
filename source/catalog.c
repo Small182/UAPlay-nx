@@ -1217,40 +1217,49 @@ static void search_animeon(const char *query,Source *items,int *count,int max){
     free(json);
 }
 
-int uakino_search(const Movie *movie, Source *items, int max,
-                  char *error, int error_size) {
+int uakino_search_provider(const Movie *movie, Source *items, int max,
+                           int selected, char *error, int error_size) {
     int count=0;
     /* Each provider gets room for its own cards. Searching the original title
        is a fallback only if the localized search found no cards there. */
     const char *localized=movie->title;
     const char *original=movie->original;
     error[0]=0;
-    int provider_limit=max>=7?max/7:max;
+    int provider_limit=selected? (max>=4?max/4:max) : (max>=7?max/7:max);
+    if(selected==0 || selected==1){
     search_provider("https://uafix.net", "UAFlix", 0, localized,movie->series,
                     items, &count, provider_limit, error, error_size);
     if(count==0 && !error[0] && original[0] && strcmp(original,localized))
         search_provider("https://uafix.net", "UAFlix", 0, original,movie->series,
                         items, &count, provider_limit, error, error_size);
+    }
     int before=count;
+    if(selected==0 || selected==2){
     search_provider("https://uaserials.my", "UASerials", 1, localized,movie->series,
                     items, &count, provider_limit*2, error, error_size);
     if(count==before && !error[0] && original[0] && strcmp(original,localized))
         search_provider("https://uaserials.my", "UASerials", 1, original,movie->series,
                         items, &count, provider_limit*2, error, error_size);
+    }
     before=count;
+    if(selected==0 || selected==3){
     search_new_provider("https://eneyida.tv","Eneyida",2,localized,movie->series,
                         items,&count,provider_limit*3,error,error_size);
     if(count==before && !error[0] && original[0] && strcmp(original,localized))
         search_new_provider("https://eneyida.tv","Eneyida",2,original,movie->series,
                             items,&count,provider_limit*3,error,error_size);
+    }
     before=count;
+    if(selected==0 || selected==4){
     /* The old UAFilm.tv address now redirects to Klon UA. */
     search_new_provider("https://klonua.com","UAFilm",3,localized,movie->series,
                         items,&count,provider_limit*4,error,error_size);
     if(count==before && !error[0] && original[0] && strcmp(original,localized))
         search_new_provider("https://klonua.com","UAFilm",3,original,movie->series,
                             items,&count,provider_limit*4,error,error_size);
+    }
     before=count;
+    if(selected==0 || selected==5){
     int uakino_limit=movie->series && max>2*provider_limit?
                      max-2*provider_limit:max;
     search_new_provider("https://uakino.best","UAKino",4,localized,movie->series,
@@ -1258,12 +1267,15 @@ int uakino_search(const Movie *movie, Source *items, int max,
     if(count==before && !error[0] && original[0] && strcmp(original,localized))
         search_new_provider("https://uakino.best","UAKino",4,original,movie->series,
                             items,&count,uakino_limit,error,error_size);
-    if(movie->series && count<max){
+    }
+    if(movie->series && count<max && (selected==0 || selected==6)){
         int before_mikai=count;
         int mikai_limit=max>provider_limit?max-provider_limit:max;
         search_mikai(localized,items,&count,mikai_limit);
         if(count==before_mikai && original[0] && strcmp(original,localized))
             search_mikai(original,items,&count,mikai_limit);
+    }
+    if(movie->series && count<max && (selected==0 || selected==7)){
         int before_animeon=count;
         search_animeon(localized,items,&count,max);
         if(count==before_animeon && original[0] && strcmp(original,localized))
@@ -1272,6 +1284,11 @@ int uakino_search(const Movie *movie, Source *items, int max,
     if (count) error[0]=0;
     else if (!error[0]) snprintf(error,error_size,"UAFresh: no matching pages");
     return count;
+}
+
+int uakino_search(const Movie *movie, Source *items, int max,
+                  char *error, int error_size){
+    return uakino_search_provider(movie,items,max,0,error,error_size);
 }
 
 typedef struct {
@@ -1927,9 +1944,9 @@ int uakino_episodes(const Source *source, Episode *items, int max,
     if(strstr(source->url,"animeon.club/api/player/")){
         char *response=request(source->url,error,error_size);
         if(!response)return 0;
-        /* AnimeON returns player entries with a JSON-encoded episode list. */
-        /* Moon supplies explicit episode URLs. AnimeON's ASHDI variant
-           supplies folder IDs, which require a separate player mapping. */
+        /* AnimeON returns an array of players. The first player's `json`
+           is a nested PlayerJS folder tree whose leaves use `file`, not
+           `video_url` (the previous parser never matched a real leaf). */
         char *episodes_json=json_string_field_alloc(response,"json");
         free(response);
         if(!episodes_json){
@@ -1938,22 +1955,40 @@ int uakino_episodes(const Source *source, Episode *items, int max,
         }
         const char *p=episodes_json;
         int count=0;
-        while(count<max && (p=strstr(p,"{\"episode\""))){
-            const char *end=object_end(p);
-            if(!end)break;
-            char number[24]={0},stream[1024]={0};
-            json_field(p,end,"episode",number,sizeof(number));
-            json_field(p,end,"video_url",stream,sizeof(stream));
-            int episode=atoi(number);
+        const char *last_title=NULL;
+        int season=1;
+        while(count<max && *p){
+            const char *title=strstr(p,"\"title\"");
+            const char *file=strstr(p,"\"file\"");
+            if(!title && !file)break;
+            if(title && (!file || title<file)){
+                char label[192]={0};
+                const char *after=strchr(title+7,',');
+                if(after)json_field(title,after,"title",label,sizeof(label));
+                int next_season=0;
+                if(sscanf(label," Сезон %d",&next_season)==1 && next_season>0)
+                    season=next_season;
+                last_title=title;
+                p=title+7;
+                continue;
+            }
+            char stream[1024]={0},label[192]={0};
+            const char *end=strchr(file,',');
+            if(!end)end=file+strlen(file);
+            json_field(file,end,"file",stream,sizeof(stream));
+            if(last_title)json_field(last_title,file,"title",label,sizeof(label));
+            int episode=0;
+            const char *number=strstr(label,"ерія");
+            if(number)sscanf(number+strlen("ерія"),"%d",&episode);
             if(episode>0 && episode<=1000 &&
                (!strncmp(stream,"https://",8) || !strncmp(stream,"http://",7))){
                 Episode *dst=&items[count++];
                 memset(dst,0,sizeof(*dst));
-                dst->season=1;dst->number=episode;
+                dst->season=season;dst->number=episode;
                 snprintf(dst->title,sizeof(dst->title),"Серія %d · AnimeON",episode);
                 snprintf(dst->url,sizeof(dst->url),"%s",stream);
             }
-            p=end;
+            p=file+6;
         }
         free(episodes_json);
         if(count)qsort(items,(size_t)count,sizeof(*items),episode_order);

@@ -62,6 +62,10 @@ int catalog_fetch_details(Movie *movie);
 /* Native source search: UAFlix, UASerials, Eneyida, UAFilm/Klon UA, UAKino. */
 int uakino_search(const Movie *movie, Source *items, int max,
                   char *error, int error_size);
+/* Search a single provider (0=all, 1=UAFlix, 2=UASerials,
+   3=Eneyida, 4=UAFilm, 5=UAKino, 6=Mikai, 7=AnimeON). */
+int uakino_search_provider(const Movie *movie, Source *items, int max,
+                           int provider, char *error, int error_size);
 /* Rank candidates by title match (Ukrainian and original titles), not by
    their position on provider search pages. preferred_provider: 0=all,
    1=UAFlix, 2=UASerials. Returns the count after removing clear mismatches. */

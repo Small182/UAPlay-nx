@@ -50,6 +50,7 @@ jobs:
           dkp-pacman -Q switch-ffmpeg switch-libmpv
       - name: Compile native NRO
         run: |
+          curl -fL --retry 3 -o romfs/NotoSansCJKjp-Regular.otf https://raw.githubusercontent.com/googlefonts/noto-cjk/main/Sans/OTF/Japanese/NotoSansCJKjp-Regular.otf
           export DEVKITPRO=/opt/devkitpro
           export DEVKITA64=/opt/devkitpro/devkitA64
           export PATH="$DEVKITA64/bin:$DEVKITPRO/tools/bin:$PATH"

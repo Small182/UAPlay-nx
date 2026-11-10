@@ -16,8 +16,11 @@
 #include "library.h"
 #include "playback.h"
 
-typedef enum { CATALOG, DETAILS, SOURCES, PLAYER, SETTINGS,
+typedef enum { CATALOG, DETAILS, PROVIDERS, SOURCES, PLAYER, SETTINGS,
                SEASONS, EPISODES, TRACK_PICKER, VIDEO_SETTINGS } Page;
+static int selected_provider=0;
+static const char *provider_names[]={"UAFlix","UASerials","Eneyida",
+    "UAFilm","UAKino","Mikai (аніме)","AnimeON (аніме)"};
 
 static Episode episodes[EPISODES_MAX];
 static int episode_count,season_ids[64],season_count,selected_season,selected_episode;
@@ -488,6 +491,7 @@ typedef struct {
     TTF_Font *scripts_small[7];
     TTF_Font *scripts_big[7];
     TTF_Font *scripts_tiny[7];
+    TTF_Font *japanese[4];
 } Paint;
 static const char *script_fonts[]={"Tamil","Telugu","Devanagari","Malayalam",
                                   "Bengali","Arabic","Thai"};
@@ -506,6 +510,12 @@ static TTF_Font *choose_font(Paint *p,const char *s){
                 cp>=0x0980 && cp<=0x09FF?4:
                 cp>=0x0600 && cp<=0x06FF?5:
                 cp>=0x0E00 && cp<=0x0E7F?6:-1;
+        if(cp>=0x3040 && cp<=0x30ff || cp>=0x3400 && cp<=0x9fff ||
+           cp>=0xff00 && cp<=0xffef){
+            int size=p->font==p->font_big?2:p->font==p->font_small?1:
+                     p->font==p->font_tiny?3:0;
+            if(p->japanese[size])return p->japanese[size];
+        }
         if(idx>=0){
             TTF_Font *fallback=p->font==p->font_big?p->scripts_big[idx]:
                 p->font==p->font_small?p->scripts_small[idx]:
@@ -587,6 +597,9 @@ static int paint_init(Paint *p) {
         p->scripts_big[i]=TTF_OpenFont(path,31);
         p->scripts_tiny[i]=TTF_OpenFont(path,15);
     }
+    const int jp_sizes[]={22,19,31,15};
+    for(int i=0;i<4;i++)
+        p->japanese[i]=TTF_OpenFont("romfs:/NotoSansCJKjp-Regular.otf",jp_sizes[i]);
     return p->font != NULL;
 }
 static int ui_outline_width=0;
@@ -1308,6 +1321,12 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         button(p,"▶  Дивитися",65,526,238,58,1);
         button(p,library_favorite(&movies[chosen])?"✓  У вибраному":"+  У вибране",
                320,526,255,58,0);
+        footer(p,status);
+    } else if (page==PROVIDERS) {
+        screen_header(p,"Оберіть джерело","Пошук почнеться після вибору");
+        for(int i=0;i<7;i++)
+            list_row(p,provider_names[i],UI_ROW_Y+i*UI_ROW_STEP,
+                     i==selected_provider,NULL);
         footer(p,status);
     } else if (page==SOURCES) {
         screen_header(p,"Джерела відео",NULL);
@@ -2354,14 +2373,25 @@ int main(void) {
                                  "Додано у вибране":"Видалено з вибраного");
                     }else{
                         message[0]=0;
-                        sn=uakino_search(&movies[chosen],sources,UAKINO_MAX,message,sizeof(message));
-                        sn=catalog_rank_sources(&movies[chosen],sources,sn,source_mode);
-                        if(!sn)snprintf(message,sizeof(message),"Нічого не знайдено");
-                        source=0;page=SOURCES;
+                        selected_provider=0;page=PROVIDERS;
                     }
                 }
-            }else if(page==SOURCES){
+            }else if(page==PROVIDERS){
                 if(key==SDL_CONTROLLER_BUTTON_B){page=DETAILS;message[0]=0;}
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && selected_provider>0)
+                    selected_provider--;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && selected_provider<6)
+                    selected_provider++;
+                if(key==SDL_CONTROLLER_BUTTON_A){
+                    message[0]=0;
+                    sn=uakino_search_provider(&movies[chosen],sources,UAKINO_MAX,
+                                              selected_provider+1,message,sizeof(message));
+                    sn=catalog_rank_sources(&movies[chosen],sources,sn,source_mode);
+                    if(!sn)snprintf(message,sizeof(message),"Нічого не знайдено");
+                    source=0;page=SOURCES;
+                }
+            }else if(page==SOURCES){
+                if(key==SDL_CONTROLLER_BUTTON_B){page=PROVIDERS;message[0]=0;}
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && source>0)source--;
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && source<sn-1)source++;
                 if(key==SDL_CONTROLLER_BUTTON_A && sn){
@@ -2616,6 +2646,7 @@ int main(void) {
         if(paint.scripts_big[i])TTF_CloseFont(paint.scripts_big[i]);
         if(paint.scripts_tiny[i])TTF_CloseFont(paint.scripts_tiny[i]);
     }
+    for(int i=0;i<4;i++)if(paint.japanese[i])TTF_CloseFont(paint.japanese[i]);
     if(paint.font_tiny)TTF_CloseFont(paint.font_tiny);
     if(paint.font_small)TTF_CloseFont(paint.font_small);
     if(paint.font_big)TTF_CloseFont(paint.font_big);

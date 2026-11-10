@@ -18,16 +18,9 @@ TMDB works out of the box using the public client key from the [official Lampa s
 - Native **season/episode browser** for UAFresh sources exposing episode-page links. Actual video playback depends on the episode's stream being discoverable; UAFlix web playback does not require a login.
 - Player pause, ±10 second seek, **separate audio-track and subtitle-track lists** built from libmpv `track-list` with language/title and selected-track state.
 - Netflix-TV-inspired navigation concept (native UAPlay branding): top-level category tabs, selected-title hero with synopsis/actions, matching poster shelf, full collection browser, full-page settings and title details. No Netflix assets or proprietary UI code are included.
-- A consistent, controller-first **1280 × 720 design system**: 32 px safe-area gutters, an 8 px rhythm, a reserved 52 px footer, reusable 50 px list rows at 58 px intervals, and typography at 31/22/19/15 px. Posters preserve an approximately 2:3 aspect ratio; selection outlines no longer change image dimensions. Long titles wrap at Unicode-safe word boundaries at a fixed font size. All touch hitboxes are aligned to their drawn controls. The footer uses a white-on-charcoal Switch controller legend with round ABXY icons and squared shoulder-button icons.
-- The 8-row list viewport supports page-by-page navigation via D-pad and analog stick for long source, season, episode and track lists. Navigation tabs, content actions, error notifications and player controls use common color, radius and alignment rules. Footer button hints are contextual and tied to actions implemented on the current screen.
-- Dark full-width video overlay with Back, volume adjustment, timeline scrubbing, pause/play, ±10-second seek, settings, audio and subtitles. The overlay auto-hides after **3 seconds** and reappears when any button is pressed or the video is tapped.
-- Switch touch controls for movie cards, source/season/episode lists, video overlay buttons, and timeline. Touch works with mouse clicks in Eden as well.
 - Playback settings overlay: speed, volume, brightness, contrast, subtitle text size, subtitle timing, and **HLS quality targets** Auto/360p/480p/720p/1080p. mpv selects a stream variant by bitrate ceiling (≈0.8/1.5/3/6 Mbps); the actual video height depends on variants supplied by the provider. Changing the preset reloads the stream and tries to restore playback position.
 - Adds an external WebVTT subtitle track from UAFresh embedded players when the provider supplies one (for example Zetvideo's Ukrainian subtitles).
 - Settings/information screen.
-- **No UAFlix sign-in screen**. Public series episodes are attempted without requiring an account; the earlier custom login keyboard and diagnostic "safe mode" message have been removed from UI.
-- Custom cyan-on-midnight **UAPlay** icon featuring the user's supplied diagonal filmstrip, sprocket holes, play symbol, and stars; homebrew display name is **UAPlay**.
-- Seven Noto Sans fallback fonts (Tamil, Telugu, Devanagari, Malayalam, Bengali, Arabic, Thai) are bundled for non-Latin titles; they are distributed under the SIL Open Font License 1.1 (Google Noto Fonts).
 
 ## Controls
 

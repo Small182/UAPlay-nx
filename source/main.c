@@ -911,23 +911,25 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             int active=chosen>=0 && chosen<n?chosen:0;
             box_alpha(p,UI_EDGE,92,1216,222,.09f,.11f,.14f,1.f,22);
             if(n){
-                poster(p,&movies[active],1080,102,135,202,&poster_budget);
-                headline(p,movies[active].title,61,106,967);
+                /* Shared content inset: title/poster begin on the same top
+                   line; poster/buttons finish on the same bottom line. */
+                poster(p,&movies[active],1086,106,132,197,&poster_budget);
+                headline(p,movies[active].title,62,106,967);
                 char tag[110];
                 snprintf(tag,sizeof(tag),"%s  ·  %s  ·  TMDB",movies[active].year,
                          movies[active].series?"Серіал":"Фільм");
-                text_muted(p,tag,63,159,890);
-                wrapped(p,movies[active].overview,63,198,949,2,27,
+                text_muted(p,tag,62,159,890);
+                wrapped(p,movies[active].overview,62,198,949,2,27,
                         p->font_small,.74f,.79f,.84f);
             }else{
                 headline(p,"Не знайдено матеріалів",63,121,900);
                 text_muted(p,"Спробуйте інший розділ або пошуковий запит",63,185,920);
             }
-            if(n && catalog_hero_focus==1)selection_frame(p,62,264,180,39);
-            if(n && catalog_hero_focus==2)selection_frame(p,254,264,189,39);
-            button(p,"▶  Дивитися",62,264,180,39,1);
+            if(n && catalog_hero_focus==1)selection_frame(p,62,253,205,50);
+            if(n && catalog_hero_focus==2)selection_frame(p,279,253,218,50);
+            button(p,"▶  Дивитися",62,253,205,50,1);
             button(p,n && library_favorite(&movies[active])?
-                   "✓  У вибраному":"+  До списку",254,264,189,39,0);
+                   "✓  У вибраному":"+  У вибране",279,253,218,50,0);
             if(ui_category>=ANIMATION_FIRST && ui_category<=ANIMATION_LAST){
                 const char *animation_tabs[]={"Мультфільми","Мультсеріали","Аніме"};
                 const int anim_x[]={32,240,465},anim_w[]={191,208,134};
@@ -1006,7 +1008,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         if(!details_button_focus)selection_frame(p,65,526,238,58);
         else selection_frame(p,320,526,255,58);
         button(p,"▶  Дивитися",65,526,238,58,1);
-        button(p,library_favorite(&movies[chosen])?"✓  У вибраному":"+  До списку",
+        button(p,library_favorite(&movies[chosen])?"✓  У вибраному":"+  У вибране",
                320,526,255,58,0);
         footer(p,status);
     } else if (page==SOURCES) {

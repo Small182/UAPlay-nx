@@ -1150,6 +1150,7 @@ int main(void) {
     if (R_SUCCEEDED(network_result)) curl_global_init(CURL_GLOBAL_DEFAULT);
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS,"1");
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_GAMECONTROLLER)) return 1;
+    catalog_http_init();
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,SDL_GL_CONTEXT_PROFILE_ES);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION,3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,0);
@@ -1931,6 +1932,7 @@ int main(void) {
     if(player)mpv_terminate_destroy(player);
     if(pad)SDL_GameControllerClose(pad);
     posters_destroy();
+    catalog_http_cleanup();
     text_cache_destroy();
     for(int i=0;i<7;i++){
         if(paint.scripts[i])TTF_CloseFont(paint.scripts[i]);

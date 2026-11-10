@@ -6,6 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef __SWITCH__
+#include <SDL.h>
+#endif
+
 #define TMDB_KEY_PATH "sdmc:/switch/lampa-nx/tmdb.key"
 /* Public client-side key from yumata/lampa-source src/core/tmdb/tmdb.js.
    Users may override it with their own tmdb.key. */
@@ -15,6 +19,28 @@
 typedef struct { char *data; size_t length, capacity; } Response;
 static void json_field(const char *object,const char *end,const char *key,
                        char *value,size_t size);
+
+/* Recreating a curl easy handle for every source-page lookup repeatedly
+   tears down HTTPS/TLS sockets. Eden's socket emulation can eventually fail
+   new connections even though existing poster requests still work. Keep
+   one reusable handle per calling thread, never shared concurrently. */
+#ifdef __SWITCH__
+static SDL_threadID catalog_ui_thread;
+static CURL *catalog_connections[2];
+void catalog_http_init(void) { catalog_ui_thread = SDL_ThreadID(); }
+void catalog_http_cleanup(void) {
+    for (int i = 0; i < 2; i++) {
+        if (catalog_connections[i]) curl_easy_cleanup(catalog_connections[i]);
+        catalog_connections[i] = NULL;
+    }
+}
+static CURL **catalog_connection_slot(void) {
+    return &catalog_connections[SDL_ThreadID() == catalog_ui_thread ? 0 : 1];
+}
+#else
+void catalog_http_init(void) { }
+void catalog_http_cleanup(void) { }
+#endif
 
 static size_t on_data(char *ptr, size_t size, size_t count, void *opaque) {
     Response *r = opaque;
@@ -33,40 +59,79 @@ static size_t on_data(char *ptr, size_t size, size_t count, void *opaque) {
     return bytes;
 }
 
-static char *request(const char *url, char *error, int error_size) {
-    CURL *curl = curl_easy_init();
-    Response r = {0};
-    if (!curl) { snprintf(error, error_size, "curl init failed"); return NULL; }
+static void request_options(CURL *curl, const char *url, Response *r,
+                            long connection_timeout, long timeout) {
+    curl_easy_reset(curl);
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 18L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, connection_timeout);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Lampa-nx/0.2 (Nintendo Switch)");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, on_data);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &r);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, r);
+#ifdef __SWITCH__
+    /* Console/Eden socket layers can advertise IPv6 without routing it. */
+    curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+    curl_easy_setopt(curl, CURLOPT_MAXCONNECTS, 4L);
+#endif
+}
+
+static int transient_network_error(CURLcode result) {
+    return result == CURLE_SSL_CONNECT_ERROR ||
+           result == CURLE_COULDNT_CONNECT ||
+           result == CURLE_COULDNT_RESOLVE_HOST ||
+           result == CURLE_OPERATION_TIMEDOUT ||
+           result == CURLE_SEND_ERROR ||
+           result == CURLE_RECV_ERROR ||
+           result == CURLE_GOT_NOTHING;
+}
+
+static char *request(const char *url, char *error, int error_size) {
+#ifdef __SWITCH__
+    CURL **slot = catalog_connection_slot();
+    if (!*slot) *slot = curl_easy_init();
+    CURL *curl = *slot;
+#else
+    CURL *curl = curl_easy_init();
+#endif
+    Response r = {0};
+    if (!curl) { snprintf(error, error_size, "curl init failed"); return NULL; }
+    request_options(curl, url, &r, 6L, 14L);
     CURLcode result = curl_easy_perform(curl);
-    if (result == CURLE_SSL_CONNECT_ERROR) {
-        /* Eden's HTTPS service occasionally rejects a new TLS handshake.
-           Clear any partial response and retry once with a fresh connection.
-           Keep SSL peer/hostname verification enabled. */
+    if (transient_network_error(result)) {
+        /* A failed connection may poison a reused transport. Destroy that
+           handle before retrying so DNS, sockets and TLS state are fresh. */
         r.length = 0;
         if (r.data) r.data[0] = 0;
-        curl_easy_setopt(curl, CURLOPT_FRESH_CONNECT, 1L);
-        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 9L);
-        result = curl_easy_perform(curl);
+        curl_easy_cleanup(curl);
+        curl = curl_easy_init();
+#ifdef __SWITCH__
+        *slot = curl;
+#endif
+        if (curl) {
+            request_options(curl, url, &r, 4L, 8L);
+            result = curl_easy_perform(curl);
+        } else result = CURLE_FAILED_INIT;
     }
     long status = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-    curl_easy_cleanup(curl);
+    if (curl) curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+#ifdef __SWITCH__
+    if (result != CURLE_OK && curl) {
+        curl_easy_cleanup(curl);
+        *slot = NULL;
+    }
+#else
+    if (curl) curl_easy_cleanup(curl);
+#endif
     if (result != CURLE_OK || status < 200 || status >= 300) {
         if (result == CURLE_OK) snprintf(error, error_size, "Server returned HTTP %ld", status);
         else snprintf(error, error_size, "HTTP %ld: %s", status, curl_easy_strerror(result));
         free(r.data);
         return NULL;
     }
+    error[0] = 0;
     return r.data;
 }
 
@@ -304,7 +369,13 @@ static char *fetch_uafresh(const char *upstream, char *error, int error_size) {
     free(encoded);
     char *html = request(url, error, error_size);
     free(url);
-    if(!html && video_host)return request(upstream,error,error_size);
+    /* The public worker is a single point of failure. When it cannot be
+       reached, try the Ukrainian provider directly rather than leaving the
+       sources page empty. A successful proxy request still takes priority. */
+    int provider_page = !strncmp(upstream,"https://uaserials.my/",21) ||
+                        !strncmp(upstream,"https://uafix.net/",18);
+    if(!html && (video_host || provider_page))
+        return request(upstream,error,error_size);
     return html;
 }
 

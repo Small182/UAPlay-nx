@@ -31,6 +31,11 @@ typedef struct {
     char voice[96];
 } Episode;
 
+/* Keep two independent HTTPS connection pools: UI and background TMDB loader.
+   Call cleanup only after the loader thread has stopped. */
+void catalog_http_init(void);
+void catalog_http_cleanup(void);
+
 /* Key is loaded from sdmc:/switch/lampa-nx/tmdb.key; never bundled. */
 int catalog_load(const char *category, const char *query, Movie *items, int max,
                  char *error, int error_size);

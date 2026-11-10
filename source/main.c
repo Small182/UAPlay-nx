@@ -25,6 +25,10 @@ static int active_episode_variant=-1;
 static MediaTrack tracks[TRACKS_MAX];
 static int track_count,selected_track,subtitle_picker;
 static int selected_video_option;
+/* Only player controls useful on the console: speed, volume, subtitle size,
+   and HLS quality. Keep mpv's existing option storage intact. */
+static const int visible_video_options[]={0,1,4,6};
+#define VIDEO_OPTION_COUNT ((int)(sizeof(visible_video_options)/sizeof(visible_video_options[0])))
 static double video_options[]={1.0,100.0,0.0,0.0,48.0,0.0,0.0};
 static const char *video_props[]={"speed","volume","brightness","contrast",
                                   "sub-font-size","sub-delay","hls-bitrate"};
@@ -37,7 +41,6 @@ static const double video_max[]={2.0,130,100,100,100,10,4};
    360/480/720/1080p depends on variant resolutions offered by the source. */
 static const char *hls_presets[]={"max","800000","1500000","3000000","6000000"};
 static const char *hls_labels[]={"Авто","360p","480p","720p","1080p"};
-#define VIDEO_OPTION_COUNT 7
 
 static void rebuild_seasons(void) {
     season_count=0;
@@ -82,10 +85,10 @@ static void focus_episode_index(int index){
     }
 }
 
-static const char *categories[]={"movies","series","top","genre_28","genre_35",
+static const char *categories[]={"movies","series","films","genre_28","genre_35",
     "genre_18","genre_27","genre_878","genre_16","genre_10749","genre_99",
     "favorites","history","cartoons","cartoon_series","anime"};
-static const char *headings[]={"Популярні фільми","Популярні серіали","Найкращі фільми",
+static const char *headings[]={"Популярні фільми","Популярні серіали","Усі фільми",
     "Бойовики","Комедії","Драми","Жахи","Фантастика","Мультфільми",
     "Романтика","Документальні","Вибране","Історія переглядів",
     "Мультфільми","Мультсеріали","Аніме"};
@@ -93,8 +96,11 @@ static const char *headings[]={"Популярні фільми","Популяр
 #define ANIMATION_FIRST 13
 #define ANIMATION_LAST 15
 static int expanded_catalog=0;
-/* 0: posters, 1: Watch, 2: Add to favorites, 3: All (catalog controls). */
+/* 0: posters, 1: Watch, 2: Favorite, 3: All, 4...: subsection,
+   7...11: main navigation, 12...15: expanded sorting/back controls. */
 static int catalog_hero_focus=0;
+/* 0 popularity, 1 TMDB rating, 2 release date. */
+static int catalog_sort_mode=0;
 /* 0: Watch, 1: Add to favorites (details buttons). */
 static int details_button_focus=0;
 static int settings_selected=0,ui_accent_alt=0,source_mode=0;
@@ -135,6 +141,24 @@ static int category_for_tab(int tab){
     const int destinations[]={0,1,2,ANIMATION_FIRST,11};
     return tab>=0 && tab<5?destinations[tab]:0;
 }
+static const int film_categories[]={2,3,5,4,10};
+static const char *film_labels[]={"Усі фільми","Бойовики","Драми","Комедії","Документальні"};
+#define FILM_TAB_COUNT ((int)(sizeof(film_categories)/sizeof(film_categories[0])))
+static int film_tab(int category){
+    for(int i=0;i<FILM_TAB_COUNT;i++)if(film_categories[i]==category)return i;
+    return 0;
+}
+static int subsection_count(int category){
+    return tab_for_category(category)==2?FILM_TAB_COUNT:
+           tab_for_category(category)==3?3:0;
+}
+static int category_for_subsection(int category,int index){
+    return tab_for_category(category)==2?film_categories[index]:ANIMATION_FIRST+index;
+}
+static int focused_subsection(int category){
+    return 16+(tab_for_category(category)==2?film_tab(category):
+               category-ANIMATION_FIRST);
+}
 
 /* TMDB returns only 20 titles per page. Fetch the remaining pages on an SDL
    worker so gamepad navigation and drawing never wait for ten HTTP requests. */
@@ -142,13 +166,27 @@ typedef struct {
     SDL_Thread *thread;
     SDL_mutex *mutex;
     SDL_cond *cond;
-    int quit,requested,generation,request_generation,request_page;
+    int quit,requested,generation,request_generation,request_page,request_sort;
     int ready,ready_generation,ready_count,ready_page,ready_has_more;
     char category[48],query[192];
     Movie ready_items[CATALOG_PAGE_SIZE];
 } CatalogLoader;
 static CatalogLoader catalog_loader;
 static int catalog_next_page=2,catalog_loading=0,catalog_has_more=0;
+static int compare_movie_sort(const void *a,const void *b){
+    const Movie *left=a,*right=b;
+    if(catalog_sort_mode==1){
+        if(left->rating<right->rating)return 1;
+        if(left->rating>right->rating)return -1;
+    }else if(catalog_sort_mode==2){
+        int year=strcmp(right->year,left->year);
+        if(year)return year;
+    }else{
+        if(left->popularity<right->popularity)return 1;
+        if(left->popularity>right->popularity)return -1;
+    }
+    return 0;
+}
 
 static int catalog_worker(void *opaque){
     CatalogLoader *loader=opaque;
@@ -163,13 +201,14 @@ static int catalog_worker(void *opaque){
         snprintf(category,sizeof(category),"%s",loader->category);
         snprintf(query,sizeof(query),"%s",loader->query);
         int page=loader->request_page,generation=loader->request_generation;
+        int sort_mode=loader->request_sort;
         loader->requested=0;
         SDL_UnlockMutex(loader->mutex);
         memset(batch,0,CATALOG_PAGE_SIZE*sizeof(Movie));
         char error[192]={0};
         int more=0;
-        int count=catalog_load_page(category,query,page,batch,
-                                    CATALOG_PAGE_SIZE,error,sizeof(error),&more);
+        int count=catalog_load_page_sorted(category,query,page,sort_mode,batch,
+                                           CATALOG_PAGE_SIZE,error,sizeof(error),&more);
         SDL_LockMutex(loader->mutex);
         if(!loader->quit && generation==loader->generation){
             loader->ready=1;
@@ -198,6 +237,7 @@ static void catalog_loader_request(int page,int category,const char *query){
     loader->requested=1;
     loader->request_generation=loader->generation;
     loader->request_page=page;
+    loader->request_sort=catalog_sort_mode;
     snprintf(loader->category,sizeof(loader->category),"%s",categories[category]);
     snprintf(loader->query,sizeof(loader->query),"%s",query);
     SDL_CondSignal(loader->cond);
@@ -225,7 +265,8 @@ static void catalog_loader_poll(Movie **movies,int *count,int *capacity,int chos
     CatalogLoader *loader=&catalog_loader;
     if(!loader->mutex)return;
     int batch_count=0,ready=0,more=0;
-    int limit=query && *query?CATALOG_SEARCH_MAX:CATALOG_MAX;
+    int limit=(expanded_catalog || (query && *query))?
+               CATALOG_SEARCH_MAX:CATALOG_MAX;
     SDL_LockMutex(loader->mutex);
     if(loader->ready && loader->ready_generation==loader->generation){
         ready=1;batch_count=loader->ready_count;
@@ -251,10 +292,11 @@ static void catalog_loader_poll(Movie **movies,int *count,int *capacity,int chos
         catalog_loading=0;
         catalog_has_more=more;
     }
-    /* Populate the first 200 eagerly; search results beyond 200 are fetched
-       when the user approaches the end of the loaded list. */
+    /* Keep the initial 200-item background budget, then advance further only
+       when the user scrolls toward the end of the expanded/search catalog. */
     if(catalog_has_more && !catalog_loading && catalog_next_page<=500 &&
-       *count<limit && (*count<CATALOG_MAX || *count-chosen<=42))
+       *count<limit && (*count<CATALOG_MAX ||
+          ((expanded_catalog || (query && *query)) && *count-chosen<=42)))
         catalog_loader_request(catalog_next_page++,category,query);
 }
 static void catalog_loader_shutdown(void){
@@ -271,16 +313,24 @@ static void catalog_loader_shutdown(void){
 }
 
 static int load_category(int category,const char *query,Movie *movies,char *message,int size) {
+    static int previous_category=-1;
+    static char previous_query[192];
+    if(category!=previous_category || strcmp(query,previous_query))catalog_sort_mode=0;
+    previous_category=category;
+    snprintf(previous_query,sizeof(previous_query),"%s",query);
     int count=0;
     if (!strcmp(categories[category],"favorites")) {
         message[0]=0;
-        count=library_list(movies,CATALOG_MAX,1);
+        count=library_list(movies,CATALOG_LOCAL_MAX,1);
     }else if (!strcmp(categories[category],"history")) {
         message[0]=0;
-        count=library_list(movies,CATALOG_MAX,0);
+        count=library_list(movies,CATALOG_LOCAL_MAX,0);
     }else{
-        count=catalog_load(categories[category],query,movies,CATALOG_MAX,message,size);
+        count=catalog_load_page_sorted(categories[category],query,1,catalog_sort_mode,
+                                       movies,CATALOG_MAX,message,size,NULL);
     }
+    if(count>1 && ((query && *query) || category==11 || category==12))
+        qsort(movies,(size_t)count,sizeof(Movie),compare_movie_sort);
     catalog_loader_reset(category,query,count,!message[0]);
     return count;
 }
@@ -670,6 +720,7 @@ static void accent(float *r,float *g,float *b){
     *g=ui_accent_alt?.68f:.84f;
     *b=ui_accent_alt?.88f:.73f;
 }
+static Uint32 ui_press_at=0;
 static void selection_frame(Paint *p,int x,int y,int w,int h){
     /* A single rounded SDF ring tracks the underlying button/card corners.
        Separate rectangular strokes left square joints on the Switch UI. */
@@ -678,7 +729,10 @@ static void selection_frame(Paint *p,int x,int y,int w,int h){
     float b=ui_light_theme?.20f:.85f;
     int radius=h>=60?18:h>=40?17:12;
     ui_outline_width=3;
-    box_alpha(p,x-3,y-3,w+6,h+6,r,g,b,1.f,radius);
+    float opacity=.94f+.06f*sinf(SDL_GetTicks()*.005f);
+    /* The focused control briefly settles inward when A is pressed. */
+    if(SDL_GetTicks()-ui_press_at<95){x++;y++;w-=2;h-=2;}
+    box_alpha(p,x-3,y-3,w+6,h+6,r,g,b,opacity,radius);
     ui_outline_width=0;
 }
 static void button(Paint *p,const char *label,int x,int y,int w,int h,int primary){
@@ -747,7 +801,8 @@ static void screen_header(Paint *p,const char *name,const char *context){
     box_alpha(p,UI_EDGE,23,55,48,.13f,.16f,.20f,1.f,13);
     text_center(p,"‹",UI_EDGE,25,55,p->font_big,.96f,.97f,.99f);
     headline(p,name,105,23,860);
-    if(context && *context)text_tiny(p,context,979,38,264);
+    if(context && *context && strcmp(context,"UAPlay"))
+        text_tiny(p,context,979,38,264);
 }
 static void list_row(Paint *p,const char *title,int y,int selected,
                      const char *detail){
@@ -771,7 +826,7 @@ static void footer(Paint *p,const char *message) {
     box_alpha(p,UI_EDGE,UI_FOOTER_TOP,1216,2,ar,ag,ab,.78f,0);
     char position[30];
     snprintf(position,sizeof(position),"%d / %d",footer_position,footer_total);
-    text_font(p,footer_total?position:"UAPLAY",43,682,140,
+    text_font(p,footer_total && !(footer_page==CATALOG && expanded_catalog)?position:"UAPLAY",43,682,140,
               p->font_small,ar,ag,ab);
     const char *keys[6],*labels[6];int count=0;
 #define HINT(k,l) do{keys[count]=k;labels[count]=l;count++;}while(0)
@@ -838,6 +893,22 @@ static void poster(Paint *p,const Movie *movie,int x,int y,int width,int height,
     p->tex=image;
     box(p,x,y,width,height,1,1,1);
     p->tex=previous;
+    if(movie->rating>0.01f){
+        char score[28];
+        snprintf(score,sizeof(score),"TMDB %.1f",movie->rating);
+        int badge_width=width<140?91:98;
+        box_alpha(p,x+5,y+height-34,badge_width,28,.035f,.047f,.061f,.91f,7);
+        text_center_button(p,score,x+5,y+height-34,badge_width,28,
+                           p->font_tiny,.98f,.96f,.88f);
+    }
+}
+static void trash_icon(Paint *p,int x,int y){
+    box_alpha(p,x+4,y+11,22,22,.93f,.95f,.97f,1.f,2);
+    box_alpha(p,x+2,y+7,26,4,.93f,.95f,.97f,1.f,2);
+    box_alpha(p,x+10,y+3,10,3,.93f,.95f,.97f,1.f,1);
+    box_alpha(p,x+9,y+15,2,14,.09f,.11f,.13f,1.f,0);
+    box_alpha(p,x+15,y+15,2,14,.09f,.11f,.13f,1.f,0);
+    box_alpha(p,x+21,y+15,2,14,.09f,.11f,.13f,1.f,0);
 }
 static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                  Source *sources,int sn,int source,const char *heading,const char *status) {
@@ -848,6 +919,13 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
     ui_gradient_pass=1;
     box_alpha(p,0,0,1280,720,.034f,.042f,.054f,1.f,0);
     ui_gradient_pass=0;
+    static int previous_page=-1,previous_category=-1;
+    static Uint32 transition_at=0;
+    if(previous_page!=(int)page || (page==CATALOG && previous_category!=ui_category)){
+        previous_page=(int)page;
+        previous_category=ui_category;
+        transition_at=SDL_GetTicks();
+    }
     footer_position=page==CATALOG?(n?chosen+1:0):page==SOURCES?(sn?source+1:0):
                     page==EPISODES?(episode_count?selected_episode+1:0):
                     page==SEASONS?(season_count?selected_season+1:0):0;
@@ -888,17 +966,19 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         text_font(p,clock_label,1140,21,116,p->font_big,.95f,.97f,.99f);
         if(expanded_catalog){
             headline(p,heading,UI_EDGE,97,960);
-            if(strcmp(categories[ui_category],"favorites") &&
-               strcmp(categories[ui_category],"history")){
-                char count_label[64];
-                if(n && ui_category>=0 && catalog_next_page>1 &&
-                   catalog_loading && n>=CATALOG_MAX)
-                    snprintf(count_label,sizeof(count_label),"%d+ · завантаження…",n);
-                else if(catalog_loading || catalog_has_more)
-                    snprintf(count_label,sizeof(count_label),"Знайдено: %d+",n);
-                else snprintf(count_label,sizeof(count_label),"Знайдено: %d",n);
-                text_tiny(p,count_label,941,113,145);
+            const char *sort_labels[]={"Рейтинг","Популярність","Дата виходу"};
+            const int sort_x[]={691,811,957},sort_w[]={112,139,142};
+            for(int i=0;i<3;i++){
+                box_alpha(p,sort_x[i],98,sort_w[i],44,
+                          catalog_sort_mode==i?.20f:.10f,
+                          catalog_sort_mode==i?.27f:.14f,
+                          catalog_sort_mode==i?.33f:.18f,1.f,12);
+                if(catalog_hero_focus==12+i)
+                    selection_frame(p,sort_x[i],98,sort_w[i],44);
+                text_center_button(p,sort_labels[i],sort_x[i],98,sort_w[i],44,
+                                   p->font_small,.96f,.97f,.99f);
             }
+            if(catalog_hero_focus==15)selection_frame(p,1106,98,142,44);
             button(p,"‹  Назад",1106,98,142,44,0);
             int start=chosen/12*12;
             for(int i=start;i<n && i<start+12;i++){
@@ -917,8 +997,14 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             const int hero_poster_x=UI_EDGE+HERO_W-HERO_PAD-HERO_POSTER_W;
             const int hero_button_y=hero_bottom-HERO_BUTTON_H;
             const int hero_favorite_x=hero_left+205+HERO_BUTTON_GAP;
-            box_alpha(p,UI_EDGE,HERO_Y,HERO_W,HERO_H,.09f,.11f,.14f,1.f,22);
-            if(n){
+            const int empty_favorites=(ui_category==11 && !n);
+            box_alpha(p,UI_EDGE,HERO_Y,HERO_W,
+                      empty_favorites?460:HERO_H,.09f,.11f,.14f,1.f,22);
+            if(empty_favorites){
+                text(p,"Вибране",hero_left,hero_top+4,1000);
+                text_center_button(p,"Тут нічого немає",UI_EDGE,HERO_Y+190,HERO_W,65,
+                                   p->font_big,.73f,.77f,.82f);
+            }else if(n){
                 /* All four inner edges use the same 12px inset, following
                    the user's corrected Switch-style reference layout. */
                 poster(p,&movies[active],hero_poster_x,hero_top,
@@ -936,32 +1022,45 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             }
             if(n && catalog_hero_focus==1)
                 selection_frame(p,hero_left,hero_button_y,205,HERO_BUTTON_H);
-            if(n && catalog_hero_focus==2)
-                selection_frame(p,hero_favorite_x,hero_button_y,218,HERO_BUTTON_H);
-            button(p,"▶  Дивитися",hero_left,hero_button_y,205,HERO_BUTTON_H,1);
-            button(p,n && library_favorite(&movies[active])?
-                   "✓  У вибраному":"+  У вибране",hero_favorite_x,hero_button_y,
-                   218,HERO_BUTTON_H,0);
-            if(ui_category>=ANIMATION_FIRST && ui_category<=ANIMATION_LAST){
+            if(n){
+                if(catalog_hero_focus==2)
+                    selection_frame(p,hero_favorite_x,hero_button_y,
+                                    ui_category==11?62:218,HERO_BUTTON_H);
+                button(p,"▶  Дивитися",hero_left,hero_button_y,205,HERO_BUTTON_H,1);
+                if(ui_category==11){
+                    box_alpha(p,hero_favorite_x,hero_button_y,62,HERO_BUTTON_H,
+                              .15f,.15f,.15f,1.f,13);
+                    trash_icon(p,hero_favorite_x+16,hero_button_y+4);
+                }else button(p,library_favorite(&movies[active])?
+                       "✓  У вибраному":"+  У вибране",hero_favorite_x,hero_button_y,
+                       218,HERO_BUTTON_H,0);
+            }
+            int section_tabs=subsection_count(ui_category);
+            if(section_tabs){
                 const char *animation_tabs[]={"Мультфільми","Мультсеріали","Аніме"};
                 const int anim_x[]={32,240,465},anim_w[]={191,208,134};
-                for(int i=0;i<3;i++){
-                    int active=ui_category==ANIMATION_FIRST+i;
-                    box_alpha(p,anim_x[i],328,anim_w[i],43,
-                              active?.20f:.12f,active?.28f:.15f,
-                              active?.35f:.19f,1.f,13);
-                    if(catalog_hero_focus==i+4)
-                        selection_frame(p,anim_x[i],328,anim_w[i],43);
-                    text_center_button(p,animation_tabs[i],anim_x[i],328,
-                                       anim_w[i],43,p->font_small,
+                const int film_x[]={32,197,373,513,672},film_w[]={157,168,132,151,225};
+                int films=tab_for_category(ui_category)==2;
+                for(int i=0;i<section_tabs;i++){
+                    int selected=ui_category==category_for_subsection(ui_category,i);
+                    int x=films?film_x[i]:anim_x[i],w=films?film_w[i]:anim_w[i];
+                    box_alpha(p,x,328,w,43,
+                              selected?.20f:.12f,selected?.28f:.15f,
+                              selected?.35f:.19f,1.f,13);
+                    if(catalog_hero_focus==i+16)
+                        selection_frame(p,x,328,w,43);
+                    text_center_button(p,films?film_labels[i]:animation_tabs[i],x,328,
+                                       w,43,p->font_small,
                                        .96f,.97f,.99f);
                 }
-            }else text(p,heading,UI_EDGE,336,930);
+            }else if(!empty_favorites)text(p,heading,UI_EDGE,336,930);
             if(status && (!strncmp(status,"Offline catalog",15) ||
                           !strncmp(status,"Офлайн-пошук",strlen("Офлайн-пошук"))))
                 text_tiny(p,"Офлайн",1026,340,77);
-            if(n && catalog_hero_focus==3)selection_frame(p,1110,329,138,42);
-            button(p,"Усі  ›",1110,329,138,42,0);
+            if(!empty_favorites){
+                if(n && catalog_hero_focus==3)selection_frame(p,1110,329,138,42);
+                button(p,"Усі  ›",1110,329,138,42,0);
+            }
             int start=chosen/6*6;
             for(int i=start;i<n && i<start+6;i++){
                 int k=i-start,x=53+k*201,y=389;
@@ -973,8 +1072,8 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         footer(p,status);
     } else if(page==SETTINGS){
         screen_header(p,"Налаштування","UAPlay");
-        const char *items[]={"Тема","Інтерфейс","Плеєр","Джерела","Автовідтворення"};
-        for(int i=0;i<5;i++){
+        const char *items[]={"Тема","Інтерфейс","Плеєр","Автовідтворення"};
+        for(int i=0;i<4;i++){
             int y=136+i*88;
             box_alpha(p,32,y,417,72,i==settings_selected?.20f:.09f,
                       i==settings_selected?.29f:.11f,
@@ -983,9 +1082,10 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                 box_alpha(p,32,y+15,5,42,r,g,b,1.f,2);}
             if(i==settings_selected){
                 float r,g,b;accent(&r,&g,&b);
-                text_font(p,items[i],55,y+17,372,p->font,r,g,b);
+                text_font(p,items[i],55,y+(72-text_height(p,items[i],p->font))/2,
+                          372,p->font,r,g,b);
                 selection_frame(p,32,y,417,72);
-            }else text(p,items[i],55,y+17,372);
+            }else text(p,items[i],55,y+(72-text_height(p,items[i],p->font))/2,372);
         }
         box_alpha(p,475,136,773,480,.10f,.12f,.15f,1.f,20);
         headline(p,items[settings_selected],513,174,685);
@@ -996,14 +1096,12 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             else snprintf(description,sizeof(description),"Акцент: %s",ui_accent_alt?"Блакитний":"Бірюзовий");
         }
         else if(settings_selected==2)snprintf(description,sizeof(description),"Швидкість: %.2f · гучність: %.0f",video_options[0],video_options[1]);
-        else if(settings_selected==3)snprintf(description,sizeof(description),"Пріоритет: %s",source_mode==0?"Усі джерела":source_mode==1?"UAFlix":"UASerials");
         else snprintf(description,sizeof(description),"Наступна серія: %s",autoplay_episodes?"Автоматично":"Вручну");
         text(p,description,516,255,682);
         const char *help[]={"Перемикає темну та світлу теми. Вибір зберігається на SD-карті.",
             "Змінює колір виділення на всіх екранах.",
             "Налаштуйте відео, гучність та субтитри.",
-            "Оберіть порядок відображення джерел відео.",
-            "Після завершення серії пропонує наступну через 5 секунд. Кнопка B скасовує перехід. Вибір зберігається."};
+            "Після завершення серії пропонує наступну через 3 секунди. Кнопка B скасовує перехід. Вибір зберігається."};
         wrapped(p,help[settings_selected],517,315,675,3,29,p->font_small,.73f,.78f,.84f);
         button(p,settings_selected==2?"Відкрити параметри":"Змінити",515,537,258,55,1);
         footer(p,status);
@@ -1068,21 +1166,32 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
     } else if (page==VIDEO_SETTINGS) {
         screen_header(p,"Налаштування відео","Плеєр");
         for(int i=0;i<VIDEO_OPTION_COUNT;i++) {
+            int option=visible_video_options[i];
             int y=132+i*68;
             box_alpha(p,UI_EDGE,y,1216,60,i==selected_video_option?.20f:.09f,
                       i==selected_video_option?.30f:.11f,
                       i==selected_video_option?.38f:.14f,1.f,13);
-            text(p,video_titles[i],55,y+15,830);
+            text_font(p,video_titles[option],55,
+                      y+(60-text_height(p,video_titles[option],p->font))/2,
+                      830,p->font,.96f,.97f,.98f);
             char value[48];
-            if(i==6)snprintf(value,sizeof(value),"%s",hls_labels[(int)video_options[i]]);
-            else if(i==0 || i==5)snprintf(value,sizeof(value),"%.2f",video_options[i]);
-            else snprintf(value,sizeof(value),"%.0f",video_options[i]);
-            text_center(p,value,963,y+15,240,p->font,.95f,.96f,.98f);
+            if(option==6)snprintf(value,sizeof(value),"%s",hls_labels[(int)video_options[option]]);
+            else if(option==0)snprintf(value,sizeof(value),"%.2f",video_options[option]);
+            else snprintf(value,sizeof(value),"%.0f",video_options[option]);
+            text_center_button(p,value,963,y,240,60,p->font,.95f,.96f,.98f);
             if(i==selected_video_option){float r,g,b;accent(&r,&g,&b);
                 box_alpha(p,UI_EDGE,y+12,4,36,r,g,b,1.f,2);}
         }
         text_tiny(p,"Якість HLS визначається потоками, які надає джерело.",50,626,1150);
         footer(p,NULL);
+    }
+    /* Short ease-out fade after a screen/section transition; fully drawn
+       frames remain responsive even while this overlay is fading. */
+    Uint32 elapsed=SDL_GetTicks()-transition_at;
+    if(elapsed<160){
+        float remain=1.f-(float)elapsed/160.f;
+        box_alpha(p,0,80,1280,UI_FOOTER_TOP-80,.034f,.042f,.054f,
+                  .13f*remain*remain,0);
     }
 }
 static void command(mpv_handle *player,const char *verb,const char *arg) {
@@ -1262,7 +1371,7 @@ int main(void) {
             mpv_render_context_create(&render,player,init);
         }
     }
-    int movie_capacity=CATALOG_MAX;
+    int movie_capacity=CATALOG_LOCAL_MAX;
     Movie *movies=calloc((size_t)movie_capacity,sizeof(Movie));
     if(!movies)goto cleanup;
     Source sources[UAKINO_MAX]={0};
@@ -1383,7 +1492,14 @@ int main(void) {
                     if(ty<78 && tx>=767 && tx<1044)key=SDL_CONTROLLER_BUTTON_X;
                     else if(ty<78 && tx>=1058 && tx<1111)key=SDL_CONTROLLER_BUTTON_BACK;
                     else if(expanded_catalog){
-                        if(ty>=95 && ty<145 && tx>=1090){expanded_catalog=0;chosen=0;catalog_hero_focus=0;continue;}
+                        if(ty>=98 && ty<142 && tx>=691 && tx<1099){
+                            const int sort_x[]={691,811,957},sort_w[]={112,139,142};
+                            for(int i=0;i<3;i++)
+                                if(tx>=sort_x[i] && tx<sort_x[i]+sort_w[i]){
+                                    catalog_hero_focus=12+i;key=SDL_CONTROLLER_BUTTON_A;break;
+                                }
+                        }
+                        if(ty>=95 && ty<145 && tx>=1106){expanded_catalog=0;chosen=0;catalog_hero_focus=0;continue;}
                         if(ty>=153 && ty<613 && tx>=54){
                             int col=(tx-54)/201,row=(ty-153)/246;
                             int index=chosen/12*12+row*6+col;
@@ -1394,23 +1510,33 @@ int main(void) {
                         }
                     }else{
                         if(ty>=326 && ty<375 && tx>=1095){expanded_catalog=1;chosen=0;catalog_hero_focus=0;continue;}
-                        if(category>=ANIMATION_FIRST && category<=ANIMATION_LAST &&
-                           ty>=326 && ty<375){
+                        if(subsection_count(category) && ty>=326 && ty<375){
                             const int anim_x[]={32,240,465},anim_w[]={191,208,134};
-                            for(int i=0;i<3;i++)if(tx>=anim_x[i] && tx<anim_x[i]+anim_w[i]){
-                                category=ANIMATION_FIRST+i;
+                            const int film_x[]={32,197,373,513,672},film_w[]={157,168,132,151,225};
+                            int film=tab_for_category(category)==2;
+                            for(int i=0;i<subsection_count(category);i++){
+                                int x=film?film_x[i]:anim_x[i],w=film?film_w[i]:anim_w[i];
+                                if(tx<x || tx>=x+w)continue;
+                                category=category_for_subsection(category,i);
                                 query[0]=message[0]=0;
                                 n=load_category(category,query,movies,message,sizeof(message));
-                                chosen=0;catalog_hero_focus=4+i;
+                                chosen=0;catalog_hero_focus=16+i;
                                 break;
                             }
                             continue;
                         }
-                        if(ty>=260 && ty<307 && tx>=254 && tx<444 && n){
+                        if(ty>=252 && ty<303 && tx>=261 &&
+                           tx<(category==11?323:479) && n){
                             catalog_hero_focus=2;
-                            library_toggle_favorite(&movies[chosen]);continue;
+                            library_toggle_favorite(&movies[chosen]);
+                            if(category==11){
+                                n=load_category(category,query,movies,message,sizeof(message));
+                                if(chosen>=n)chosen=n?n-1:0;
+                                if(!n)catalog_hero_focus=7+tab_for_category(category);
+                            }
+                            continue;
                         }
-                        if(ty>=260 && ty<307 && tx>=62 && tx<242 && n){
+                        if(ty>=252 && ty<303 && tx>=44 && tx<249 && n){
                             catalog_hero_focus=1;
                             key=SDL_CONTROLLER_BUTTON_A;
                         }
@@ -1466,9 +1592,9 @@ int main(void) {
                         key=tx<640?SDL_CONTROLLER_BUTTON_DPAD_LEFT:SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
                     }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==SETTINGS){
-                    if(tx>=32 && tx<449 && ty>=136 && ty<560 && (ty-136)%88<72){
+                    if(tx>=32 && tx<449 && ty>=136 && ty<472 && (ty-136)%88<72){
                         settings_selected=(ty-136)/88;
-                        if(settings_selected>=5)settings_selected=4;
+                        if(settings_selected>=4)settings_selected=3;
                         key=SDL_CONTROLLER_BUTTON_A;
                     }else if(ty>=537 && ty<592 && tx>=515 && tx<773)key=SDL_CONTROLLER_BUTTON_A;
                     else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
@@ -1476,6 +1602,7 @@ int main(void) {
             }
             if(page==PLAYER && key>=0)controls_until=SDL_GetTicks()+3000;
             if(key<0)continue;
+            if(key==SDL_CONTROLLER_BUTTON_A && page!=PLAYER)ui_press_at=SDL_GetTicks();
             if(page==PLAYER && pending_next_episode>=0){
                 if(key==SDL_CONTROLLER_BUTTON_A){
                     next_episode_request=pending_next_episode;
@@ -1587,7 +1714,7 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && selected_video_option<VIDEO_OPTION_COUNT-1)selected_video_option++;
                 int direction=(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT)-(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT);
                 if(direction){
-                    int i=selected_video_option;
+                    int i=visible_video_options[selected_video_option];
                     video_options[i]+=direction*video_steps[i];
                     if(video_options[i]<video_min[i])video_options[i]=video_min[i];
                     if(video_options[i]>video_max[i])video_options[i]=video_max[i];
@@ -1653,7 +1780,7 @@ int main(void) {
             if(page==SETTINGS){
                 if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){page=CATALOG;continue;}
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && settings_selected>0)settings_selected--;
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && settings_selected<4)settings_selected++;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && settings_selected<3)settings_selected++;
                 if(key==SDL_CONTROLLER_BUTTON_A){
                     if(settings_selected==0){ui_light_theme=!ui_light_theme;theme_save();}
                     else if(settings_selected==1)ui_accent_alt=!ui_accent_alt;
@@ -1661,8 +1788,7 @@ int main(void) {
                         selected_video_option=0;
                         video_settings_from_menu=1;
                         page=VIDEO_SETTINGS;
-                    }else if(settings_selected==3)source_mode=(source_mode+1)%3;
-                    else if(settings_selected==4){autoplay_episodes=!autoplay_episodes;theme_save();}
+                    }else if(settings_selected==3){autoplay_episodes=!autoplay_episodes;theme_save();}
                 }
                 continue;
             }
@@ -1680,57 +1806,77 @@ int main(void) {
                     n=load_category(category,query,movies,message,sizeof(message));
                     chosen=0;catalog_hero_focus=0;continue;
                 }
-                if(catalog_hero_focus>=7){
+                if(expanded_catalog && catalog_hero_focus>=12 &&
+                   catalog_hero_focus<=15){
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus>12)
+                        catalog_hero_focus--;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && catalog_hero_focus<15)
+                        catalog_hero_focus++;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)
+                        catalog_hero_focus=7+tab_for_category(category);
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)catalog_hero_focus=0;
+                }else if(!expanded_catalog && catalog_hero_focus>=16){
+                    int count=subsection_count(category);
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus>16)
+                        catalog_hero_focus--;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT &&
+                       catalog_hero_focus<16+count-1)catalog_hero_focus++;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)
+                        catalog_hero_focus=n?1:7+tab_for_category(category);
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)catalog_hero_focus=0;
+                }else if(catalog_hero_focus>=7 && catalog_hero_focus<=11){
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus>7)
                         catalog_hero_focus--;
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && catalog_hero_focus<11)
                         catalog_hero_focus++;
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)
-                        catalog_hero_focus=expanded_catalog?0:
-                            (category>=ANIMATION_FIRST && category<=ANIMATION_LAST?
-                             4+category-ANIMATION_FIRST:1);
+                        catalog_hero_focus=expanded_catalog?12+catalog_sort_mode:
+                            (subsection_count(category)?focused_subsection(category):n?1:0);
                 }else if(!expanded_catalog && catalog_hero_focus){
-                    if(catalog_hero_focus>=4){
-                        if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus>4)
-                            catalog_hero_focus--;
-                        if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && catalog_hero_focus<6)
-                            catalog_hero_focus++;
-                        if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)catalog_hero_focus=1;
-                        if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)catalog_hero_focus=0;
-                    }else{
-                        if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus>1)
-                            catalog_hero_focus--;
-                        if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && catalog_hero_focus<3)
-                            catalog_hero_focus++;
-                        if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)
-                            catalog_hero_focus=7+tab_for_category(category);
-                        if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)
-                            catalog_hero_focus=category>=ANIMATION_FIRST &&
-                              category<=ANIMATION_LAST?4+category-ANIMATION_FIRST:0;
-                    }
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus>1)
+                        catalog_hero_focus--;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && catalog_hero_focus<3)
+                        catalog_hero_focus++;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)
+                        catalog_hero_focus=7+tab_for_category(category);
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)
+                        catalog_hero_focus=subsection_count(category)?
+                            focused_subsection(category):0;
                 }else{
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && chosen>0)chosen--;
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && chosen<n-1)chosen++;
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_UP){
                         if(chosen>=6)chosen-=6;
                         else if(expanded_catalog)
-                            catalog_hero_focus=7+tab_for_category(category);
-                        else if(n ||
-                                (category>=ANIMATION_FIRST && category<=ANIMATION_LAST))
-                            catalog_hero_focus=category>=ANIMATION_FIRST &&
-                                category<=ANIMATION_LAST?4+category-ANIMATION_FIRST:
-                                (chosen%6>=4?3:1);
+                            catalog_hero_focus=12+catalog_sort_mode;
+                        else if(!n)catalog_hero_focus=7+tab_for_category(category);
+                        else catalog_hero_focus=subsection_count(category)?
+                            focused_subsection(category):(chosen%6>=4?3:1);
                     }
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && chosen+6<n)chosen+=6;
+                    else if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && !n)
+                        catalog_hero_focus=7+tab_for_category(category);
                 }
                 if(key==SDL_CONTROLLER_BUTTON_A && (n || catalog_hero_focus>=4)){
-                    if(catalog_hero_focus>=7){
+                    if(expanded_catalog && catalog_hero_focus>=12 &&
+                       catalog_hero_focus<=15){
+                        if(catalog_hero_focus==15){
+                            expanded_catalog=0;catalog_hero_focus=0;chosen=0;
+                        }else{
+                            int next=catalog_hero_focus-12;
+                            if(next!=catalog_sort_mode){
+                                catalog_sort_mode=next;
+                                n=load_category(category,query,movies,message,sizeof(message));
+                                chosen=0;
+                            }
+                        }
+                    }else if(catalog_hero_focus>=7 && catalog_hero_focus<=11){
                         category=category_for_tab(catalog_hero_focus-7);
                         query[0]=message[0]=0;
                         n=load_category(category,query,movies,message,sizeof(message));
-                        chosen=0;expanded_catalog=0;
-                    }else if(!expanded_catalog && catalog_hero_focus>=4){
-                        category=ANIMATION_FIRST+catalog_hero_focus-4;
+                        chosen=0;expanded_catalog=0;catalog_hero_focus=0;
+                    }else if(!expanded_catalog && catalog_hero_focus>=16){
+                        category=category_for_subsection(category,catalog_hero_focus-16);
                         query[0]=message[0]=0;
                         n=load_category(category,query,movies,message,sizeof(message));
                         chosen=0;
@@ -1740,10 +1886,17 @@ int main(void) {
                         library_toggle_favorite(&movies[chosen]);
                         snprintf(message,sizeof(message),"%s",library_favorite(&movies[chosen])?
                                  "Додано у вибране":"Видалено з вибраного");
+                        if(category==11){
+                            n=load_category(category,query,movies,message,sizeof(message));
+                            if(chosen>=n)chosen=n?n-1:0;
+                            if(!n)catalog_hero_focus=7+tab_for_category(category);
+                        }
                     }else{message[0]=0;details_button_focus=0;page=DETAILS;}
                 }
                 if(key==SDL_CONTROLLER_BUTTON_LEFTSHOULDER || key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER){
-                    category=(category+(key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER?1:CATEGORY_COUNT-1))%CATEGORY_COUNT;
+                    int tab=tab_for_category(category);
+                    tab=(tab+(key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER?1:4))%5;
+                    category=category_for_tab(tab);
                     expanded_catalog=0;catalog_hero_focus=0;
                     query[0]=message[0]=0;
                     n=load_category(category,query,movies,message,sizeof(message));chosen=0;
@@ -1770,7 +1923,8 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT)details_button_focus=1;
                 if(key==SDL_CONTROLLER_BUTTON_B){
                     page=CATALOG;message[0]=0;
-                    if(category>=CATEGORY_COUNT-2){
+                    if(category==11 || category==12 ||
+                       category>=CATEGORY_COUNT-2){
                         n=load_category(category,query,movies,message,sizeof(message));
                         if(chosen>=n)chosen=n>0?n-1:0;
                     }

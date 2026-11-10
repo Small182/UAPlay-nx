@@ -239,9 +239,9 @@ static int contains_title(const char *haystack,const char *needle){
     return 0;
 }
 
-int catalog_load_page(const char *category, const char *query, int page,
-                      Movie *items, int max, char *error, int error_size,
-                      int *has_more) {
+int catalog_load_page_sorted(const char *category, const char *query, int page,
+                             int sort_mode, Movie *items, int max,
+                             char *error, int error_size, int *has_more) {
     if(has_more)*has_more=0;
     if (page<1 || page>500) return 0;
     char key[256] = LAMPA_PUBLIC_TMDB_KEY;
@@ -258,17 +258,26 @@ int catalog_load_page(const char *category, const char *query, int page,
     char url[1800];
     int searching=query && *query;
     char *q = searching ? encode(query) : NULL;
+    const char *movie_sort=sort_mode==1?"vote_average.desc":
+                           sort_mode==2?"primary_release_date.desc":"popularity.desc";
+    const char *tv_sort=sort_mode==1?"vote_average.desc":
+                        sort_mode==2?"first_air_date.desc":"popularity.desc";
+    const char *rating_filter=sort_mode==1?"&vote_count.gte=100":"";
     if (q) {
         snprintf(url, sizeof(url), "https://api.themoviedb.org/3/search/multi?api_key=%s&language=uk-UA&include_adult=false&query=%s", key, q);
     } else {
         if (!strcmp(category,"cartoon_series"))
-            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/tv?api_key=%s&language=uk-UA&sort_by=popularity.desc&with_genres=16",key);
+            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/tv?api_key=%s&language=uk-UA&sort_by=%s&with_genres=16%s",key,tv_sort,rating_filter);
         else if (!strcmp(category,"anime"))
-            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/tv?api_key=%s&language=uk-UA&sort_by=popularity.desc&with_genres=16&with_original_language=ja",key);
+            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/tv?api_key=%s&language=uk-UA&sort_by=%s&with_genres=16&with_original_language=ja%s",key,tv_sort,rating_filter);
         else if (!strcmp(category,"cartoons"))
-            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/movie?api_key=%s&language=uk-UA&sort_by=popularity.desc&with_genres=16",key);
+            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/movie?api_key=%s&language=uk-UA&sort_by=%s&with_genres=16%s",key,movie_sort,rating_filter);
         else if (!strncmp(category,"genre_",6))
-            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/movie?api_key=%s&language=uk-UA&sort_by=popularity.desc&with_genres=%s",key,category+6);
+            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/movie?api_key=%s&language=uk-UA&sort_by=%s&with_genres=%s%s",key,movie_sort,category+6,rating_filter);
+        else if (!strcmp(category,"films"))
+            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/movie?api_key=%s&language=uk-UA&sort_by=%s%s",key,movie_sort,rating_filter);
+        else if (!strcmp(category,"series"))
+            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/tv?api_key=%s&language=uk-UA&sort_by=%s%s",key,tv_sort,rating_filter);
         else {
             const char *path = !strcmp(category, "series") ? "trending/tv/week" :
                                !strcmp(category, "top") ? "movie/top_rated" : "trending/movie/week";
@@ -309,7 +318,7 @@ int catalog_load_page(const char *category, const char *query, int page,
         const char *end = object_end(p);
         if (!end) break;
         Movie m = {0};
-        char number[40], type[40], date[40];
+        char number[40], type[40], date[40], rating[40], popularity[40];
         json_field(p, end, "id", number, sizeof(number));
         json_field(p, end, "media_type", type, sizeof(type));
         json_field(p, end, "title", m.title, sizeof(m.title));
@@ -318,6 +327,10 @@ int catalog_load_page(const char *category, const char *query, int page,
         if (!m.original[0]) json_field(p, end, "original_name", m.original, sizeof(m.original));
         json_field(p, end, "overview", m.overview, sizeof(m.overview));
         json_field(p, end, "poster_path", m.poster, sizeof(m.poster));
+        json_field(p, end, "vote_average", rating, sizeof(rating));
+        json_field(p, end, "popularity", popularity, sizeof(popularity));
+        m.rating=(float)atof(rating);
+        m.popularity=(float)atof(popularity);
         json_field(p, end, "release_date", date, sizeof(date));
         if (!date[0]) json_field(p, end, "first_air_date", date, sizeof(date));
         memcpy(m.year, date, strlen(date) >= 4 ? 4 : strlen(date));
@@ -334,6 +347,13 @@ int catalog_load_page(const char *category, const char *query, int page,
     free(json);
     if (!count && !offline_search) snprintf(error, error_size, "No titles found");
     return count;
+}
+
+int catalog_load_page(const char *category, const char *query, int page,
+                      Movie *items, int max, char *error, int error_size,
+                      int *has_more) {
+    return catalog_load_page_sorted(category,query,page,0,items,max,
+                                    error,error_size,has_more);
 }
 
 int catalog_load(const char *category, const char *query, Movie *items, int max,

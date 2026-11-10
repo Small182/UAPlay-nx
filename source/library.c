@@ -24,7 +24,12 @@ static int total;
 static Entry *entry_for(const Movie *movie, int create) {
     for (int i=0; i<total; i++) {
         if (entries[i].movie.id == movie->id &&
-            entries[i].movie.series == movie->series) return &entries[i];
+            entries[i].movie.series == movie->series){
+            if(create){
+                if(movie->title[0])entries[i].movie=*movie;
+            }
+            return &entries[i];
+        }
     }
     if (!create || total == MAX_LIBRARY_ITEMS) return NULL;
     Entry *new_entry = &entries[total++];
@@ -51,14 +56,16 @@ static void library_save(void) {
     for (int i=0;i<total;i++) {
         Entry *e=&entries[i];
         if (!e->favorite && !e->watched) continue;
-        char title[192], original[192], poster[256];
+        char title[192], original[192], poster[256], overview[1024];
         clean_field(title,sizeof(title),e->movie.title);
         clean_field(original,sizeof(original),e->movie.original);
         clean_field(poster,sizeof(poster),e->movie.poster);
-        fprintf(file,"%d|%d|%d|%d|%.1f|%s|%s|%s|%s|%d|%d\n",
+        clean_field(overview,sizeof(overview),e->movie.overview);
+        fprintf(file,"%d|%d|%d|%d|%.1f|%s|%s|%s|%s|%d|%d|%.2f|%.3f|%s\n",
                 e->movie.id,e->movie.series,e->favorite,e->watched,
                 e->progress,title,original,e->movie.year,poster,
-                e->last_season,e->last_episode);
+                e->last_season,e->last_episode,e->movie.rating,e->movie.popularity,
+                overview);
     }
     if (fclose(file)==0) rename(LIBRARY_TMP,LIBRARY_FILE);
 }
@@ -67,7 +74,7 @@ void library_init(void) {
     total=0;
     FILE *file=fopen(LIBRARY_FILE,"rb");
     if (!file) return;
-    char line[1200];
+    char line[2400];
     while (total<MAX_LIBRARY_ITEMS && fgets(line,sizeof(line),file)) {
         char *fields[9]={0}, *p=line;
         for (int i=0;i<9;i++) {
@@ -92,7 +99,24 @@ void library_init(void) {
             *extra++=0;
             entry->last_season=atoi(extra);
             char *episode=strchr(extra,'|');
-            if(episode)entry->last_episode=atoi(episode+1);
+            if(episode){
+                entry->last_episode=atoi(episode+1);
+                char *rating=strchr(episode+1,'|');
+                if(rating){
+                    entry->movie.rating=(float)atof(rating+1);
+                    char *popularity=strchr(rating+1,'|');
+                    if(popularity){
+                        entry->movie.popularity=(float)atof(popularity+1);
+                        char *overview=strchr(popularity+1,'|');
+                        if(overview){
+                            *overview++=0;
+                            snprintf(entry->movie.overview,sizeof(entry->movie.overview),
+                                     "%s",overview);
+                            entry->movie.overview[strcspn(entry->movie.overview,"\r\n")]=0;
+                        }
+                    }
+                }
+            }
         }
         snprintf(entry->movie.title,sizeof(entry->movie.title),"%s",fields[5]);
         snprintf(entry->movie.original,sizeof(entry->movie.original),"%s",fields[6]);

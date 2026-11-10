@@ -2,6 +2,7 @@
 #define LAMPA_CATALOG_H
 
 #define CATALOG_MAX 200
+#define CATALOG_LOCAL_MAX 256
 #define CATALOG_PAGE_SIZE 20
 /* TMDB exposes at most 500 result pages; search expands only while browsing. */
 #define CATALOG_SEARCH_MAX (500 * CATALOG_PAGE_SIZE)
@@ -16,6 +17,8 @@ typedef struct {
     char year[12];
     char overview[1024];
     char poster[256];
+    float rating;
+    float popularity;
 } Movie;
 
 typedef struct {
@@ -43,6 +46,9 @@ int catalog_load(const char *category, const char *query, Movie *items, int max,
 int catalog_load_page(const char *category, const char *query, int page,
                       Movie *items, int max, char *error, int error_size,
                       int *has_more);
+int catalog_load_page_sorted(const char *category, const char *query, int page,
+                            int sort_mode, Movie *items, int max,
+                            char *error, int error_size, int *has_more);
 
 /* UAFresh integration: current UAFlix/UASerials sources via UAFresh worker. */
 int uakino_search(const Movie *movie, Source *items, int max,

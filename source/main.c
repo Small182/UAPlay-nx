@@ -1034,6 +1034,15 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                 }else button(p,library_favorite(&movies[active])?
                        "✓  У вибраному":"+  У вибране",hero_favorite_x,hero_button_y,
                        218,HERO_BUTTON_H,0);
+                if(movies[active].rating>0.f){
+                    char score[36];
+                    snprintf(score,sizeof(score),"TMDB  %.1f / 10",movies[active].rating);
+                    int badge_x=ui_category==11?hero_favorite_x+80:hero_favorite_x+233;
+                    box_alpha(p,badge_x,hero_button_y+9,141,32,
+                              .16f,.20f,.24f,1.f,9);
+                    text_center_button(p,score,badge_x,hero_button_y+9,141,32,
+                                       p->font_tiny,.94f,.96f,.98f);
+                }
             }
             int section_tabs=subsection_count(ui_category);
             if(section_tabs){

@@ -432,6 +432,17 @@ static void box_alpha(Paint *p,int x,int y,int w,int h,float r,float g,float b,f
     glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,4*sizeof(float),(void*)0);
     glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,4*sizeof(float),(void*)(2*sizeof(float)));
     glDrawArrays(GL_TRIANGLES,0,6);
+    /* Nintendo Switch Basic White: a restrained 1px graphite outline for
+       buttons, input fields and panels. Avoid icons, full-screen fills,
+       posters and the separate turquoise focus ring. Reuse this geometry
+       instead of allocating another texture or buffer. */
+    if(ui_theme_enabled && ui_light_theme && p->tex==p->solid_tex &&
+       !ui_gradient_pass && !ui_outline_width &&
+       radius>=10 && w>=52 && h>=38){
+        glUniform1f(p->outline,1.2f);
+        glUniform4f(p->tint,.27f,.28f,.30f,.46f);
+        glDrawArrays(GL_TRIANGLES,0,6);
+    }
 }
 static void box(Paint *p,int x,int y,int w,int h,float r,float g,float b) {
     box_alpha(p,x,y,w,h,r,g,b,1.f,w>100 && h>40?14:5);

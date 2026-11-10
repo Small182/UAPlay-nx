@@ -5,21 +5,45 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 
 #ifdef __SWITCH__
 #include <SDL.h>
 #endif
 
-#define TMDB_KEY_PATH "sdmc:/switch/lampa-nx/tmdb.key"
-/* Public client-side key from yumata/lampa-source src/core/tmdb/tmdb.js.
-   Users may override it with their own tmdb.key. */
-#define LAMPA_PUBLIC_TMDB_KEY "4ef0d7355d9ffb5151e987764708ce96"
+#define TMDB_KEY_PATH "sdmc:/switch/uaplay/tmdb.key"
+#define TMDB_LEGACY_KEY_PATH "sdmc:/switch/lampa-nx/tmdb.key"
+/* The release workflow injects this header from a GitHub Actions secret.
+   Keep credentials out of the public source tree. */
+#if defined(__has_include)
+#  if __has_include("tmdb_build_key.h")
+#    include "tmdb_build_key.h"
+#  endif
+#endif
+#ifndef UAPLAY_TMDB_BUILD_KEY
+#define UAPLAY_TMDB_BUILD_KEY ""
+#endif
 #define UAFRESH_WORKER "https://uakino.ofreshofresh.workers.dev"
 
 typedef struct { char *data; size_t length, capacity; } Response;
 static void json_field(const char *object,const char *end,const char *key,
                        char *value,size_t size);
+
+#define COUNTRY_CACHE_LIMIT 4096
+#define COUNTRY_CACHE_PATH "sdmc:/switch/uaplay/country_cache.tsv"
+#define COUNTRY_CACHE_TMP "sdmc:/switch/uaplay/country_cache.tmp"
+typedef struct { int id,series,allowed; } CountryCacheEntry;
+static CountryCacheEntry country_cache[COUNTRY_CACHE_LIMIT];
+static int country_cache_count,country_cache_evict;
+#ifdef __SWITCH__
+static SDL_mutex *country_cache_mutex;
+#define COUNTRY_LOCK() do { if(country_cache_mutex) SDL_LockMutex(country_cache_mutex); } while(0)
+#define COUNTRY_UNLOCK() do { if(country_cache_mutex) SDL_UnlockMutex(country_cache_mutex); } while(0)
+#else
+#define COUNTRY_LOCK() ((void)0)
+#define COUNTRY_UNLOCK() ((void)0)
+#endif
 
 /* Recreating a curl easy handle for every source-page lookup repeatedly
    tears down HTTPS/TLS sockets. Eden's socket emulation can eventually fail
@@ -28,12 +52,40 @@ static void json_field(const char *object,const char *end,const char *key,
 #ifdef __SWITCH__
 static SDL_threadID catalog_ui_thread;
 static CURL *catalog_connections[2];
-void catalog_http_init(void) { catalog_ui_thread = SDL_ThreadID(); }
+static void country_cache_load(void){
+    FILE *file=fopen(COUNTRY_CACHE_PATH,"r");
+    if(!file)return;
+    int id,series,allowed;
+    while(country_cache_count<COUNTRY_CACHE_LIMIT &&
+          fscanf(file,"%d|%d|%d",&id,&series,&allowed)==3){
+        if(id>0 && (series==0 || series==1) && (allowed==0 || allowed==1))
+            country_cache[country_cache_count++]=(CountryCacheEntry){id,series,allowed};
+        int c;
+        while((c=fgetc(file))!='\n' && c!=EOF){}
+    }
+    fclose(file);
+}
+static void country_cache_save(void){
+    mkdir("sdmc:/switch/uaplay",0777);
+    FILE *file=fopen(COUNTRY_CACHE_TMP,"w");
+    if(!file)return;
+    for(int i=0;i<country_cache_count;i++)
+        fprintf(file,"%d|%d|%d\n",country_cache[i].id,
+                country_cache[i].series,country_cache[i].allowed);
+    if(fclose(file)==0)rename(COUNTRY_CACHE_TMP,COUNTRY_CACHE_PATH);
+}
+void catalog_http_init(void) {
+    catalog_ui_thread = SDL_ThreadID();
+    country_cache_mutex=SDL_CreateMutex();
+    country_cache_load();
+}
 void catalog_http_cleanup(void) {
+    country_cache_save();
     for (int i = 0; i < 2; i++) {
         if (catalog_connections[i]) curl_easy_cleanup(catalog_connections[i]);
         catalog_connections[i] = NULL;
     }
+    if(country_cache_mutex){SDL_DestroyMutex(country_cache_mutex);country_cache_mutex=NULL;}
 }
 static CURL **catalog_connection_slot(void) {
     return &catalog_connections[SDL_ThreadID() == catalog_ui_thread ? 0 : 1];
@@ -245,21 +297,115 @@ static int contains_title(const char *haystack,const char *needle){
     return 0;
 }
 
+/* Movie list responses from TMDB do not contain production countries. Their
+   detail endpoint does, while TV list responses already have origin_country.
+   Do not infer nationality from original_language: Ukrainian films can be
+   Russian-language and Russian productions need not be in Russian. */
+static int json_has_ru(const char *object,const char *end,const char *field){
+    char needle[64];
+    snprintf(needle,sizeof(needle),"\"%s\"",field);
+    const char *p=object;
+    while((p=strstr(p,needle)) && p<end){
+        p+=strlen(needle);
+        while(p<end && isspace((unsigned char)*p))p++;
+        if(p>=end || *p!=':')continue;
+        p++;
+        while(p<end && isspace((unsigned char)*p))p++;
+        if(p>=end || *p!='[')continue;
+        const char *close=strchr(p,']');
+        if(!close || close>=end)return -1;
+        const char *match=strstr(p,"\"RU\"");
+        return match && match<close;
+    }
+    return -1;
+}
+
+static void tmdb_key(char *key,size_t capacity){
+    snprintf(key,capacity,"%s",UAPLAY_TMDB_BUILD_KEY);
+    FILE *f=fopen(TMDB_KEY_PATH,"r");
+    if(!f)f=fopen(TMDB_LEGACY_KEY_PATH,"r");
+    if(f){
+        char override[256]={0};
+        if(fgets(override,sizeof(override),f) && override[0])
+            snprintf(key,capacity,"%s",override);
+        fclose(f);
+    }
+    key[strcspn(key,"\r\n \t")]=0;
+}
+
+static int country_cached(const Movie *movie,int *allowed){
+    int found=0;
+    COUNTRY_LOCK();
+    for(int i=0;i<country_cache_count;i++){
+        if(country_cache[i].id==movie->id &&
+           country_cache[i].series==movie->series){
+            *allowed=country_cache[i].allowed;
+            found=1;
+            break;
+        }
+    }
+    COUNTRY_UNLOCK();
+    return found;
+}
+static void country_remember(const Movie *movie,int allowed){
+    COUNTRY_LOCK();
+    for(int i=0;i<country_cache_count;i++){
+        if(country_cache[i].id==movie->id &&
+           country_cache[i].series==movie->series){
+            country_cache[i].allowed=allowed;
+            COUNTRY_UNLOCK();
+            return;
+        }
+    }
+    int pos=country_cache_count<COUNTRY_CACHE_LIMIT?
+            country_cache_count++:country_cache_evict++%COUNTRY_CACHE_LIMIT;
+    country_cache[pos]=(CountryCacheEntry){movie->id,movie->series,allowed};
+    COUNTRY_UNLOCK();
+}
+
+static int country_allowed(const Movie *movie,const char *object,
+                           const char *end,const char *key){
+    int allowed=0;
+    if(country_cached(movie,&allowed))return allowed;
+    int ru=object?json_has_ru(object,end,movie->series?
+                              "origin_country":"production_countries"):-1;
+    if(ru<0){
+        if(!key || !key[0])return 0;
+        char url[600],error[160]={0};
+        snprintf(url,sizeof(url),"https://api.themoviedb.org/3/%s/%d?api_key=%s",
+                 movie->series?"tv":"movie",movie->id,key);
+        char *details=request(url,error,sizeof(error));
+        if(!details)return 0; /* Unknown production country: fail closed. */
+        ru=json_has_ru(details,details+strlen(details),movie->series?
+                       "origin_country":"production_countries");
+        free(details);
+    }
+    if(ru<0)return 0; /* Do not display unverified country metadata. */
+    allowed=!ru;
+    country_remember(movie,allowed);
+    return allowed;
+}
+
+int catalog_filter_countries(Movie *items,int count){
+    char key[256];tmdb_key(key,sizeof(key));
+    if(!key[0])return 0;
+    int kept=0;
+    for(int i=0;i<count;i++)
+        if(country_allowed(&items[i],NULL,NULL,key))items[kept++]=items[i];
+    return kept;
+}
+
 int catalog_load_page_sorted(const char *category, const char *query, int page,
                              int sort_mode, Movie *items, int max,
                              char *error, int error_size, int *has_more) {
     if(has_more)*has_more=0;
     if (page<1 || page>500) return 0;
-    char key[256] = LAMPA_PUBLIC_TMDB_KEY;
-    FILE *f = fopen(TMDB_KEY_PATH, "r");
-    if (f) {
-        char override[256] = {0};
-        if (fgets(override, sizeof(override), f) && override[0])
-            snprintf(key, sizeof(key), "%s", override);
-        fclose(f);
+    char key[256];
+    tmdb_key(key,sizeof(key));
+    if (!key[0]) {
+        snprintf(error,error_size,"TMDB: додайте /switch/uaplay/tmdb.key на SD-карту");
+        return 0;
     }
-    key[strcspn(key, "\r\n \t")] = 0;
-    if (!key[0]) { snprintf(error, error_size, "TMDB API key is empty"); return 0; }
 
     char url[1800];
     char today[16]={0};
@@ -317,11 +463,13 @@ int catalog_load_page_sorted(const char *category, const char *query, int page,
     if (used+24<sizeof(url))snprintf(url+used,sizeof(url)-used,"&page=%d",page);
     char *json = request(url, error, error_size);
     int offline_search=0;
+    int offline_catalog=0;
     if (!json) {
         /* Never repeat the offline page in background pagination. */
         if(page>1)return 0;
         json = read_offline_catalog(category);
         if (json) {
+            offline_catalog=1;
             offline_search=searching;
             if(searching)snprintf(error,error_size,
                                   "Офлайн-пошук: лише збережені назви (TMDB недоступний)");
@@ -374,7 +522,8 @@ int catalog_load_page_sorted(const char *category, const char *query, int page,
                      !strcmp(category,"anime")));
         if (m.id && m.title[0] && strcmp(type, "person") &&
             (!offline_search || contains_title(m.title,query) ||
-             contains_title(m.original,query)))items[count++] = m;
+             contains_title(m.original,query)) &&
+            country_allowed(&m,p,end,offline_catalog?NULL:key))items[count++] = m;
         p = end;
     }
     free(json);

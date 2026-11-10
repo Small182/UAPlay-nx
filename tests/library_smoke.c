@@ -41,6 +41,17 @@ int main(void) {
     library_mark_watched(&later);
     assert(library_list_to_watch(movies,4)==0);
     assert(library_list(movies,4,0)==2);
+    Movie history_only={.id=19997,.series=0};
+    snprintf(history_only.title,sizeof(history_only.title),"Перегляд без вибраного");
+    library_mark_watched(&history_only);
+    assert(library_list(movies,4,0)==3);
+    assert(library_clear_history()==3);
+    assert(library_list(movies,4,0)==0);
+    assert(library_list_to_watch(movies,4)==2);
+    assert(library_progress(&film)==0);
+    library_init();
+    assert(library_list(movies,4,0)==0);
+    assert(library_list_to_watch(movies,4)==2);
     puts("Local favorites, to-watch, history and resume persistence OK");
     return 0;
 }

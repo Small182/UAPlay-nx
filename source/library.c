@@ -179,3 +179,20 @@ int library_list_to_watch(Movie *items,int capacity) {
     }
     return count;
 }
+int library_clear_history(void) {
+    int removed=0,kept=0;
+    for(int i=0;i<total;i++){
+        Entry entry=entries[i];
+        if(entry.watched){
+            removed++;
+            entry.watched=0;
+            entry.progress=0;
+            entry.last_season=0;
+            entry.last_episode=0;
+        }
+        if(entry.favorite)entries[kept++]=entry;
+    }
+    total=kept;
+    if(removed)library_save();
+    return removed;
+}

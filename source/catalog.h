@@ -39,7 +39,7 @@ typedef struct {
 void catalog_http_init(void);
 void catalog_http_cleanup(void);
 
-/* Key is loaded from sdmc:/switch/lampa-nx/tmdb.key; never bundled. */
+/* NRO includes a public TMDB key; optional SD override under switch/uaplay. */
 int catalog_load(const char *category, const char *query, Movie *items, int max,
                  char *error, int error_size);
 /* TMDB paginates 20 titles per page; used for asynchronous catalog expansion. */
@@ -49,6 +49,8 @@ int catalog_load_page(const char *category, const char *query, int page,
 int catalog_load_page_sorted(const char *category, const char *query, int page,
                             int sort_mode, Movie *items, int max,
                             char *error, int error_size, int *has_more);
+/* Exclude titles associated with Russia, using TMDB's country metadata. */
+int catalog_filter_countries(Movie *items,int count);
 
 /* UAFresh integration: current UAFlix/UASerials sources via UAFresh worker. */
 int uakino_search(const Movie *movie, Source *items, int max,

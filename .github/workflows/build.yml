@@ -15,6 +15,31 @@ jobs:
       - name: Verify preinstalled native player dependencies
         run: |
           dkp-pacman -Q switch-sdl2 switch-sdl2_ttf switch-sdl2_image switch-libmpv switch-curl switch-pkg-config
+      - name: Embed TMDB key in native build
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+        run: |
+          set -eu
+          if [ -z "$TMDB_API_KEY" ]; then
+            echo "::error::Repository secret TMDB_API_KEY is missing"
+            exit 1
+          fi
+          if [ "${#TMDB_API_KEY}" -ne 32 ]; then
+            echo "::error::TMDB_API_KEY must be a 32-character API v3 key"
+            exit 1
+          fi
+          case "$TMDB_API_KEY" in
+            *[!0123456789abcdefABCDEF]*)
+              echo "::error::TMDB_API_KEY must contain hexadecimal characters only"
+              exit 1
+              ;;
+          esac
+          umask 077
+          {
+            printf '#ifndef UAPLAY_TMDB_BUILD_KEY_H\n#define UAPLAY_TMDB_BUILD_KEY_H\n'
+            printf '#define UAPLAY_TMDB_BUILD_KEY "%s"\n' "$TMDB_API_KEY"
+            printf '#endif\n'
+          } > source/tmdb_build_key.h
       - name: Install network-enabled FFmpeg and libmpv for Switch
         run: |
           set -eu

@@ -17,5 +17,7 @@ int library_last_episode(const Movie *movie,int *season,int *episode,double *sec
 int library_list(Movie *items, int capacity, int favorites);
 /* Saved titles that have not been watched yet ("На майбутнє"). */
 int library_list_to_watch(Movie *items, int capacity);
+/* Clear watched flags and playback progress without removing saved favorites. */
+int library_clear_history(void);
 
 #endif

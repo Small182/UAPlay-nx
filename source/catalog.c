@@ -160,7 +160,7 @@ static char *request_form(const char *url, const char *post_data,
     if(ajax)headers=curl_slist_append(headers,"X-Requested-With: XMLHttpRequest");
     if(post_data)headers=curl_slist_append(headers,
                               "Content-Type: application/x-www-form-urlencoded; charset=UTF-8");
-    request_options(curl, url, &r, 6L, 14L);
+    request_options(curl, url, &r, post_data?4L:6L, post_data?8L:14L);
     if(headers)curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
     if (post_data) {
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data);
@@ -181,7 +181,7 @@ static char *request_form(const char *url, const char *post_data,
         *slot = curl;
 #endif
         if (curl) {
-            request_options(curl, url, &r, 4L, 8L);
+            request_options(curl, url, &r, post_data?3L:4L, post_data?5L:8L);
             if(headers)curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
             if (post_data) {
                 curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data);
@@ -1171,20 +1171,20 @@ int uakino_search(const Movie *movie, Source *items, int max,
     before=count;
     search_new_provider("https://eneyida.tv","Eneyida",2,localized,movie->series,
                         items,&count,provider_limit*3,error,error_size);
-    if(count==before && original[0] && strcmp(original,localized))
+    if(count==before && !error[0] && original[0] && strcmp(original,localized))
         search_new_provider("https://eneyida.tv","Eneyida",2,original,movie->series,
                             items,&count,provider_limit*3,error,error_size);
     before=count;
     /* The old UAFilm.tv address now redirects to Klon UA. */
     search_new_provider("https://klonua.com","UAFilm",3,localized,movie->series,
                         items,&count,provider_limit*4,error,error_size);
-    if(count==before && original[0] && strcmp(original,localized))
+    if(count==before && !error[0] && original[0] && strcmp(original,localized))
         search_new_provider("https://klonua.com","UAFilm",3,original,movie->series,
                             items,&count,provider_limit*4,error,error_size);
     before=count;
     search_new_provider("https://uakino.best","UAKino",4,localized,movie->series,
                         items,&count,max,error,error_size);
-    if(count==before && original[0] && strcmp(original,localized))
+    if(count==before && !error[0] && original[0] && strcmp(original,localized))
         search_new_provider("https://uakino.best","UAKino",4,original,movie->series,
                             items,&count,max,error,error_size);
     if (count) error[0]=0;

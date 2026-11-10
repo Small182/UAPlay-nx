@@ -3,13 +3,21 @@
 #include <SDL.h>
 #include <SDL_image.h>
 #include <curl/curl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 /* Reduce GPU memory from up to roughly 80 MB to about 30 MB. */
 #define POSTER_CACHE_MAX 48
 #define MAX_POSTER_BYTES (1024 * 1024)
+#define POSTER_WORKERS 3
+/* Fixed-size disk cache: at most 96 compressed posters, never an unbounded
+   folder of thousands of image files from long TMDB searches. */
+#define POSTER_DISK_SLOTS 96
+#define POSTER_DISK_DIR "sdmc:/switch/uaplay/posters"
+#define POSTER_DISK_MAGIC 0x55415032u
 
 typedef struct {
     int id;
@@ -17,6 +25,7 @@ typedef struct {
     unsigned long long last_used;
 } PosterEntry;
 typedef struct { unsigned char *data; size_t used; } ImageData;
+typedef struct { uint32_t magic,bytes; uint64_t fingerprint; } DiskHeader;
 typedef struct {
     SDL_Thread *thread;
     SDL_mutex *mutex;
@@ -28,7 +37,8 @@ typedef struct {
 } PosterLoader;
 
 static PosterEntry cache[POSTER_CACHE_MAX];
-static PosterLoader loader;
+static PosterLoader loaders[POSTER_WORKERS];
+static SDL_mutex *disk_mutex;
 static int used;
 static unsigned long long cache_clock;
 
@@ -45,10 +55,64 @@ static size_t receive(char *pointer,size_t size,size_t count,void *ctx){
     return bytes;
 }
 
+static uint64_t path_fingerprint(const char *path){
+    uint64_t hash=UINT64_C(14695981039346656037);
+    for(const unsigned char *p=(const unsigned char*)path;*p;p++){
+        hash^=*p;
+        hash*=UINT64_C(1099511628211);
+    }
+    return hash;
+}
+static void disk_filename(uint64_t hash,char *filename,size_t size){
+    snprintf(filename,size,POSTER_DISK_DIR "/%02u.cache",
+             (unsigned)(hash%POSTER_DISK_SLOTS));
+}
+static ImageData disk_read(const char *path){
+    ImageData result={0};
+    if(!disk_mutex)return result;
+    uint64_t hash=path_fingerprint(path);
+    char filename[128];disk_filename(hash,filename,sizeof(filename));
+    SDL_LockMutex(disk_mutex);
+    FILE *file=fopen(filename,"rb");
+    if(file){
+        DiskHeader header={0};
+        if(fread(&header,sizeof(header),1,file)==1 &&
+           header.magic==POSTER_DISK_MAGIC && header.fingerprint==hash &&
+           header.bytes>0 && header.bytes<=MAX_POSTER_BYTES){
+            result.data=malloc(header.bytes);
+            if(result.data){
+                if(fread(result.data,1,header.bytes,file)==header.bytes)
+                    result.used=header.bytes;
+                else{free(result.data);result.data=NULL;}
+            }
+        }
+        fclose(file);
+    }
+    SDL_UnlockMutex(disk_mutex);
+    return result;
+}
+static void disk_write(const char *path,const ImageData *image){
+    if(!disk_mutex || !image->data || !image->used ||
+       image->used>MAX_POSTER_BYTES)return;
+    uint64_t hash=path_fingerprint(path);
+    char filename[128];disk_filename(hash,filename,sizeof(filename));
+    DiskHeader header={POSTER_DISK_MAGIC,(uint32_t)image->used,hash};
+    SDL_LockMutex(disk_mutex);
+    FILE *file=fopen(filename,"wb");
+    if(file){
+        if(fwrite(&header,sizeof(header),1,file)==1)
+            (void)fwrite(image->data,1,image->used,file);
+        fclose(file);
+    }
+    SDL_UnlockMutex(disk_mutex);
+}
+
 /* Download raw bytes on a worker; decode and upload on the GL/UI thread. */
 static ImageData download_image(const char *path){
     ImageData data={0};
     if(!path || path[0]!='/' || strstr(path,".."))return data;
+    data=disk_read(path);
+    if(data.used)return data;
     CURL *curl=curl_easy_init();
     if(!curl)return data;
     char url[512];
@@ -67,7 +131,7 @@ static ImageData download_image(const char *path){
     curl_easy_cleanup(curl);
     if(result!=CURLE_OK || code!=200 || !data.used){
         free(data.data);data.data=NULL;data.used=0;
-    }
+    }else disk_write(path,&data);
     return data;
 }
 
@@ -99,10 +163,19 @@ static int download_worker(void *opaque){
 }
 
 void posters_init(void){
-    loader.mutex=SDL_CreateMutex();
-    loader.cond=SDL_CreateCond();
-    if(loader.mutex && loader.cond)
-        loader.thread=SDL_CreateThread(download_worker,"poster-download",&loader);
+    mkdir("sdmc:/switch/uaplay",0777);
+    mkdir(POSTER_DISK_DIR,0777);
+    disk_mutex=SDL_CreateMutex();
+    for(int i=0;i<POSTER_WORKERS;i++){
+        PosterLoader *task=&loaders[i];
+        task->mutex=SDL_CreateMutex();
+        task->cond=SDL_CreateCond();
+        if(task->mutex && task->cond){
+            char name[32];
+            snprintf(name,sizeof(name),"poster-fetch-%d",i);
+            task->thread=SDL_CreateThread(download_worker,name,task);
+        }
+    }
 }
 
 static GLuint image_texture(const ImageData *data){
@@ -142,18 +215,59 @@ static void cache_store(int id,GLuint texture){
 }
 
 static void collect_completed(void){
-    if(!loader.mutex)return;
-    SDL_LockMutex(loader.mutex);
-    if(!loader.ready){SDL_UnlockMutex(loader.mutex);return;}
-    ImageData image=loader.completed_image;
-    int id=loader.completed_id;
-    loader.completed_image=(ImageData){0};
-    loader.ready=0;
-    SDL_UnlockMutex(loader.mutex);
-    GLuint texture=image_texture(&image);
-    free(image.data);
-    /* Cache failed requests too, preventing repeated 7-second retries. */
-    cache_store(id,texture);
+    for(int i=0;i<POSTER_WORKERS;i++){
+        PosterLoader *task=&loaders[i];
+        if(!task->mutex)continue;
+        SDL_LockMutex(task->mutex);
+        if(!task->ready){SDL_UnlockMutex(task->mutex);continue;}
+        ImageData image=task->completed_image;
+        int id=task->completed_id;
+        task->completed_image=(ImageData){0};
+        task->ready=0;
+        SDL_UnlockMutex(task->mutex);
+        GLuint texture=image_texture(&image);
+        free(image.data);
+        /* A failed request is remembered to prevent a network retry loop. */
+        cache_store(id,texture);
+    }
+}
+
+static int already_cached(int id){
+    for(int i=0;i<used;i++)if(cache[i].id==id)return 1;
+    return 0;
+}
+static int in_flight(int id){
+    for(int i=0;i<POSTER_WORKERS;i++){
+        PosterLoader *task=&loaders[i];
+        if(!task->mutex)continue;
+        SDL_LockMutex(task->mutex);
+        int matched=task->request_id==id &&
+                    (task->pending || task->busy || task->ready);
+        SDL_UnlockMutex(task->mutex);
+        if(matched)return 1;
+    }
+    return 0;
+}
+static int request_poster(const Movie *movie){
+    int id=movie->series?-movie->id:movie->id;
+    if(!movie->poster[0] || !strcmp(movie->poster,"null") ||
+       already_cached(id) || in_flight(id))return 0;
+    for(int i=0;i<POSTER_WORKERS;i++){
+        PosterLoader *task=&loaders[i];
+        if(!task->thread)continue;
+        SDL_LockMutex(task->mutex);
+        if(!task->pending && !task->busy && !task->ready){
+            task->request_id=id;
+            snprintf(task->request_path,sizeof(task->request_path),
+                     "%s",movie->poster);
+            task->pending=1;
+            SDL_CondSignal(task->cond);
+            SDL_UnlockMutex(task->mutex);
+            return 1;
+        }
+        SDL_UnlockMutex(task->mutex);
+    }
+    return 0;
 }
 
 GLuint poster_texture(const Movie *movie,int *budget){
@@ -166,31 +280,39 @@ GLuint poster_texture(const Movie *movie,int *budget){
             return cache[i].texture;
         }
     }
-    if(!budget || *budget<=0 || !loader.thread)return 0;
-    SDL_LockMutex(loader.mutex);
-    if(!loader.pending && !loader.busy && !loader.ready){
-        loader.request_id=identity;
-        snprintf(loader.request_path,sizeof(loader.request_path),"%s",movie->poster);
-        loader.pending=1;
-        --*budget;
-        SDL_CondSignal(loader.cond);
-    }
-    SDL_UnlockMutex(loader.mutex);
+    if(budget && *budget>0 && request_poster(movie))--*budget;
     return 0;
 }
 
+void posters_prefetch(const Movie *movies,int count,int start,int ahead){
+    if(!movies || count<=0 || start<0)return;
+    collect_completed();
+    int end=start+ahead;
+    if(end>count)end=count;
+    /* Only fill idle network slots. Visible poster requests are submitted by
+       draw() first and always take precedence over speculative prefetches. */
+    for(int i=start;i<end;i++)request_poster(&movies[i]);
+}
+
 void posters_destroy(void){
-    if(loader.mutex){
-        SDL_LockMutex(loader.mutex);
-        loader.quit=1;
-        if(loader.cond)SDL_CondSignal(loader.cond);
-        SDL_UnlockMutex(loader.mutex);
+    for(int i=0;i<POSTER_WORKERS;i++){
+        PosterLoader *task=&loaders[i];
+        if(!task->mutex)continue;
+        SDL_LockMutex(task->mutex);
+        task->quit=1;
+        if(task->cond)SDL_CondSignal(task->cond);
+        SDL_UnlockMutex(task->mutex);
     }
-    if(loader.thread)SDL_WaitThread(loader.thread,NULL);
-    free(loader.completed_image.data);
-    if(loader.cond)SDL_DestroyCond(loader.cond);
-    if(loader.mutex)SDL_DestroyMutex(loader.mutex);
-    memset(&loader,0,sizeof(loader));
+    for(int i=0;i<POSTER_WORKERS;i++){
+        PosterLoader *task=&loaders[i];
+        if(task->thread)SDL_WaitThread(task->thread,NULL);
+        free(task->completed_image.data);
+        if(task->cond)SDL_DestroyCond(task->cond);
+        if(task->mutex)SDL_DestroyMutex(task->mutex);
+    }
+    memset(loaders,0,sizeof(loaders));
+    if(disk_mutex)SDL_DestroyMutex(disk_mutex);
+    disk_mutex=NULL;
     for(int i=0;i<used;i++)
         if(cache[i].texture)glDeleteTextures(1,&cache[i].texture);
     used=0;cache_clock=0;

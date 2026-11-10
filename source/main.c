@@ -99,6 +99,7 @@ static int catalog_hero_focus=0;
 static int details_button_focus=0;
 static int settings_selected=0,ui_accent_alt=0,source_mode=0;
 static int autoplay_episodes=1;
+#define NEXT_EPISODE_DELAY_MS 3000u
 static int ui_light_theme=0,ui_theme_enabled=1,ui_gradient_pass=0;
 #define THEME_PATH "sdmc:/switch/uaplay/theme.txt"
 static void theme_load(void){
@@ -1815,7 +1816,7 @@ int main(void) {
         }
         if(page!=PLAYER){pending_next_episode=-1;next_episode_request=-1;}
         if(page==PLAYER && pending_next_episode>=0 &&
-           SDL_GetTicks()-next_episode_countdown_at>=5000){
+           SDL_GetTicks()-next_episode_countdown_at>=NEXT_EPISODE_DELAY_MS){
             next_episode_request=pending_next_episode;
             pending_next_episode=-1;
         }
@@ -1899,13 +1900,22 @@ int main(void) {
             if(video_loaded && SDL_GetTicks()<controls_until)draw_player_controls(&paint,player);
             if(pending_next_episode>=0){
                 Uint32 elapsed=SDL_GetTicks()-next_episode_countdown_at;
-                int remaining=elapsed<5000?(int)((5000-elapsed+999)/1000):0;
+                int remaining=elapsed<NEXT_EPISODE_DELAY_MS?
+                    (int)((NEXT_EPISODE_DELAY_MS-elapsed+999u)/1000u):0;
                 draw_next_episode_prompt(&paint,&episodes[pending_next_episode],remaining);
             }
         }else{
             ui_category=category;
+            /* The focused card takes priority; the remaining worker slots
+               prefetch the visible row and a part of the next row. */
+            if(page==CATALOG && n>0)
+                posters_prefetch(movies,n,chosen,1);
             draw(&paint,page,movies,n,chosen,sources,sn,source,
                  query[0]?"Результати пошуку":headings[category],message);
+            if(page==CATALOG && n>0){
+                int start=expanded_catalog?(chosen/12)*12:(chosen/6)*6;
+                posters_prefetch(movies,n,start,expanded_catalog?18:12);
+            }
         }
         SDL_GL_SwapWindow(window);
         /* Do not stack a fixed sleep on top of the time that Eden/Switch

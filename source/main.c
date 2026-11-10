@@ -1586,6 +1586,7 @@ int main(void) {
     Page player_return_page=SOURCES;
     Uint32 video_started_at=0;
     int video_loaded=0;
+    int history_playback_committed=0;
     Uint32 controls_until=0;
     int pending_next_episode=-1,next_episode_request=-1;
     Uint32 next_episode_countdown_at=0;
@@ -1862,7 +1863,9 @@ int main(void) {
             if(page==PLAYER){
                 if(key==SDL_CONTROLLER_BUTTON_B){
                     double position=0;
-                    if (player && mpv_get_property(player,"time-pos",MPV_FORMAT_DOUBLE,&position)>=0)
+                    if (player && video_loaded &&
+                        mpv_get_property(player,"time-pos",MPV_FORMAT_DOUBLE,&position)>=0 &&
+                        position>=15.0)
                         { /* Position belongs to a particular episode. */
                             if(active_episode_variant>=0 && player_return_page==EPISODES)
                                 library_set_episode_progress(&playing_movie,
@@ -2064,9 +2067,6 @@ int main(void) {
                                        &saved_season,&saved_episode,&saved_seconds) &&
                                        saved_season==episode->season &&
                                        saved_episode==episode->number)?saved_seconds:0;
-                            library_mark_watched(&playing_movie);
-                            library_set_episode_progress(&playing_movie,
-                                episode->season,episode->number,resume_at);
                             snprintf(playing_url,sizeof(playing_url),"%s",url);
                             apply_hls_quality(player);
                             configure_stream(player,url);
@@ -2373,7 +2373,6 @@ int main(void) {
                         snprintf(pending_subtitle,sizeof(pending_subtitle),"%s",uakino_resolved_subtitle());
                         playing_movie=movies[chosen];
                         resume_at=library_progress(&playing_movie);
-                        library_mark_watched(&playing_movie);
                         snprintf(playing_url,sizeof(playing_url),"%s",url);
                         apply_hls_quality(player);
                         configure_stream(player,url);
@@ -2390,6 +2389,7 @@ int main(void) {
                 mpv_event *event=mpv_wait_event(player,0);
                 if(event->event_id==MPV_EVENT_NONE)break;
                 if(event->event_id==MPV_EVENT_START_FILE){
+                    history_playback_committed=0;
                     /* Eden and some GLES drivers may recycle renderer-side
                        resources during source switches. Discard old glyph
                        handles once per file rather than keeping stale GL
@@ -2444,6 +2444,21 @@ int main(void) {
                 }
             }
         }
+        /* Opening a source (or an invalid stream) must not put a film into
+           History. Record it only after mpv really plays at least 15 seconds
+           of media, even if the user never exits with the B button. */
+        if(page==PLAYER && video_loaded && !history_playback_committed && player){
+            double seconds=0;
+            if(mpv_get_property(player,"time-pos",MPV_FORMAT_DOUBLE,&seconds)>=0 &&
+               seconds>=15.0){
+                if(player_return_page==EPISODES && active_episode_variant>=0)
+                    library_set_episode_progress(&playing_movie,
+                        episodes[active_episode_variant].season,
+                        episodes[active_episode_variant].number,seconds);
+                else library_set_progress(&playing_movie,seconds);
+                history_playback_committed=1;
+            }
+        }
         if(page!=PLAYER){pending_next_episode=-1;next_episode_request=-1;}
         if(page==PLAYER && pending_next_episode>=0 &&
            SDL_GetTicks()-next_episode_countdown_at>=NEXT_EPISODE_DELAY_MS){
@@ -2464,9 +2479,6 @@ int main(void) {
                 snprintf(pending_subtitle,sizeof(pending_subtitle),"%s",
                          uakino_resolved_subtitle());
                 snprintf(playing_url,sizeof(playing_url),"%s",url);
-                library_mark_watched(&playing_movie);
-                library_set_episode_progress(&playing_movie,
-                    episodes[index].season,episodes[index].number,0);
                 apply_hls_quality(player);
                 configure_stream(player,url);
                 mpv_set_property_string(player,"pause","no");

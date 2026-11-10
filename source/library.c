@@ -5,9 +5,12 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#define LIBRARY_DIR "sdmc:/switch/uaflix"
+#define LIBRARY_DIR "sdmc:/switch/uaplay"
 #define LIBRARY_FILE LIBRARY_DIR "/library.tsv"
 #define LIBRARY_TMP LIBRARY_DIR "/library.tmp"
+/* Older UAFlix/UAPlay builds used this folder. Import once, retaining the
+   original file as a safety copy so an NRO update never loses favorites. */
+#define LEGACY_LIBRARY_FILE "sdmc:/switch/uaflix/library.tsv"
 #define MAX_LIBRARY_ITEMS 256
 
 typedef struct {
@@ -73,6 +76,8 @@ static void library_save(void) {
 void library_init(void) {
     total=0;
     FILE *file=fopen(LIBRARY_FILE,"rb");
+    int legacy=0;
+    if(!file){file=fopen(LEGACY_LIBRARY_FILE,"rb");legacy=file!=NULL;}
     if (!file) return;
     char line[2400];
     while (total<MAX_LIBRARY_ITEMS && fgets(line,sizeof(line),file)) {
@@ -125,6 +130,7 @@ void library_init(void) {
         entry->movie.poster[strcspn(entry->movie.poster,"\r\n")]=0;
     }
     fclose(file);
+    if(legacy && total)library_save();
 }
 
 int library_favorite(const Movie *movie) {

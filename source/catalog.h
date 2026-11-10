@@ -6,7 +6,7 @@
 #define CATALOG_PAGE_SIZE 20
 /* TMDB exposes at most 500 result pages; search expands only while browsing. */
 #define CATALOG_SEARCH_MAX (500 * CATALOG_PAGE_SIZE)
-#define UAKINO_MAX 20
+#define UAKINO_MAX 40
 #define EPISODES_MAX 2048
 
 typedef struct {
@@ -59,7 +59,7 @@ int catalog_filter_countries(Movie *items,int count);
 /* Fetch runtime (movie) or total seasons/episodes (TV) for details screen. */
 int catalog_fetch_details(Movie *movie);
 
-/* UAFresh integration: current UAFlix/UASerials sources via UAFresh worker. */
+/* Native source search: UAFlix, UASerials, Eneyida, UAFilm/Klon UA, UAKino. */
 int uakino_search(const Movie *movie, Source *items, int max,
                   char *error, int error_size);
 /* Rank candidates by title match (Ukrainian and original titles), not by

@@ -141,7 +141,10 @@ static int transient_network_error(CURLcode result) {
            result == CURLE_GOT_NOTHING;
 }
 
-static char *request(const char *url, char *error, int error_size) {
+/* Search forms on DLE-powered sites require POST. Keep the same connection,
+   timeout, and retry behaviour as GET, including on Switch. */
+static char *request_form(const char *url, const char *post_data,
+                          const char *referer, char *error, int error_size) {
 #ifdef __SWITCH__
     CURL **slot = catalog_connection_slot();
     if (!*slot) *slot = curl_easy_init();
@@ -151,7 +154,21 @@ static char *request(const char *url, char *error, int error_size) {
 #endif
     Response r = {0};
     if (!curl) { snprintf(error, error_size, "curl init failed"); return NULL; }
+    struct curl_slist *headers=NULL;
+    int ajax=strstr(url,"/engine/ajax/")!=NULL ||
+             strstr(url,"/engine/lazydev/")!=NULL;
+    if(ajax)headers=curl_slist_append(headers,"X-Requested-With: XMLHttpRequest");
+    if(post_data)headers=curl_slist_append(headers,
+                              "Content-Type: application/x-www-form-urlencoded; charset=UTF-8");
     request_options(curl, url, &r, 6L, 14L);
+    if(headers)curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
+    if (post_data) {
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data);
+        curl_easy_setopt(curl, CURLOPT_USERAGENT,
+                         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36");
+        curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+        if(referer)curl_easy_setopt(curl,CURLOPT_REFERER,referer);
+    }
     CURLcode result = curl_easy_perform(curl);
     if (transient_network_error(result)) {
         /* A failed connection may poison a reused transport. Destroy that
@@ -165,6 +182,14 @@ static char *request(const char *url, char *error, int error_size) {
 #endif
         if (curl) {
             request_options(curl, url, &r, 4L, 8L);
+            if(headers)curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
+            if (post_data) {
+                curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data);
+                curl_easy_setopt(curl, CURLOPT_USERAGENT,
+                                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36");
+                curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+                if(referer)curl_easy_setopt(curl,CURLOPT_REFERER,referer);
+            }
             result = curl_easy_perform(curl);
         } else result = CURLE_FAILED_INIT;
     }
@@ -178,6 +203,7 @@ static char *request(const char *url, char *error, int error_size) {
 #else
     if (curl) curl_easy_cleanup(curl);
 #endif
+    curl_slist_free_all(headers);
     if (result != CURLE_OK || status < 200 || status >= 300) {
         if (result == CURLE_OK) snprintf(error, error_size, "Server returned HTTP %ld", status);
         else snprintf(error, error_size, "HTTP %ld: %s", status, curl_easy_strerror(result));
@@ -186,6 +212,10 @@ static char *request(const char *url, char *error, int error_size) {
     }
     error[0] = 0;
     return r.data;
+}
+
+static char *request(const char *url, char *error, int error_size) {
+    return request_form(url,NULL,NULL,error,error_size);
 }
 
 static char *encode(const char *value) {
@@ -572,8 +602,8 @@ int catalog_load(const char *category, const char *query, Movie *items, int max,
     return catalog_load_page(category,query,1,items,max,error,error_size,NULL);
 }
 
-/* Use UAFlix and UASerials sources. The experimental UAKino.best provider
-   is disabled: it produced unreliable search failures on the console. */
+/* Source pages are requested directly whenever possible, with the existing
+   UAFresh proxy retained as a network fallback for embedded players. */
 static char *fetch_uafresh(const char *upstream, char *error, int error_size) {
     /* Native homebrew does not have browser CORS restrictions. A direct
        request originates from the Switch user's Ukrainian network, unlike
@@ -581,7 +611,10 @@ static char *fetch_uafresh(const char *upstream, char *error, int error_size) {
        However, video hosts such as Zetvideo can return an HTTP 200 page
        containing an nginx 404 *body* from some regions. For iframe hosts,
        prefer the UAFresh proxy, then fall back to direct access. */
-    int direct_first=!strncmp(upstream,"https://uafix.net/",18);
+    int direct_first=!strncmp(upstream,"https://uafix.net/",18) ||
+                     !strncmp(upstream,"https://eneyida.tv/",19) ||
+                     !strncmp(upstream,"https://klonua.com/",19) ||
+                     !strncmp(upstream,"https://uakino.best/",20);
     int video_host=!strncmp(upstream,"https://zetvideo.net/",21) ||
                    !strncmp(upstream,"https://hdvbua.pro/",19) ||
                    !strncmp(upstream,"https://ashdi.vip/",18);
@@ -604,7 +637,10 @@ static char *fetch_uafresh(const char *upstream, char *error, int error_size) {
        reached, try the Ukrainian provider directly rather than leaving the
        sources page empty. A successful proxy request still takes priority. */
     int provider_page = !strncmp(upstream,"https://uaserials.my/",21) ||
-                        !strncmp(upstream,"https://uafix.net/",18);
+                        !strncmp(upstream,"https://uafix.net/",18) ||
+                        !strncmp(upstream,"https://eneyida.tv/",19) ||
+                        !strncmp(upstream,"https://klonua.com/",19) ||
+                        !strncmp(upstream,"https://uakino.best/",20);
     if(!html && (video_host || (provider_page && !direct_first)))
         return request(upstream,error,error_size);
     return html;
@@ -757,6 +793,243 @@ static void search_provider(const char *host, const char *name, int provider,
     free(html);
 }
 
+/* The newer Ukrainian providers don't use the UAFlix/UASerials card layout.
+   Parse only their result cards, never the navigation links of a full page. */
+static int html_attr(const char *start,const char *end,const char *name,
+                     char *out,size_t cap){
+    char needle[48];
+    snprintf(needle,sizeof(needle),"%s=",name);
+    const char *p=start;
+    while((p=strstr(p,needle)) && p<end){
+        if(p>start && (isalnum((unsigned char)p[-1]) || p[-1]=='-')){p++;continue;}
+        p+=strlen(needle);
+        if(p>=end || (*p!='"' && *p!='\''))continue;
+        char quote=*p++;
+        const char *stop=memchr(p,quote,(size_t)(end-p));
+        if(!stop)return 0;
+        size_t length=(size_t)(stop-p);
+        if(!length || length>=cap)return 0;
+        memcpy(out,p,length);out[length]=0;return 1;
+    }
+    return 0;
+}
+
+static int card_label(const char *begin,const char *end,const char *class_name,
+                      char *label,size_t capacity){
+    char needle[96];
+    snprintf(needle,sizeof(needle),"%s",class_name);
+    const char *p=begin;
+    while((p=strstr(p,needle)) && p<end){
+        const char *open=memchr(p,'>',(size_t)(end-p));
+        if(!open)return 0;
+        p=open+1;
+        size_t n=0;
+        while(p<end && *p && n+1<capacity){
+            if(*p=='<'){
+                const char *tag=memchr(p,'>',(size_t)(end-p));
+                if(!tag)break;
+                if(p[1]=='/' && n)break;
+                p=tag+1;
+                continue;
+            }
+            label[n++]=*p++;
+        }
+        while(n && isspace((unsigned char)label[n-1]))n--;
+        label[n]=0;
+        if(n){
+            char decoded[192];
+            html_title(label,decoded,sizeof(decoded));
+            snprintf(label,capacity,"%s",decoded);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int source_page_url(const char *host,const char *href,int provider,
+                           int want_series,char *out,size_t size){
+    if(!href || !*href)return 0;
+    if(strlen(href)+strlen(host)+10>=size)return 0;
+    if(!strncmp(href,"https://",8)){
+        snprintf(out,size,"%s",href);
+    }else if(!strncmp(href,"//",2)){
+        snprintf(out,size,"https:%s",href);
+    }else if(*href=='/'){
+        snprintf(out,size,"%s%s",host,href);
+    }else return 0;
+    if(strncmp(out,host,strlen(host)))return 0;
+    const char *path=out+strlen(host);
+    const char *last=strrchr(path,'/');
+    if(!last || !last[1] || !isdigit((unsigned char)last[1]))return 0;
+    const char *number=last+1;
+    while(isdigit((unsigned char)*number))number++;
+    if(*number!='-' || !strstr(number,".html"))return 0;
+    if(provider==3){ /* Klon UA catalog separates films and serials by path. */
+        int serial=!!(strstr(path,"/serialy/") || strstr(path,"/multserialy/"));
+        int film=!!(strstr(path,"/filmy/") || strstr(path,"/multfilmy/"));
+        if((want_series && film) || (!want_series && serial))return 0;
+    }
+    if(provider==4){ /* UAKino separates TV by URL categories. */
+        int serial=!!(strstr(path,"/seriesss/") || strstr(path,"/anime-series/"));
+        if(!want_series && serial)return 0;
+    }
+    return 1;
+}
+
+static void add_search_card(const char *host,const char *name,int provider,
+                            int want_series,const char *href,const char *label,
+                            Source *items,int *count,int limit){
+    if(*count>=limit || !label || !label[0])return;
+    char url[1024];
+    if(!source_page_url(host,href,provider,want_series,url,sizeof(url)))return;
+    for(int i=0;i<*count;i++)if(!strcmp(items[i].url,url))return;
+    Source *dst=&items[(*count)++];
+    snprintf(dst->url,sizeof(dst->url),"%s",url);
+    char clipped[176];
+    size_t n=strlen(label);
+    if(n>=sizeof(clipped))n=sizeof(clipped)-1;
+    while(n && ((unsigned char)label[n]&0xc0)==0x80)n--;
+    memcpy(clipped,label,n);clipped[n]=0;
+    snprintf(dst->title,sizeof(dst->title),"%s: %s",name,clipped);
+}
+
+static void parse_post_cards(const char *html,const char *host,const char *name,
+                             int provider,int want_series,Source *items,
+                             int *count,int limit){
+    const char *p=html;
+    while(*count<limit && *p){
+        const char *card=NULL,*end=NULL;
+        if(provider==2){ /* Eneyida uses <article> + .short_title. */
+            card=strstr(p,"<article");
+            if(!card)break;
+            end=strstr(card,"</article>");
+            if(!end)break;
+            end+=10;
+        }else if(provider==3){ /* Klon UA uses two variants of short cards. */
+            const char *slide=strstr(p,"short-news__slide-item");
+            const char *small=strstr(p,"short-news__small");
+            card=slide && (!small || slide<small)?slide:small;
+            if(!card)break;
+            /* Limit each candidate to the beginning of the next result card.
+               Avoid assigning a nearby recommendation title to this URL. */
+            end=card+strlen(card);
+            while(*end && end-card<3500)end++;
+        }else{ /* UAKino AJAX returns <a class=search-result-link ...>. */
+            card=strstr(p,"search-result-link");
+            if(!card)break;
+            end=card+strlen(card);
+            while(*end && end-card<2000 && strncmp(end,"</a>",4))end++;
+        }
+        const char *a=card;
+        const char *href_end=NULL;
+        char href[1024]={0},title[192]={0};
+        if(provider==4){
+            /* The marker is inside the opening <a>, so include that tag. */
+            while(a>html && *a!='<')a--;
+            if(strncmp(a,"<a",2))a=card;
+        }
+        while((a=strstr(a,"<a")) && a<end){
+            const char *tag_end=memchr(a,'>',(size_t)(end-a));
+            if(!tag_end)break;
+            if(html_attr(a,tag_end,"href",href,sizeof(href)) &&
+               source_page_url(host,href,provider,want_series,
+                               (char[1024]){0},1024)){
+                href_end=tag_end;break;
+            }
+            a=tag_end+1;
+        }
+        if(href_end){
+            const char *title_class=provider==2?"short_title":
+                                    provider==3?"card-link__text":"search-result-title";
+            if(!card_label(card,end,title_class,title,sizeof(title))){
+                if(provider==3)card_label(card,end,"card-title__block",title,sizeof(title));
+            }
+            add_search_card(host,name,provider,want_series,href,title,
+                            items,count,limit);
+        }
+        p=provider==2?end:(href_end?href_end+1:card+strlen(card));
+    }
+}
+
+/* DLE search is POST on Eneyida and Klon; a GET URL alone usually returns
+   the home page. UAKino uses a separate JSON-over-AJAX endpoint. */
+static char *json_string_field_alloc(const char *json,const char *key){
+    char needle[64];
+    snprintf(needle,sizeof(needle),"\"%s\"",key);
+    const char *p=strstr(json,needle);
+    if(!p)return NULL;
+    p=strchr(p+strlen(needle),':');
+    if(!p)return NULL;
+    do {p++;} while(isspace((unsigned char)*p));
+    if(*p!='"')return NULL;
+    p++;
+    size_t cap=strlen(p)+1;
+    char *out=malloc(cap);
+    if(!out)return NULL;
+    size_t n=0;
+    while(*p && *p!='"' && n+1<cap){
+        if(*p!='\\'){out[n++]=*p++;continue;}
+        p++;
+        if(!*p)break;
+        if(*p=='u'){
+            p++;unsigned int cp=0;
+            for(int i=0;i<4;i++){
+                int digit=(unsigned char)*p;
+                if(!isxdigit(digit)){cp=0;break;}
+                cp=(cp<<4)|(digit>='0' && digit<='9'?digit-'0':
+                   ((digit|32)-'a'+10));
+                p++;
+            }
+            if(cp<128)out[n++]=(char)cp;
+            else if(cp<2048 && n+2<cap){out[n++]=(char)(0xc0|(cp>>6));
+                             out[n++]=(char)(0x80|(cp&63));}
+            else if(n+3<cap){out[n++]=(char)(0xe0|(cp>>12));
+                  out[n++]=(char)(0x80|((cp>>6)&63));
+                  out[n++]=(char)(0x80|(cp&63));}
+            continue;
+        }
+        char c=*p++;
+        out[n++]=c=='n'||c=='r'||c=='t'?' ':c;
+    }
+    out[n]=0;
+    return out;
+}
+
+static void search_new_provider(const char *host,const char *name,int provider,
+                                const char *query,int series,Source *items,
+                                int *count,int limit,char *error,int error_size){
+    if(!query || !*query || *count>=limit)return;
+    char *encoded=encode(query);
+    if(!encoded)return;
+    char url[256],referer[256],*body;
+    snprintf(referer,sizeof(referer),"%s/",host);
+    if(provider==4){
+        snprintf(url,sizeof(url),"%s/engine/lazydev/dle_search/ajax.php",host);
+        body=malloc(strlen(encoded)+40);
+        if(body)sprintf(body,"story=%s&thisUrl=%%2Fua%%2F",encoded);
+    }else{
+        snprintf(url,sizeof(url),"%s/index.php?do=search",host);
+        body=malloc(strlen(encoded)+100);
+        if(body)snprintf(body,strlen(encoded)+100,
+                         "do=search&subaction=search&search_start=0&full_search=0&result_from=1&story=%s",
+                         encoded);
+    }
+    free(encoded);
+    if(!body)return;
+    char *html=request_form(url,body,referer,error,error_size);
+    free(body);
+    if(!html)return;
+    if(provider==4){
+        char *content=json_string_field_alloc(html,"content");
+        free(html);
+        html=content;
+    }
+    if(html){
+        parse_post_cards(html,host,name,provider,series,items,count,limit);
+        free(html);
+    }
+}
+
 /* Normalize Latin and Cyrillic titles without depending on a UTF-8 locale
    (the Switch C locale does not perform Ukrainian case folding). Preserve
    spaces as word boundaries so "Home" cannot match "Homeboy". */
@@ -878,14 +1151,12 @@ int catalog_rank_sources(const Movie *movie, Source *items, int count,
 int uakino_search(const Movie *movie, Source *items, int max,
                   char *error, int error_size) {
     int count=0;
-    /* Localized and original titles may differ radically (Lost / Загублені).
-       Search each provider in Ukrainian first, then try the original only if
-       the localized search returned no matches for that provider. Leave room
-       for both providers even when one returns many similar titles. */
+    /* Each provider gets room for its own cards. Searching the original title
+       is a fallback only if the localized search found no cards there. */
     const char *localized=movie->title;
     const char *original=movie->original;
     error[0]=0;
-    int provider_limit=max>2?max/2:max;
+    int provider_limit=max>=5?max/5:max;
     search_provider("https://uafix.net", "UAFlix", 0, localized,movie->series,
                     items, &count, provider_limit, error, error_size);
     if(count==0 && !error[0] && original[0] && strcmp(original,localized))
@@ -893,10 +1164,29 @@ int uakino_search(const Movie *movie, Source *items, int max,
                         items, &count, provider_limit, error, error_size);
     int before=count;
     search_provider("https://uaserials.my", "UASerials", 1, localized,movie->series,
-                    items, &count, max, error, error_size);
+                    items, &count, provider_limit*2, error, error_size);
     if(count==before && !error[0] && original[0] && strcmp(original,localized))
         search_provider("https://uaserials.my", "UASerials", 1, original,movie->series,
-                        items, &count, max, error, error_size);
+                        items, &count, provider_limit*2, error, error_size);
+    before=count;
+    search_new_provider("https://eneyida.tv","Eneyida",2,localized,movie->series,
+                        items,&count,provider_limit*3,error,error_size);
+    if(count==before && original[0] && strcmp(original,localized))
+        search_new_provider("https://eneyida.tv","Eneyida",2,original,movie->series,
+                            items,&count,provider_limit*3,error,error_size);
+    before=count;
+    /* The old UAFilm.tv address now redirects to Klon UA. */
+    search_new_provider("https://klonua.com","UAFilm",3,localized,movie->series,
+                        items,&count,provider_limit*4,error,error_size);
+    if(count==before && original[0] && strcmp(original,localized))
+        search_new_provider("https://klonua.com","UAFilm",3,original,movie->series,
+                            items,&count,provider_limit*4,error,error_size);
+    before=count;
+    search_new_provider("https://uakino.best","UAKino",4,localized,movie->series,
+                        items,&count,max,error,error_size);
+    if(count==before && original[0] && strcmp(original,localized))
+        search_new_provider("https://uakino.best","UAKino",4,original,movie->series,
+                            items,&count,max,error,error_size);
     if (count) error[0]=0;
     else if (!error[0]) snprintf(error,error_size,"UAFresh: no matching pages");
     return count;
@@ -1184,6 +1474,62 @@ static int resolve_embedded(const char *html,char *stream,int size,
     return 0;
 }
 
+/* UAKino embeds are not on the film page: an AJAX endpoint returns li tags
+   with data-file video URLs. This is shared by movies and episode lists. */
+static char *uakino_playlist_page(const char *url,char *error,int error_size){
+    static const char prefix[]="https://uakino.best/";
+    if(strncmp(url,prefix,strlen(prefix)))return NULL;
+    const char *last=strrchr(url,'/');
+    if(!last || !isdigit((unsigned char)last[1]))return NULL;
+    int news_id=0;
+    if(sscanf(last+1,"%d-",&news_id)!=1 || news_id<1)return NULL;
+    char endpoint[256];
+    snprintf(endpoint,sizeof(endpoint),
+             "https://uakino.best/engine/ajax/playlists.php?news_id=%d&xfield=playlist",
+             news_id);
+    char *json=request(endpoint,error,error_size);
+    if(!json)return NULL;
+    char *html=json_string_field_alloc(json,"response");
+    free(json);
+    return html;
+}
+
+static const char *next_uakino_playlist_item(const char *html,char *file,
+                                             size_t file_size,char *voice,
+                                             size_t voice_size,char *label,
+                                             size_t label_size){
+    const char *p=html;
+    while((p=strstr(p,"<li"))){
+        const char *tag_end=strchr(p,'>');
+        if(!tag_end)return NULL;
+        if(html_attr(p,tag_end,"data-file",file,file_size)){
+            if(!html_attr(p,tag_end,"data-voice",voice,voice_size))
+                voice[0]=0;
+            const char *close=strstr(tag_end,"</li>");
+            if(!close)return NULL;
+            size_t n=0;
+            const char *t=tag_end+1;
+            while(t<close && n+1<label_size){
+                if(*t=='<'){
+                    const char *inner=strchr(t,'>');
+                    if(!inner || inner>close)break;
+                    t=inner+1;
+                }else label[n++]=*t++;
+            }
+            while(n && isspace((unsigned char)label[n-1]))n--;
+            label[n]=0;
+            if(!strncmp(file,"//",2)){
+                char temporary[1024];
+                snprintf(temporary,sizeof(temporary),"https:%s",file);
+                snprintf(file,file_size,"%s",temporary);
+            }
+            return close+5;
+        }
+        p=tag_end+1;
+    }
+    return NULL;
+}
+
 int uakino_resolve(const Source *source, char *stream, int size,
                    char *error, int error_size) {
     resolved_subtitle_count=0;
@@ -1195,6 +1541,29 @@ int uakino_resolve(const Source *source, char *stream, int size,
         snprintf(stream,(size_t)size,"%s",source->url);
         error[0]=0;
         return 1;
+    }
+    char *playlist=uakino_playlist_page(source->url,error,error_size);
+    if(playlist){
+        const char *next=playlist;
+        int requests_left=5;
+        int found=0;
+        for(int attempt=0;attempt<4 && !found;attempt++){
+            char file[1024],voice[96],label[192];
+            next=next_uakino_playlist_item(next,file,sizeof(file),voice,
+                                            sizeof(voice),label,sizeof(label));
+            if(!next)break;
+            if(strstr(file,".m3u8") || strstr(file,".mp4") || strstr(file,".mpd")){
+                snprintf(stream,(size_t)size,"%s",file);
+                found=1;
+            }else if(!strncmp(file,"https://",8)){
+                char embed[1152];
+                snprintf(embed,sizeof(embed),"<iframe src=\"%s\"></iframe>",file);
+                found=resolve_embedded(embed,stream,size,2,&requests_left,
+                                       error,error_size);
+            }
+        }
+        free(playlist);
+        if(found){error[0]=0;return 1;}
     }
     char *page = fetch_uafresh(source->url,error,error_size);
     if (!page) return 0;
@@ -1473,6 +1842,38 @@ static void parse_uaflix_episodes(const char *html,const char *root,
 
 int uakino_episodes(const Source *source, Episode *items, int max,
                     char *error, int error_size) {
+    char *playlist=uakino_playlist_page(source->url,error,error_size);
+    if(playlist){
+        int count=0,serial=0;
+        const char *next=playlist;
+        while(count<max){
+            char file[1024],voice[96],label[192];
+            next=next_uakino_playlist_item(next,file,sizeof(file),voice,
+                                            sizeof(voice),label,sizeof(label));
+            if(!next)break;
+            int episode=0;
+            /* Prefer the visible episode number. If all titles are voice
+               names, preserve the playlist position as a fallback. */
+            const char *word=strstr(label,"ерія");
+            if(word){word+=strlen("ерія");sscanf(word,"%d",&episode);}
+            if(episode<1)sscanf(label,"%d",&episode);
+            if(episode<1)episode=count+1;
+            if(episode>1000 || strncmp(file,"https://",8))continue;
+            Episode *dst=&items[count++];
+            memset(dst,0,sizeof(*dst));
+            dst->season=1;dst->number=episode;
+            snprintf(dst->title,sizeof(dst->title),"Сезон 1 · Серія %d",episode);
+            snprintf(dst->url,sizeof(dst->url),"%s",file);
+            if(voice[0])snprintf(dst->voice,sizeof(dst->voice),"%s",voice);
+            serial=1;
+        }
+        free(playlist);
+        if(serial){
+            qsort(items,(size_t)count,sizeof(*items),episode_order);
+            error[0]=0;
+            return count;
+        }
+    }
     char *html=fetch_uafresh(source->url,error,error_size);
     if (!html) return 0;
     int count=0;

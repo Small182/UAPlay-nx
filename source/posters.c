@@ -12,7 +12,12 @@
 /* Reduce GPU memory from up to roughly 80 MB to about 30 MB. */
 #define POSTER_CACHE_MAX 48
 #define MAX_POSTER_BYTES (1024 * 1024)
-#define POSTER_WORKERS 3
+/* Eden's SSL implementation becomes unreliable under sustained concurrent
+   HTTPS handshakes. A persistent single downloader is safer and can still
+   warm the disk cache in the background without blocking the interface. */
+#define POSTER_WORKERS 1
+#define POSTER_RETRY_DELAY_MS 20000u
+#define POSTER_TLS_COOLDOWN_MS 15000u
 /* Fixed-size disk cache: at most 96 compressed posters, never an unbounded
    folder of thousands of image files from long TMDB searches. */
 #define POSTER_DISK_SLOTS 96
@@ -22,6 +27,7 @@
 typedef struct {
     int id;
     GLuint texture;
+    Uint32 retry_after;
     unsigned long long last_used;
 } PosterEntry;
 typedef struct { unsigned char *data; size_t used; } ImageData;
@@ -31,6 +37,7 @@ typedef struct {
     SDL_mutex *mutex;
     SDL_cond *cond;
     int quit,pending,busy,request_id;
+    Uint32 blocked_until;
     char request_path[256];
     int ready,completed_id;
     ImageData completed_image;
@@ -108,27 +115,43 @@ static void disk_write(const char *path,const ImageData *image){
 }
 
 /* Download raw bytes on a worker; decode and upload on the GL/UI thread. */
-static ImageData download_image(const char *path){
+static ImageData download_image(const char *path,CURL *curl,int *ssl_failed){
     ImageData data={0};
+    *ssl_failed=0;
     if(!path || path[0]!='/' || strstr(path,".."))return data;
     data=disk_read(path);
     if(data.used)return data;
-    CURL *curl=curl_easy_init();
     if(!curl)return data;
     char url[512];
     snprintf(url,sizeof(url),"https://image.tmdb.org/t/p/w342%s",path);
+    /* Reset request-specific options but preserve the handle's persistent
+       TCP/TLS connection pool and TLS session cache across poster requests. */
+    curl_easy_reset(curl);
     curl_easy_setopt(curl,CURLOPT_URL,url);
     curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,1L);
     curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT,4L);
     curl_easy_setopt(curl,CURLOPT_TIMEOUT,7L);
     curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);
+    curl_easy_setopt(curl,CURLOPT_HTTP_VERSION,CURL_HTTP_VERSION_1_1);
+    curl_easy_setopt(curl,CURLOPT_TCP_KEEPALIVE,1L);
     curl_easy_setopt(curl,CURLOPT_USERAGENT,"UAPlay-nx/1.0");
     curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,receive);
     curl_easy_setopt(curl,CURLOPT_WRITEDATA,&data);
     CURLcode result=curl_easy_perform(curl);
+    if(result==CURLE_SSL_CONNECT_ERROR){
+        /* One bounded retry with a fresh connection; never disable TLS
+           certificate or hostname verification to hide an SSL failure. */
+        free(data.data);data=(ImageData){0};
+        curl_easy_setopt(curl,CURLOPT_FRESH_CONNECT,1L);
+        curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT,2L);
+        curl_easy_setopt(curl,CURLOPT_TIMEOUT,4L);
+        result=curl_easy_perform(curl);
+    }
     long code=0;
     curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&code);
-    curl_easy_cleanup(curl);
+    *ssl_failed=result==CURLE_SSL_CONNECT_ERROR ||
+                result==CURLE_COULDNT_CONNECT ||
+                result==CURLE_OPERATION_TIMEDOUT;
     if(result!=CURLE_OK || code!=200 || !data.used){
         free(data.data);data.data=NULL;data.used=0;
     }else disk_write(path,&data);
@@ -137,6 +160,7 @@ static ImageData download_image(const char *path){
 
 static int download_worker(void *opaque){
     PosterLoader *task=opaque;
+    CURL *curl=NULL;
     for(;;){
         SDL_LockMutex(task->mutex);
         while(!task->quit && !task->pending)
@@ -148,10 +172,14 @@ static int download_worker(void *opaque){
         task->pending=0;task->busy=1;
         SDL_UnlockMutex(task->mutex);
 
-        ImageData image=download_image(path);
+        if(!curl)curl=curl_easy_init();
+        int ssl_failed=0;
+        ImageData image=download_image(path,curl,&ssl_failed);
 
         SDL_LockMutex(task->mutex);
         task->busy=0;
+        if(ssl_failed)
+            task->blocked_until=SDL_GetTicks()+POSTER_TLS_COOLDOWN_MS;
         if(!task->quit){
             task->completed_image=image;
             task->completed_id=id;
@@ -159,6 +187,7 @@ static int download_worker(void *opaque){
         }else free(image.data);
         SDL_UnlockMutex(task->mutex);
     }
+    if(curl)curl_easy_cleanup(curl);
     return 0;
 }
 
@@ -211,6 +240,7 @@ static void cache_store(int id,GLuint texture){
     }else used++;
     cache[slot].id=id;
     cache[slot].texture=texture;
+    cache[slot].retry_after=texture?0:SDL_GetTicks()+POSTER_RETRY_DELAY_MS;
     cache[slot].last_used=++cache_clock;
 }
 
@@ -233,7 +263,13 @@ static void collect_completed(void){
 }
 
 static int already_cached(int id){
-    for(int i=0;i<used;i++)if(cache[i].id==id)return 1;
+    for(int i=0;i<used;i++)if(cache[i].id==id){
+        if(!cache[i].texture && SDL_TICKS_PASSED(SDL_GetTicks(),cache[i].retry_after)){
+            cache[i].id=0;
+            return 0;
+        }
+        return 1;
+    }
     return 0;
 }
 static int in_flight(int id){
@@ -256,7 +292,8 @@ static int request_poster(const Movie *movie){
         PosterLoader *task=&loaders[i];
         if(!task->thread)continue;
         SDL_LockMutex(task->mutex);
-        if(!task->pending && !task->busy && !task->ready){
+        if(!task->pending && !task->busy && !task->ready &&
+           (!task->blocked_until || SDL_TICKS_PASSED(SDL_GetTicks(),task->blocked_until))){
             task->request_id=id;
             snprintf(task->request_path,sizeof(task->request_path),
                      "%s",movie->poster);
@@ -276,6 +313,11 @@ GLuint poster_texture(const Movie *movie,int *budget){
     int identity=movie->series?-movie->id:movie->id;
     for(int i=0;i<used;i++){
         if(cache[i].id==identity){
+            if(!cache[i].texture &&
+               SDL_TICKS_PASSED(SDL_GetTicks(),cache[i].retry_after)){
+                cache[i].id=0;
+                break;
+            }
             cache[i].last_used=++cache_clock;
             return cache[i].texture;
         }

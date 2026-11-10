@@ -41,10 +41,23 @@ static char *request(const char *url, char *error, int error_size) {
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 18L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Lampa-nx/0.2 (Nintendo Switch)");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, on_data);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &r);
     CURLcode result = curl_easy_perform(curl);
+    if (result == CURLE_SSL_CONNECT_ERROR) {
+        /* Eden's HTTPS service occasionally rejects a new TLS handshake.
+           Clear any partial response and retry once with a fresh connection.
+           Keep SSL peer/hostname verification enabled. */
+        r.length = 0;
+        if (r.data) r.data[0] = 0;
+        curl_easy_setopt(curl, CURLOPT_FRESH_CONNECT, 1L);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 9L);
+        result = curl_easy_perform(curl);
+    }
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
     curl_easy_cleanup(curl);

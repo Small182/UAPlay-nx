@@ -1283,23 +1283,23 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                DETAILS_POSTER_W,DETAILS_POSTER_H,&poster_budget);
         headline(p,movies[chosen].title,65,138,820);
         text_muted(p,movies[chosen].original,67,198,815);
-        char tag[100];snprintf(tag,sizeof(tag),"%s    ·    %s",movies[chosen].year,
-                                movies[chosen].series?"Серіал":"Фільм");
-        text(p,tag,66,259,815);
-        char attributes[144];
+        char tag[192];
         const Movie *selected=&movies[chosen];
-        if(selected->details_state==0)
-            snprintf(attributes,sizeof(attributes),"Завантаження інформації...");
-        else if(selected->series && selected->details_state>0 &&
-                selected->season_count>0 && selected->episode_count>0)
-            snprintf(attributes,sizeof(attributes),"Сезонів: %d   ·   Серій: %d",
-                     selected->season_count,selected->episode_count);
+        if(selected->series && selected->details_state>0 &&
+           selected->season_count>0 && selected->episode_count>0)
+            snprintf(tag,sizeof(tag),"%s  ·  Серіал  ·  Сезонів: %d  ·  Серій: %d",
+                     selected->year,selected->season_count,selected->episode_count);
         else if(!selected->series && selected->details_state>0 &&
-                selected->runtime_minutes>0)
-            snprintf(attributes,sizeof(attributes),"Тривалість: %d год %02d хв",
-                     selected->runtime_minutes/60,selected->runtime_minutes%60);
-        else snprintf(attributes,sizeof(attributes),"Інформація відсутня");
-        text_muted(p,attributes,66,289,810);
+                selected->runtime_minutes>0){
+            if(selected->runtime_minutes<60)
+                snprintf(tag,sizeof(tag),"%s  ·  Фільм  ·  %d хв",
+                         selected->year,selected->runtime_minutes);
+            else snprintf(tag,sizeof(tag),"%s  ·  Фільм  ·  %d год %02d хв",
+                          selected->year,selected->runtime_minutes/60,
+                          selected->runtime_minutes%60);
+        }else snprintf(tag,sizeof(tag),"%s  ·  %s",selected->year,
+                       selected->series?"Серіал":"Фільм");
+        text(p,tag,66,259,815);
         summary(p,movies[chosen].overview,66,313,815);
         if(!details_button_focus)selection_frame(p,65,526,238,58);
         else selection_frame(p,320,526,255,58);
@@ -2065,6 +2065,11 @@ int main(void) {
                    catalog_hero_focus==0 &&
                    (key==SDL_CONTROLLER_BUTTON_DPAD_UP ||
                     key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)){
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && chosen==0 && n>0){
+                        /* First poster points directly to the shelf's More button. */
+                        catalog_hero_focus=3;
+                        continue;
+                    }
                     int next=home_shelf+(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN?1:-1);
                     if(next>=0 && next<HOME_SHELF_COUNT){
                         home_shelf=next;
@@ -2072,6 +2077,15 @@ int main(void) {
                         chosen=0;catalog_hero_focus=0;
                     }else if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)
                         catalog_hero_focus=n?(chosen%6>=4?3:1):7;
+                    continue;
+                }
+                if(category==0 && !expanded_catalog && !query[0] &&
+                   catalog_hero_focus==3 &&
+                   key==SDL_CONTROLLER_BUTTON_DPAD_UP && home_shelf>0){
+                    /* One more Up returns to the previous vertical shelf. */
+                    home_shelf--;
+                    n=load_category(category,query,movies,message,sizeof(message));
+                    chosen=0;catalog_hero_focus=0;
                     continue;
                 }
                 if(!expanded_catalog && (category==11 || category==12)){

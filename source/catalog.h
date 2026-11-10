@@ -19,6 +19,11 @@ typedef struct {
     char poster[256];
     float rating;
     float popularity;
+    /* Loaded on demand from the TMDB movie/TV details endpoint. */
+    int runtime_minutes;
+    int season_count;
+    int episode_count;
+    int details_state; /* 0 pending, 1 loaded, -1 unavailable */
 } Movie;
 
 typedef struct {
@@ -51,6 +56,8 @@ int catalog_load_page_sorted(const char *category, const char *query, int page,
                             char *error, int error_size, int *has_more);
 /* Exclude titles associated with Russia, using TMDB's country metadata. */
 int catalog_filter_countries(Movie *items,int count);
+/* Fetch runtime (movie) or total seasons/episodes (TV) for details screen. */
+int catalog_fetch_details(Movie *movie);
 
 /* UAFresh integration: current UAFlix/UASerials sources via UAFresh worker. */
 int uakino_search(const Movie *movie, Source *items, int max,

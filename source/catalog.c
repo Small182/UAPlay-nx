@@ -395,6 +395,35 @@ int catalog_filter_countries(Movie *items,int count){
     return kept;
 }
 
+static void catalog_parse_details_json(Movie *movie,const char *json){
+    char value[32];
+    const char *end=json+strlen(json);
+    if(movie->series){
+        json_field(json,end,"number_of_seasons",value,sizeof(value));
+        movie->season_count=atoi(value);
+        json_field(json,end,"number_of_episodes",value,sizeof(value));
+        movie->episode_count=atoi(value);
+    }else{
+        json_field(json,end,"runtime",value,sizeof(value));
+        movie->runtime_minutes=atoi(value);
+    }
+    movie->details_state=1;
+}
+
+int catalog_fetch_details(Movie *movie){
+    if(!movie || movie->id<=0)return 0;
+    char key[256];tmdb_key(key,sizeof(key));
+    if(!key[0]){movie->details_state=-1;return 0;}
+    char url[600],error[160]={0};
+    snprintf(url,sizeof(url),"https://api.themoviedb.org/3/%s/%d?api_key=%s&language=uk-UA",
+             movie->series?"tv":"movie",movie->id,key);
+    char *json=request(url,error,sizeof(error));
+    if(!json){movie->details_state=-1;return 0;}
+    catalog_parse_details_json(movie,json);
+    free(json);
+    return 1;
+}
+
 int catalog_load_page_sorted(const char *category, const char *query, int page,
                              int sort_mode, Movie *items, int max,
                              char *error, int error_size, int *has_more) {

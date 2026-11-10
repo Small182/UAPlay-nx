@@ -286,7 +286,7 @@ static int load_category(int category,const char *query,Movie *movies,char *mess
 }
 typedef struct {
     GLuint program, vbo, tex, solid_tex;
-    GLint tint, shape, gradient, sampler;
+    GLint tint, shape, gradient, outline, sampler;
     TTF_Font *font;
     TTF_Font *font_big;
     TTF_Font *font_small;
@@ -327,11 +327,13 @@ static const char *vs = "attribute vec2 pos;attribute vec2 uv;varying vec2 tc;"
                         "void main(){gl_Position=vec4(pos,0.,1.);tc=uv;}";
 static const char *fs = "precision mediump float;varying vec2 tc;"
                         "uniform vec4 tint;uniform sampler2D image;uniform vec3 shape;"
-                        "uniform float gradient;"
+                        "uniform float gradient;uniform float outline;"
                         "void main(){vec2 p=tc*shape.xy;vec2 q=abs(p-shape.xy*.5)"
                         "-shape.xy*.5+shape.z;float d=length(max(q,0.0))"
                         "+min(max(q.x,q.y),0.0)-shape.z;"
-                        "float a=1.0-smoothstep(-1.0,1.5,d);"
+                        "float a=1.0-smoothstep(-.7,.9,d);"
+                        "if(outline>0.0){float inside=1.0-smoothstep(-.7,.9,d+outline);"
+                        "a=max(a-inside,0.0);}"
                         "vec3 rgb=tint.rgb;"
                         /* Switch Basic White / Basic Black: gently shaded,
                            neutral surfaces rather than blue-black or beige. */
@@ -365,6 +367,7 @@ static int paint_init(Paint *p) {
     p->tint=glGetUniformLocation(p->program,"tint");
     p->shape=glGetUniformLocation(p->program,"shape");
     p->gradient=glGetUniformLocation(p->program,"gradient");
+    p->outline=glGetUniformLocation(p->program,"outline");
     p->sampler=glGetUniformLocation(p->program,"image");
     glUseProgram(p->program);
     glUniform1i(p->sampler,0);
@@ -393,6 +396,7 @@ static int paint_init(Paint *p) {
     }
     return p->font != NULL;
 }
+static int ui_outline_width=0;
 static void box_alpha(Paint *p,int x,int y,int w,int h,float r,float g,float b,float a,int radius) {
     float x0=x/640.f-1.f,x1=(x+w)/640.f-1.f;
     float y0=1.f-y/360.f,y1=1.f-(y+h)/360.f;
@@ -419,6 +423,7 @@ static void box_alpha(Paint *p,int x,int y,int w,int h,float r,float g,float b,f
     glUniform4f(p->tint,r,g,b,a);
     glUniform3f(p->shape,(float)w,(float)h,(float)radius);
     glUniform1f(p->gradient,ui_gradient_pass?(ui_light_theme?2.f:1.f):0.f);
+    glUniform1f(p->outline,(float)ui_outline_width);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D,p->tex);
     glBindBuffer(GL_ARRAY_BUFFER,p->vbo);
@@ -593,12 +598,27 @@ static int measure(Paint *p,const char *s,TTF_Font *font){
     p->font=prev;
     return w;
 }
+static int text_height(Paint *p,const char *s,TTF_Font *font){
+    TTF_Font *previous=p->font;
+    p->font=font;
+    TTF_Font *actual=choose_font(p,s);
+    int w=0,h=0;
+    if(actual)TTF_SizeUTF8(actual,s,&w,&h);
+    p->font=previous;
+    return h;
+}
 static void text_center(Paint *p,const char *s,int x,int y,int width,TTF_Font *font,
                         float r,float g,float b){
     int w=measure(p,s,font);
     int left=x+(width-w)/2;
     if(left<x)left=x;
     text_font(p,s,left,y,width-(left-x),font,r,g,b);
+}
+static void text_center_button(Paint *p,const char *s,int x,int y,int width,int height,
+                               TTF_Font *font,float r,float g,float b){
+    int glyph_height=text_height(p,s,font);
+    int top=y+(height-glyph_height)/2;
+    text_center(p,s,x,top,width,font,r,g,b);
 }
 /* Word-based wrapping avoids slicing a UTF-8 code point into replacement boxes. */
 static void wrapped(Paint *p,const char *s,int x,int y,int width,
@@ -640,21 +660,23 @@ static void accent(float *r,float *g,float *b){
     *b=ui_accent_alt?.88f:.73f;
 }
 static void selection_frame(Paint *p,int x,int y,int w,int h){
-    /* The Switch focus indicator is an outline, not a filled overlay.
-       This keeps selected text and poster images unobscured. */
+    /* A single rounded SDF ring tracks the underlying button/card corners.
+       Separate rectangular strokes left square joints on the Switch UI. */
     float r=ui_light_theme?.69f:.20f;
     float g=ui_light_theme?.13f:.67f;
     float b=ui_light_theme?.20f:.85f;
-    box_alpha(p,x-3,y-3,w+6,3,r,g,b,1.f,2);
-    box_alpha(p,x-3,y+h,w+6,3,r,g,b,1.f,2);
-    box_alpha(p,x-3,y,3,h,r,g,b,1.f,2);
-    box_alpha(p,x+w,y,3,h,r,g,b,1.f,2);
+    int radius=h>=60?18:h>=40?17:12;
+    ui_outline_width=3;
+    box_alpha(p,x-3,y-3,w+6,h+6,r,g,b,1.f,radius);
+    ui_outline_width=0;
 }
 static void button(Paint *p,const char *label,int x,int y,int w,int h,int primary){
-    box_alpha(p,x,y,w,h,primary?.89f:.15f,primary?.91f:.18f,
-              primary?.94f:.22f,1.f,14);
-    text_center(p,label,x,y+(h-23)/2,w,p->font_small,
-                primary?.08f:.95f,primary?.10f:.96f,primary?.13f:.98f);
+    /* Flat fills: no simulated border/shadow in Basic White. */
+    float secondary=ui_light_theme?.11f:.15f;
+    box_alpha(p,x,y,w,h,primary?.89f:secondary,primary?.91f:secondary,
+              primary?.94f:secondary,1.f,14);
+    text_center_button(p,label,x,y,w,h,p->font_small,
+                       primary?.08f:.95f,primary?.10f:.96f,primary?.13f:.98f);
 }
 /* Solid vector polygons for crisp icons, independent of font glyph support. */
 static void polygon(Paint *p,const float *points,int count,float r,float g,float b){
@@ -676,6 +698,7 @@ static void polygon(Paint *p,const float *points,int count,float r,float g,float
     glUniform4f(p->tint,r,g,b,1.f);
     glUniform3f(p->shape,100.f,100.f,0.f);
     glUniform1f(p->gradient,0.f);
+    glUniform1f(p->outline,0.f);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D,p->solid_tex);
     glBindBuffer(GL_ARRAY_BUFFER,p->vbo);
@@ -837,12 +860,14 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                        (i==4 && (ui_category==11 || ui_category==12));
             if(active)box_alpha(p,x-12,19,tab_w[i],43,.19f,.24f,.28f,1.f,16);
             if(catalog_hero_focus==i+7)selection_frame(p,x-12,19,tab_w[i],43);
-            text_small(p,tabs[i],x,27,tab_w[i]-8);
+            text_center_button(p,tabs[i],x-12,19,tab_w[i],43,
+                               p->font_small,.96f,.97f,.99f);
         }
         /* Search is a real touch target, not a missing Unicode glyph. */
         box_alpha(p,767,17,277,47,.13f,.16f,.19f,1.f,15);
         search_icon(p,800,38,.13f,.16f,.19f);
-        text_small(p,"Пошук",831,27,177);
+        text_font(p,"Пошук",831,17+(47-text_height(p,"Пошук",p->font_small))/2,
+                  177,p->font_small,1.f,1.f,1.f);
         box_alpha(p,1058,17,53,47,.13f,.16f,.19f,1.f,15);
         gear_icon(p,1085,40,.13f,.16f,.19f);
         time_t now=time(NULL);
@@ -902,8 +927,9 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                               active?.35f:.19f,1.f,13);
                     if(catalog_hero_focus==i+4)
                         selection_frame(p,anim_x[i],328,anim_w[i],43);
-                    text_center(p,animation_tabs[i],anim_x[i],337,anim_w[i],
-                                p->font_small,.96f,.97f,.99f);
+                    text_center_button(p,animation_tabs[i],anim_x[i],328,
+                                       anim_w[i],43,p->font_small,
+                                       .96f,.97f,.99f);
                 }
             }else text(p,heading,UI_EDGE,336,930);
             if(status && (!strncmp(status,"Offline catalog",15) ||

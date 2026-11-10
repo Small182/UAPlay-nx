@@ -422,34 +422,126 @@ static void box_alpha(Paint *p,int x,int y,int w,int h,float r,float g,float b,f
 static void box(Paint *p,int x,int y,int w,int h,float r,float g,float b) {
     box_alpha(p,x,y,w,h,r,g,b,1.f,w>100 && h>40?14:5);
 }
+
+/* Text labels used to allocate, upload and delete a GL texture on every
+   frame. Keep an LRU of white glyph masks instead: colors are applied when
+   drawing, so the same label also works in both UI themes. */
+#define TEXT_CACHE_ENTRIES 256
+#define TEXT_CACHE_BYTES (12u * 1024u * 1024u)
+typedef struct {
+    char *label;
+    TTF_Font *font;
+    GLuint texture;
+    int width,height;
+    size_t bytes;
+    unsigned long long stamp;
+} TextTexture;
+static TextTexture text_cache[TEXT_CACHE_ENTRIES];
+static size_t text_cache_bytes;
+static unsigned long long text_cache_clock;
+
+static void text_cache_release(int slot){
+    TextTexture *entry=&text_cache[slot];
+    if(entry->texture)glDeleteTextures(1,&entry->texture);
+    free(entry->label);
+    if(entry->bytes<=text_cache_bytes)text_cache_bytes-=entry->bytes;
+    memset(entry,0,sizeof(*entry));
+}
+static void text_cache_destroy(void){
+    for(int i=0;i<TEXT_CACHE_ENTRIES;i++)text_cache_release(i);
+}
+static int text_cache_lru(void){
+    int oldest=0;
+    for(int i=0;i<TEXT_CACHE_ENTRIES;i++){
+        if(!text_cache[i].label)return i;
+        if(text_cache[i].stamp<text_cache[oldest].stamp)oldest=i;
+    }
+    return oldest;
+}
+static int text_cache_oldest_occupied(void){
+    int oldest=-1;
+    for(int i=0;i<TEXT_CACHE_ENTRIES;i++)
+        if(text_cache[i].label &&
+           (oldest<0 || text_cache[i].stamp<text_cache[oldest].stamp))oldest=i;
+    return oldest;
+}
+static GLuint create_glyph_texture(const SDL_Surface *rgba){
+    GLuint texture=0;
+    glGenTextures(1,&texture);
+    if(!texture)return 0;
+    glBindTexture(GL_TEXTURE_2D,texture);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,rgba->w,rgba->h,0,
+                 GL_RGBA,GL_UNSIGNED_BYTE,rgba->pixels);
+    return texture;
+}
 static void text_color(Paint *p,const char *str,int x,int y,int limit,
                        float r,float g,float b) {
     if (!str || !*str) return;
     if(ui_theme_enabled && ui_light_theme){r=1.f-r;g=1.f-g;b=1.f-b;}
-    SDL_Color color={255,255,255,255};
-    SDL_Surface *surface=TTF_RenderUTF8_Blended(choose_font(p,str),str,color);
-    if (!surface) return;
-    SDL_Surface *rgba=SDL_ConvertSurfaceFormat(surface,SDL_PIXELFORMAT_ABGR8888,0);
-    if (rgba) {
-        GLuint tex;
-        glGenTextures(1,&tex);glBindTexture(GL_TEXTURE_2D,tex);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,rgba->w,rgba->h,0,GL_RGBA,GL_UNSIGNED_BYTE,rgba->pixels);
-        GLuint previous=p->tex; p->tex=tex;
-        /* Never shrink a long title: clip it at the card edge instead. */
-        if(limit>0){
-            glEnable(GL_SCISSOR_TEST);
-            glScissor(x,720-y-rgba->h,limit,rgba->h);
+    TTF_Font *font=choose_font(p,str);
+    if(!font)return;
+    TextTexture *found=NULL;
+    for(int i=0;i<TEXT_CACHE_ENTRIES;i++){
+        TextTexture *entry=&text_cache[i];
+        if(entry->font==font && entry->label && !strcmp(entry->label,str)){
+            found=entry;break;
         }
-        box_alpha(p,x,y,rgba->w,rgba->h,r,g,b,1.f,0);
-        if(limit>0)glDisable(GL_SCISSOR_TEST);
-        p->tex=previous;glDeleteTextures(1,&tex);
+    }
+    GLuint transient_texture=0;
+    int width=0,height=0;
+    if(found){
+        found->stamp=++text_cache_clock;
+        width=found->width;height=found->height;
+    }else{
+        SDL_Color color={255,255,255,255};
+        SDL_Surface *surface=TTF_RenderUTF8_Blended(font,str,color);
+        if(!surface)return;
+        SDL_Surface *rgba=SDL_ConvertSurfaceFormat(surface,SDL_PIXELFORMAT_ABGR8888,0);
+        SDL_FreeSurface(surface);
+        if(!rgba)return;
+        width=rgba->w;height=rgba->h;
+        size_t bytes=(size_t)width*(size_t)height*4u;
+        if(bytes>0 && bytes<=TEXT_CACHE_BYTES){
+            int slot=text_cache_lru();
+            text_cache_release(slot);
+            while(text_cache_bytes+bytes>TEXT_CACHE_BYTES){
+                int victim=text_cache_oldest_occupied();
+                if(victim<0)break;
+                text_cache_release(victim);
+            }
+            char *copy=malloc(strlen(str)+1);
+            if(copy){
+                strcpy(copy,str);
+                TextTexture *entry=&text_cache[slot];
+                entry->texture=create_glyph_texture(rgba);
+                if(entry->texture){
+                    entry->label=copy;entry->font=font;
+                    entry->width=width;entry->height=height;
+                    entry->bytes=bytes;entry->stamp=++text_cache_clock;
+                    text_cache_bytes+=bytes;
+                    found=entry;
+                }else free(copy);
+            }
+        }
+        if(!found)transient_texture=create_glyph_texture(rgba);
         SDL_FreeSurface(rgba);
     }
-    SDL_FreeSurface(surface);
+    GLuint texture=found?found->texture:transient_texture;
+    if(!texture)return;
+    GLuint previous=p->tex;p->tex=texture;
+    /* Never shrink a long title: clip it at the card edge instead. */
+    if(limit>0){
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(x,720-y-height,limit,height);
+    }
+    box_alpha(p,x,y,width,height,r,g,b,1.f,0);
+    if(limit>0)glDisable(GL_SCISSOR_TEST);
+    p->tex=previous;
+    if(transient_texture)glDeleteTextures(1,&transient_texture);
 }
 static void text(Paint *p,const char *str,int x,int y,int limit){
     text_color(p,str,x,y,limit,1,1,1);
@@ -1063,6 +1155,7 @@ int main(void) {
     if(!gl) { SDL_DestroyWindow(window);SDL_Quit();return 3; }
     Paint paint={0};
     if(!paint_init(&paint)) goto cleanup;
+    posters_init();
     SDL_GameController *pad=NULL;
     for(int i=0;i<SDL_NumJoysticks();i++)
         if(SDL_IsGameController(i)){pad=SDL_GameControllerOpen(i);break;}
@@ -1076,7 +1169,10 @@ int main(void) {
         mpv_set_option_string(player,"sub-visibility","yes");
         mpv_set_option_string(player,"sub-auto","fuzzy");
         mpv_set_option_string(player,"cache","yes");
-        mpv_set_option_string(player,"demuxer-max-bytes","16MiB");
+        /* Bound mpv's demuxer queue and back-buffer across long TV sessions. */
+        mpv_set_option_string(player,"demuxer-max-bytes","8MiB");
+        mpv_set_option_string(player,"demuxer-max-back-bytes","2MiB");
+        mpv_set_option_string(player,"cache-secs","12");
         mpv_set_option_string(player,"video-sync","audio");
         mpv_request_log_messages(player,"warn");
         if(mpv_initialize(player)>=0){
@@ -1788,7 +1884,11 @@ int main(void) {
             draw(&paint,page,movies,n,chosen,sources,sn,source,
                  query[0]?"Результати пошуку":headings[category],message);
         }
-        SDL_GL_SwapWindow(window);SDL_Delay(16);
+        SDL_GL_SwapWindow(window);
+        /* Menus have no animation requiring 60 fps. Drawing them at roughly
+           30 fps avoids constant GPU load and heat during long sessions;
+           keep the video renderer on its original refresh cadence. */
+        SDL_Delay(page==PLAYER?16:30);
     }
     if(media_playback_mode)appletSetMediaPlaybackState(false);
     catalog_loader_shutdown();
@@ -1797,6 +1897,7 @@ int main(void) {
     if(player)mpv_terminate_destroy(player);
     if(pad)SDL_GameControllerClose(pad);
     posters_destroy();
+    text_cache_destroy();
     for(int i=0;i<7;i++){
         if(paint.scripts[i])TTF_CloseFont(paint.scripts[i]);
         if(paint.scripts_small[i])TTF_CloseFont(paint.scripts_small[i]);

@@ -12,6 +12,13 @@ TMDB works out of the box in the release NRO: GitHub Actions embeds the `TMDB_AP
 
 ## Current native features
 
+Experimental anime source discovery also includes **AnimeON** (`animeon.club`)
+and **Mikai** (`api.mikai.me/public/v1`). Both expose native episode lists;
+their embedded video hosts are handled by the existing resolver, so a listed
+episode is not a guarantee that its host will play on Switch. In particular,
+MoonAnime may return HTTP 500; ASHDI streams resolve when offered by a source.
+No AnimeON/Mikai account credentials or API keys are embedded.
+
 - Movies, TV, top-rated and genre categories (action, comedy, drama, horror, sci-fi, animation, romance, documentary).
 - Ukrainian TMDB titles, metadata descriptions, search via Switch software keyboard, live TMDB posters with in-session cache.
 - Local-only **favorites**, **watch history**, and **resume position** stored at `sdmc:/switch/uaflix/library.tsv`. The **Вибране** screen displays a poster grid under **На майбутнє** (unwatched saved titles) and **Історія** (watched titles), without a featured banner. **Очистити історію** clears watched flags and playback positions after a two-press confirmation; saved favorites are preserved.

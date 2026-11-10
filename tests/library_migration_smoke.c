@@ -25,6 +25,11 @@ int main(void){
     fclose(old);
     library_init();
     assert(library_favorite(&avatar));
+    /* An interrupted update may leave only the last complete backup. */
+    assert(rename("sdmc:/switch/uaplay/library.tsv",
+                  "sdmc:/switch/uaplay/library.bak")==0);
+    library_init();
+    assert(library_favorite(&avatar));
     puts("UAPlay favorites survive legacy storage migration: OK");
     return 0;
 }

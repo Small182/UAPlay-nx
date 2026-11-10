@@ -1575,6 +1575,8 @@ int main(void) {
     if(!movies)goto cleanup;
     Source sources[UAKINO_MAX]={0};
     int n=0,sn=0,chosen=0,source=0,category=0,running=1;
+    int search_return_category=0,search_return_expanded=0;
+    int search_return_shelf=0,search_return_chosen=0;
     Page page=CATALOG;
     char query[192]={0},message[256]={0};
     catalog_loader_init();
@@ -2097,6 +2099,16 @@ int main(void) {
             if(key==SDL_CONTROLLER_BUTTON_START){running=0;continue;}
             if(page==CATALOG){
                 if(key==SDL_CONTROLLER_BUTTON_BACK){page=SETTINGS;continue;}
+                if(key==SDL_CONTROLLER_BUTTON_B && query[0]){
+                    category=search_return_category;
+                    expanded_catalog=search_return_expanded;
+                    home_shelf=search_return_shelf;
+                    query[0]=message[0]=0;
+                    n=load_category(category,query,movies,message,sizeof(message));
+                    chosen=search_return_chosen<n?search_return_chosen:0;
+                    catalog_hero_focus=0;
+                    continue;
+                }
                 if(key==SDL_CONTROLLER_BUTTON_A && catalog_hero_focus==5)
                     key=SDL_CONTROLLER_BUTTON_X;
                 else if(key==SDL_CONTROLLER_BUTTON_A && catalog_hero_focus==6){
@@ -2295,6 +2307,12 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_X){
                     char new_query[192]={0};
                     if(keyboard(new_query,sizeof(new_query))){
+                        if(!query[0]){
+                            search_return_category=category;
+                            search_return_expanded=expanded_catalog;
+                            search_return_shelf=home_shelf;
+                            search_return_chosen=chosen;
+                        }
                         /* Search spans movies and TV shows, regardless of the
                            section where the on-screen keyboard was opened. */
                         category=0;

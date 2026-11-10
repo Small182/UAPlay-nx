@@ -8,10 +8,11 @@
 #define LIBRARY_DIR "sdmc:/switch/uaplay"
 #define LIBRARY_FILE LIBRARY_DIR "/library.tsv"
 #define LIBRARY_TMP LIBRARY_DIR "/library.tmp"
+#define LIBRARY_BACKUP LIBRARY_DIR "/library.bak"
 /* Older UAFlix/UAPlay builds used this folder. Import once, retaining the
    original file as a safety copy so an NRO update never loses favorites. */
 #define LEGACY_LIBRARY_FILE "sdmc:/switch/uaflix/library.tsv"
-#define MAX_LIBRARY_ITEMS 256
+#define MAX_LIBRARY_ITEMS 1024
 
 typedef struct {
     Movie movie;
@@ -70,13 +71,30 @@ static void library_save(void) {
                 e->last_season,e->last_episode,e->movie.rating,e->movie.popularity,
                 overview);
     }
-    if (fclose(file)==0) rename(LIBRARY_TMP,LIBRARY_FILE);
+    if (fclose(file)!=0) { remove(LIBRARY_TMP); return; }
+    /* FAT does not reliably replace an existing destination with rename().
+       Keep the previous complete library until the new file is installed. */
+    FILE *previous=fopen(LIBRARY_FILE,"rb");
+    int had_previous=previous!=NULL;
+    if(previous)fclose(previous);
+    if(had_previous){
+        remove(LIBRARY_BACKUP);
+        if(rename(LIBRARY_FILE,LIBRARY_BACKUP)!=0){
+            remove(LIBRARY_TMP);
+            return;
+        }
+    }
+    if(rename(LIBRARY_TMP,LIBRARY_FILE)!=0){
+        if(had_previous)rename(LIBRARY_BACKUP,LIBRARY_FILE);
+        remove(LIBRARY_TMP);
+    }
 }
 
 void library_init(void) {
     total=0;
     FILE *file=fopen(LIBRARY_FILE,"rb");
     int legacy=0;
+    if(!file)file=fopen(LIBRARY_BACKUP,"rb");
     if(!file){file=fopen(LEGACY_LIBRARY_FILE,"rb");legacy=file!=NULL;}
     if (!file) return;
     char line[2400];

@@ -1148,6 +1148,75 @@ int catalog_rank_sources(const Movie *movie, Source *items, int count,
     return count;
 }
 
+/* Mikai provides a documented, keyless anime catalogue. Keep its results
+   separate from HTML scraping, and use stable numeric Mikai identifiers. */
+static void search_mikai(const char *query,Source *items,int *count,int max){
+    if(!query || !*query || *count>=max)return;
+    char *encoded=encode(query);
+    if(!encoded)return;
+    char url[1024],error[160]={0};
+    snprintf(url,sizeof(url),
+        "https://api.mikai.me/public/v1/anime?search=%s&limit=12",encoded);
+    free(encoded);
+    char *json=request(url,error,sizeof(error));
+    if(!json)return;
+    const char *result=strstr(json,"\"result\"");
+    const char *p=result?strchr(result,'['):NULL;
+    if(p) p++;
+    while(p && *p && *p!=']' && *count<max){
+        while(*p && *p!='{' && *p!=']')p++;
+        if(*p!='{')break;
+        const char *end=object_end(p);
+        if(!end)break;
+        char id[32]={0},title[192]={0};
+        json_field(p,end,"mikai",id,sizeof(id));
+        json_field(p,end,"ua",title,sizeof(title));
+        if(!title[0])json_field(p,end,"english",title,sizeof(title));
+        int numeric=atoi(id);
+        if(numeric>0 && title[0]){
+            Source *dst=&items[(*count)++];
+            snprintf(dst->title,sizeof(dst->title),"Mikai: %s",title);
+            snprintf(dst->url,sizeof(dst->url),
+                "https://api.mikai.me/public/v1/anime/%d/player",numeric);
+        }
+        p=end;
+    }
+    free(json);
+}
+
+static void search_animeon(const char *query,Source *items,int *count,int max){
+    if(!query || !*query || *count>=max)return;
+    char *encoded=encode(query);
+    if(!encoded)return;
+    char url[1024],error[160]={0};
+    snprintf(url,sizeof(url),"https://animeon.club/api/anime?search=%s&take=12",encoded);
+    free(encoded);
+    char *json=request(url,error,sizeof(error));
+    if(!json)return;
+    const char *p=strstr(json,"\"results\"");
+    p=p?strchr(p,'['):NULL;
+    if(p)p++;
+    while(p && *p && *p!=']' && *count<max){
+        while(*p && *p!='{' && *p!=']')p++;
+        if(*p!='{')break;
+        const char *end=object_end(p);
+        if(!end)break;
+        char id[32]={0},title[192]={0};
+        json_field(p,end,"id",id,sizeof(id));
+        json_field(p,end,"titleUa",title,sizeof(title));
+        if(!title[0])json_field(p,end,"titleEn",title,sizeof(title));
+        int numeric=atoi(id);
+        if(numeric>0 && title[0]){
+            Source *dst=&items[(*count)++];
+            snprintf(dst->title,sizeof(dst->title),"AnimeON: %s",title);
+            snprintf(dst->url,sizeof(dst->url),
+                     "https://animeon.club/api/player/%d",numeric);
+        }
+        p=end;
+    }
+    free(json);
+}
+
 int uakino_search(const Movie *movie, Source *items, int max,
                   char *error, int error_size) {
     int count=0;
@@ -1156,7 +1225,7 @@ int uakino_search(const Movie *movie, Source *items, int max,
     const char *localized=movie->title;
     const char *original=movie->original;
     error[0]=0;
-    int provider_limit=max>=5?max/5:max;
+    int provider_limit=max>=7?max/7:max;
     search_provider("https://uafix.net", "UAFlix", 0, localized,movie->series,
                     items, &count, provider_limit, error, error_size);
     if(count==0 && !error[0] && original[0] && strcmp(original,localized))
@@ -1182,11 +1251,24 @@ int uakino_search(const Movie *movie, Source *items, int max,
         search_new_provider("https://klonua.com","UAFilm",3,original,movie->series,
                             items,&count,provider_limit*4,error,error_size);
     before=count;
+    int uakino_limit=movie->series && max>2*provider_limit?
+                     max-2*provider_limit:max;
     search_new_provider("https://uakino.best","UAKino",4,localized,movie->series,
-                        items,&count,max,error,error_size);
+                        items,&count,uakino_limit,error,error_size);
     if(count==before && !error[0] && original[0] && strcmp(original,localized))
         search_new_provider("https://uakino.best","UAKino",4,original,movie->series,
-                            items,&count,max,error,error_size);
+                            items,&count,uakino_limit,error,error_size);
+    if(movie->series && count<max){
+        int before_mikai=count;
+        int mikai_limit=max>provider_limit?max-provider_limit:max;
+        search_mikai(localized,items,&count,mikai_limit);
+        if(count==before_mikai && original[0] && strcmp(original,localized))
+            search_mikai(original,items,&count,mikai_limit);
+        int before_animeon=count;
+        search_animeon(localized,items,&count,max);
+        if(count==before_animeon && original[0] && strcmp(original,localized))
+            search_animeon(original,items,&count,max);
+    }
     if (count) error[0]=0;
     else if (!error[0]) snprintf(error,error_size,"UAFresh: no matching pages");
     return count;
@@ -1842,6 +1924,74 @@ static void parse_uaflix_episodes(const char *html,const char *root,
 
 int uakino_episodes(const Source *source, Episode *items, int max,
                     char *error, int error_size) {
+    if(strstr(source->url,"animeon.club/api/player/")){
+        char *response=request(source->url,error,error_size);
+        if(!response)return 0;
+        /* AnimeON returns player entries with a JSON-encoded episode list. */
+        /* Moon supplies explicit episode URLs. AnimeON's ASHDI variant
+           supplies folder IDs, which require a separate player mapping. */
+        char *episodes_json=json_string_field_alloc(response,"json");
+        free(response);
+        if(!episodes_json){
+            snprintf(error,error_size,"AnimeON: немає доступних серій");
+            return 0;
+        }
+        const char *p=episodes_json;
+        int count=0;
+        while(count<max && (p=strstr(p,"{\"episode\""))){
+            const char *end=object_end(p);
+            if(!end)break;
+            char number[24]={0},stream[1024]={0};
+            json_field(p,end,"episode",number,sizeof(number));
+            json_field(p,end,"video_url",stream,sizeof(stream));
+            int episode=atoi(number);
+            if(episode>0 && episode<=1000 &&
+               (!strncmp(stream,"https://",8) || !strncmp(stream,"http://",7))){
+                Episode *dst=&items[count++];
+                memset(dst,0,sizeof(*dst));
+                dst->season=1;dst->number=episode;
+                snprintf(dst->title,sizeof(dst->title),"Серія %d · AnimeON",episode);
+                snprintf(dst->url,sizeof(dst->url),"%s",stream);
+            }
+            p=end;
+        }
+        free(episodes_json);
+        if(count)qsort(items,(size_t)count,sizeof(*items),episode_order);
+        else snprintf(error,error_size,"AnimeON: немає доступних відеоджерел");
+        return count;
+    }
+    if(strstr(source->url,"api.mikai.me/public/v1/anime/") &&
+       strstr(source->url,"/player")){
+        char *json=request(source->url,error,error_size);
+        if(!json)return 0;
+        int count=0;
+        const char *p=strstr(json,"\"releases\"");
+        while(p && count<max && (p=strstr(p,"{\"number\""))){
+            const char *end=object_end(p);
+            if(!end)break;
+            char number[24]={0},stream[1024]={0};
+            json_field(p,end,"number",number,sizeof(number));
+            /* Prefer ASHDI when offered; Moon embeds can return HTTP 500. */
+            const char *ashdi=strstr(p,"\"provider\":\"ashdi\"");
+            if(ashdi && ashdi<end)
+                json_field(ashdi,end,"embedUrl",stream,sizeof(stream));
+            if(!stream[0])json_field(p,end,"embedUrl",stream,sizeof(stream));
+            int episode=atoi(number);
+            if(episode>0 && episode<=1000 &&
+               (!strncmp(stream,"https://",8) || !strncmp(stream,"http://",7))){
+                Episode *dst=&items[count++];
+                memset(dst,0,sizeof(*dst));
+                dst->season=1;dst->number=episode;
+                snprintf(dst->title,sizeof(dst->title),"Серія %d · Mikai",episode);
+                snprintf(dst->url,sizeof(dst->url),"%s",stream);
+            }
+            p=end;
+        }
+        free(json);
+        if(count)qsort(items,(size_t)count,sizeof(*items),episode_order);
+        else snprintf(error,error_size,"Mikai: немає доступних відеоджерел");
+        return count;
+    }
     char *playlist=uakino_playlist_page(source->url,error,error_size);
     if(playlist){
         int count=0,serial=0;

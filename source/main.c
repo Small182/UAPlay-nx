@@ -2065,8 +2065,11 @@ int main(void) {
                    catalog_hero_focus==0 &&
                    (key==SDL_CONTROLLER_BUTTON_DPAD_UP ||
                     key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)){
-                    if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && chosen==0 && n>0){
-                        /* First poster points directly to the shelf's More button. */
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && n>0 &&
+                       (chosen>=5 || chosen==n-1)){
+                        /* The rightmost visible poster points to More. The
+                           horizontal row shifts once the selection reaches
+                           its sixth card, keeping that card on the right. */
                         catalog_hero_focus=3;
                         continue;
                     }
@@ -2076,7 +2079,7 @@ int main(void) {
                         n=load_category(category,query,movies,message,sizeof(message));
                         chosen=0;catalog_hero_focus=0;
                     }else if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)
-                        catalog_hero_focus=n?(chosen%6>=4?3:1):7;
+                        catalog_hero_focus=n?1:7;
                     continue;
                 }
                 if(category==0 && !expanded_catalog && !query[0] &&

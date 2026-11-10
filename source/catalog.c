@@ -902,7 +902,189 @@ int uakino_search(const Movie *movie, Source *items, int max,
     return count;
 }
 
+typedef struct {
+    char label[96];
+    char url[1024];
+} ResolvedPlayerLink;
+static ResolvedPlayerLink resolved_audio[UAKINO_PLAYER_TRACK_MAX];
+static ResolvedPlayerLink resolved_subtitles[UAKINO_PLAYER_TRACK_MAX];
+static int resolved_audio_count, resolved_subtitle_count;
+
+int uakino_resolved_audio_count(void) { return resolved_audio_count; }
+int uakino_resolved_subtitle_count(void) { return resolved_subtitle_count; }
+const char *uakino_resolved_audio_url(int i) {
+    return i>=0 && i<resolved_audio_count?resolved_audio[i].url:"";
+}
+const char *uakino_resolved_audio_label(int i) {
+    return i>=0 && i<resolved_audio_count?resolved_audio[i].label:"";
+}
+const char *uakino_resolved_subtitle_url(int i) {
+    return i>=0 && i<resolved_subtitle_count?resolved_subtitles[i].url:"";
+}
+const char *uakino_resolved_subtitle_label(int i) {
+    return i>=0 && i<resolved_subtitle_count?resolved_subtitles[i].label:"";
+}
+const char *uakino_resolved_subtitle(void) {
+    return uakino_resolved_subtitle_url(0);
+}
+
+/* PlayerJS accepts 'subtitle' and 'file' as quoted JS/JSON properties.
+   Read only the value of that property, rather than taking the first URL
+   anywhere after the word (which used to mistake a video URL for a subtitle).
+   The caller can continue searching from the returned cursor. */
+static const char *player_field(const char *from,const char *key,
+                                char *value,size_t capacity) {
+    size_t keylen=strlen(key);
+    const char *p=from;
+    while((p=strstr(p,key))!=NULL){
+        const char *begin=p, *q=p+keylen;
+        if((begin>from && (isalnum((unsigned char)begin[-1]) ||
+                           begin[-1]=='_' || begin[-1]=='-')) ||
+           (isalnum((unsigned char)*q) || *q=='_' || *q=='-')){p=q;continue;}
+        if(*q=='"' || *q=='\'')q++;
+        while(isspace((unsigned char)*q))q++;
+        if(*q!=':' && *q!='='){p+=keylen;continue;}
+        q++;
+        while(isspace((unsigned char)*q))q++;
+        if(*q!='"' && *q!='\''){p+=keylen;continue;}
+        char quote=*q++;
+        size_t len=0;
+        while(*q && *q!=quote && len+1<capacity){
+            if(*q=='\\' && q[1]){
+                q++;
+                if(*q=='u' && !strncmp(q+1,"0026",4)){
+                    value[len++]='&';q+=5;continue;
+                }
+                if(*q=='n'||*q=='r'||*q=='t'){
+                    value[len++]=' ';q++;continue;
+                }
+            }
+            value[len++]=*q++;
+        }
+        value[len]=0;
+        return *q==quote?q+1:q;
+    }
+    return NULL;
+}
+static int is_video_link(const char *url) {
+    return (strstr(url,".m3u8") || strstr(url,".mp4") ||
+            strstr(url,".mpd")) && !strstr(url,"trailer");
+}
+static void add_resolved_link(ResolvedPlayerLink *list,int *count,
+                              const char *label,const char *url) {
+    if(!url[0] || *count>=UAKINO_PLAYER_TRACK_MAX)return;
+    for(int i=0;i<*count;i++)
+        if(!strcmp(list[i].url,url))return;
+    ResolvedPlayerLink *dst=&list[(*count)++];
+    snprintf(dst->label,sizeof(dst->label),"%s",
+             label && label[0]?label:"Основна");
+    snprintf(dst->url,sizeof(dst->url),"%s",url);
+}
+static void extract_subtitle_links(const char *field) {
+    const char *p=field;
+    while(*p && resolved_subtitle_count<UAKINO_PLAYER_TRACK_MAX){
+        while(*p==',' || *p==';' || *p==')' ||
+              isspace((unsigned char)*p))p++;
+        char label[96]="Субтитри";
+        if(*p=='['){
+            const char *end=strchr(++p,']');
+            if(!end)break;
+            snprintf(label,sizeof(label),"%.*s",(int)(end-p),p);
+            p=end+1;
+        }
+        const char *start=p;
+        if(!strncmp(start,"//",2)){}
+        else if(strncmp(start,"https://",8) && strncmp(start,"http://",7)){
+            while(*p && *p!=',' && *p!=';' && *p!='[' && *p!=')')p++;
+            continue;
+        }
+        while(*p && *p!=',' && *p!=';' && *p!='[' && *p!=')' &&
+              *p!='"' && *p!='\'' && !isspace((unsigned char)*p))p++;
+        size_t n=(size_t)(p-start);
+        char url[1024];
+        if(n>8 && n<sizeof(url)-7){
+            if(!strncmp(start,"//",2))
+                snprintf(url,sizeof(url),"https:%.*s",(int)n,start);
+            else snprintf(url,sizeof(url),"%.*s",(int)n,start);
+            add_resolved_link(resolved_subtitles,&resolved_subtitle_count,label,url);
+        }
+    }
+}
+static void extract_subtitle(const char *html) {
+    char value[8192];
+    const char *p=html;
+    for(int i=0;i<20 && (p=player_field(p,"subtitle",value,sizeof(value)));i++)
+        extract_subtitle_links(value);
+}
+static int extract_playerjs_audio(const char *html,char *stream,int size) {
+    char field[8192];
+    const char *search=html;
+    for(int attempt=0;attempt<24 &&
+        (search=player_field(search,"file",field,sizeof(field)));attempt++){
+        ResolvedPlayerLink choices[UAKINO_PLAYER_TRACK_MAX]={0};
+        int count=0;
+        const char *p=field;
+        while(*p && count<UAKINO_PLAYER_TRACK_MAX){
+            while(*p==',' || *p==';' || isspace((unsigned char)*p))p++;
+            if(*p=='['){
+                const char *end=strchr(p,']');
+                if(!end)break;
+                p=end+1; /* Quality tag, not an audio language. */
+            }
+            char label[96]="Основна";
+            if(*p=='{'){
+                const char *end=strchr(++p,'}');
+                if(!end)break;
+                snprintf(label,sizeof(label),"%.*s",(int)(end-p),p);
+                p=end+1;
+            }
+            const char *start=p;
+            if(strncmp(start,"https://",8) && strncmp(start,"http://",7) &&
+               strncmp(start,"//",2)){
+                while(*p && *p!=',' && *p!=';')p++;
+                continue;
+            }
+            while(*p && *p!=',' && *p!=';' && *p!='(' && *p!='{' &&
+                  *p!='"' && *p!='\'' && !isspace((unsigned char)*p))p++;
+            size_t n=(size_t)(p-start);
+            char url[1024]={0};
+            if(n>12 && n<sizeof(url)-7){
+                if(!strncmp(start,"//",2))
+                    snprintf(url,sizeof(url),"https:%.*s",(int)n,start);
+                else snprintf(url,sizeof(url),"%.*s",(int)n,start);
+                if(is_video_link(url)){
+                    int exists=0;
+                    for(int i=0;i<count;i++)
+                        if(!strcmp(choices[i].label,label))exists=1;
+                    if(!exists)add_resolved_link(choices,&count,label,url);
+                }
+            }
+            /* PlayerJS also supports (subtitle:[Uk]URL[En]URL) on a
+               specific media URL. Collect the linked tracks as well. */
+            if(*p=='(' && !strncmp(p,"(subtitle:",10)){
+                const char *end=strchr(p+10,')');
+                if(end && (size_t)(end-(p+10))<sizeof(field)){
+                    char subtitles[8192];
+                    snprintf(subtitles,sizeof(subtitles),"%.*s",
+                             (int)(end-(p+10)),p+10);
+                    extract_subtitle_links(subtitles);
+                    p=end+1;
+                }
+            }
+        }
+        if(count){
+            resolved_audio_count=count;
+            memcpy(resolved_audio,choices,sizeof(choices));
+            snprintf(stream,(size_t)size,"%s",resolved_audio[0].url);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int extract_media(const char *html, char *stream, int size) {
+    extract_subtitle(html);
+    if(extract_playerjs_audio(html,stream,size))return 1;
     const char *p=html;
     while ((p=strstr(p,"https://")) != NULL) {
         const char *end=p;
@@ -923,7 +1105,6 @@ static int extract_media(const char *html, char *stream, int size) {
     return 0;
 }
 
-static void extract_subtitle(const char *html);
 /* Parse actual iframe tags, not just the single hard-coded video host.
    Return a cursor for the next candidate so one failed player does not
    prevent trying the next tab/embedded player on the episode page. */
@@ -1003,28 +1184,10 @@ static int resolve_embedded(const char *html,char *stream,int size,
     return 0;
 }
 
-static char resolved_subtitle[1024];
-const char *uakino_resolved_subtitle(void) { return resolved_subtitle; }
-
-static void extract_subtitle(const char *html) {
-    const char *field=strstr(html,"subtitle:");
-    if (!field) field=strstr(html,"subtitle\":");
-    if (!field) return;
-    const char *url=strstr(field,"https://");
-    if (!url || url-field>500) return;
-    const char *end=url;
-    while (*end && *end!=',' && *end!='"' && *end!='\'' && *end!='<' &&
-           *end!=' ' && end-url < (int)sizeof(resolved_subtitle)-1) end++;
-    size_t n=(size_t)(end-url);
-    if (n>=7 && (strstr(url,".vtt") || strstr(url,".srt"))) {
-        memcpy(resolved_subtitle,url,n);
-        resolved_subtitle[n]=0;
-    }
-}
-
 int uakino_resolve(const Source *source, char *stream, int size,
                    char *error, int error_size) {
-    resolved_subtitle[0]=0;
+    resolved_subtitle_count=0;
+    resolved_audio_count=0;
     /* A Playerjs playlist leaf already contains the actual media URL. */
     if((strstr(source->url,".m3u8") || strstr(source->url,".mp4") ||
         strstr(source->url,".mpd")) &&

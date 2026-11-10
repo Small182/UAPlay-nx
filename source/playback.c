@@ -49,6 +49,24 @@ int playback_tracks(mpv_handle *player, int subtitles, MediaTrack *out, int maxi
     mpv_free_node_contents(&node);
     return count;
 }
+int playback_has_external_subtitle(mpv_handle *player,const char *url) {
+    if(!player || !url || !*url)return 0;
+    mpv_node node={0};
+    if(mpv_get_property(player,"track-list",MPV_FORMAT_NODE,&node)<0)return 0;
+    int found=0;
+    if(node.format==MPV_FORMAT_NODE_ARRAY){
+        mpv_node_list *list=node.u.list;
+        for(int i=0;i<list->num;i++){
+            const mpv_node *track=&list->values[i];
+            if(!strcmp(string_field(track,"type"),"sub") &&
+               !strcmp(string_field(track,"external-filename"),url)){
+                found=1;break;
+            }
+        }
+    }
+    mpv_free_node_contents(&node);
+    return found;
+}
 int playback_select_track(mpv_handle *player, int subtitles, int id) {
     if (!player) return 0;
     char number[20];

@@ -24,6 +24,8 @@ static int episode_count,season_ids[64],season_count,selected_season,selected_ep
 static int active_episode_variant=-1;
 static MediaTrack tracks[TRACKS_MAX];
 static int track_count,selected_track,subtitle_picker;
+#define SOURCE_AUDIO_TRACK_BASE 10000
+#define SOURCE_SUBTITLE_TRACK_BASE 20000
 static int selected_video_option;
 /* Only player controls useful on the console: speed, volume, subtitle size,
    and HLS quality. Keep mpv's existing option storage intact. */
@@ -1885,6 +1887,33 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_X || key==SDL_CONTROLLER_BUTTON_Y){
                     subtitle_picker=key==SDL_CONTROLLER_BUTTON_X;
                     track_count=playback_tracks(player,subtitle_picker,tracks,TRACKS_MAX);
+                    /* Even if an external subtitle failed to load into mpv,
+                       keep the provider's caption URL available for retry. */
+                    if(subtitle_picker)
+                        for(int i=0;i<uakino_resolved_subtitle_count() &&
+                            track_count<TRACKS_MAX;i++){
+                            if(playback_has_external_subtitle(player,
+                                   uakino_resolved_subtitle_url(i)))continue;
+                            MediaTrack *choice=&tracks[track_count++];
+                            choice->id=-(SOURCE_SUBTITLE_TRACK_BASE+i+1);
+                            choice->selected=0;
+                            snprintf(choice->label,sizeof(choice->label),
+                                     "Зовнішні: %.165s",
+                                     uakino_resolved_subtitle_label(i));
+                        }
+                    /* PlayerJS can offer separately encoded dubbed versions
+                       as distinct stream URLs, not as native mpv tracks. */
+                    if(!subtitle_picker && uakino_resolved_audio_count()>1)
+                        for(int i=0;i<uakino_resolved_audio_count() &&
+                            track_count<TRACKS_MAX;i++){
+                            MediaTrack *choice=&tracks[track_count++];
+                            choice->id=-(SOURCE_AUDIO_TRACK_BASE+i+1);
+                            choice->selected=!strcmp(playing_url,
+                                                      uakino_resolved_audio_url(i));
+                            snprintf(choice->label,sizeof(choice->label),
+                                     "Озвучка: %.165s",
+                                     uakino_resolved_audio_label(i));
+                        }
                     /* In Playerjs playlists, a different dub is often a
                        different HLS URL, not an mpv-embedded audio track. */
                     if(!subtitle_picker && active_episode_variant>=0 &&
@@ -1920,7 +1949,35 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && selected_track<track_count-1)selected_track++;
                 if(key==SDL_CONTROLLER_BUTTON_A && track_count){
                     int id=tracks[selected_track].id;
-                    if(!subtitle_picker && id<0 && -id<=episode_count){
+                    if(subtitle_picker && id<=-(SOURCE_SUBTITLE_TRACK_BASE+1) &&
+                       id>=-(SOURCE_SUBTITLE_TRACK_BASE+UAKINO_PLAYER_TRACK_MAX)){
+                        int index=-id-SOURCE_SUBTITLE_TRACK_BASE-1;
+                        const char *args[]={"sub-add",
+                            uakino_resolved_subtitle_url(index),"select",
+                            uakino_resolved_subtitle_label(index),"",NULL};
+                        mpv_command_async(player,0,args);
+                        mpv_set_property_string(player,"sub-visibility","yes");
+                        page=PLAYER;
+                    }else if(!subtitle_picker && id<=-(SOURCE_AUDIO_TRACK_BASE+1) &&
+                       id>=-(SOURCE_AUDIO_TRACK_BASE+UAKINO_PLAYER_TRACK_MAX)){
+                        int variant=-id-SOURCE_AUDIO_TRACK_BASE-1;
+                        const char *url=uakino_resolved_audio_url(variant);
+                        if(url[0] && strcmp(playing_url,url)){
+                            double position=0;
+                            if(player)mpv_get_property(player,"time-pos",
+                                                       MPV_FORMAT_DOUBLE,&position);
+                            resume_at=position>0?position:0;
+                            snprintf(playing_url,sizeof(playing_url),"%s",url);
+                            snprintf(pending_subtitle,sizeof(pending_subtitle),"%s",
+                                     uakino_resolved_subtitle());
+                            apply_hls_quality(player);
+                            configure_stream(player,url);
+                            command(player,"loadfile",url);
+                            video_started_at=SDL_GetTicks();video_loaded=0;
+                            controls_until=SDL_GetTicks()+3000;
+                        }
+                        page=PLAYER;
+                    }else if(!subtitle_picker && id<0 && -id<=episode_count){
                         int variant=-id-1;
                         if(variant==active_episode_variant){page=PLAYER;continue;}
                         Source alternate={0};
@@ -2340,8 +2397,17 @@ int main(void) {
                     text_cache_destroy();
                 }
                 if(event->event_id==MPV_EVENT_FILE_LOADED && pending_subtitle[0]){
-                    const char *args[]={"sub-add",pending_subtitle,"auto","Українські", "uk",NULL};
-                    mpv_command_async(player,0,args);
+                    /* 'auto' can leave an external subtitle unselected, even
+                       when the file has no embedded captions. Explicitly
+                       select the first offered track; keep others available
+                       in the subtitle picker. */
+                    for(int i=0;i<uakino_resolved_subtitle_count();i++){
+                        const char *args[]={"sub-add",
+                            uakino_resolved_subtitle_url(i),
+                            i==0?"select":"auto",
+                            uakino_resolved_subtitle_label(i),"",NULL};
+                        mpv_command_async(player,0,args);
+                    }
                     pending_subtitle[0]=0;
                 }
                 if(event->event_id==MPV_EVENT_FILE_LOADED)video_loaded=1;

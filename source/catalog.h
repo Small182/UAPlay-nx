@@ -69,7 +69,16 @@ int catalog_rank_sources(const Movie *movie, Source *items, int count,
                          int preferred_provider);
 int uakino_resolve(const Source *source, char *stream, int size,
                    char *error, int error_size);
-/* Optional WebVTT URL announced by the last successfully resolved embed. */
+/* Subtitle and alternate-dub links announced by the last resolved player.
+   Indices remain valid until the next call to uakino_resolve(). */
+#define UAKINO_PLAYER_TRACK_MAX 12
+int uakino_resolved_subtitle_count(void);
+const char *uakino_resolved_subtitle_url(int index);
+const char *uakino_resolved_subtitle_label(int index);
+int uakino_resolved_audio_count(void);
+const char *uakino_resolved_audio_url(int index);
+const char *uakino_resolved_audio_label(int index);
+/* Compatibility accessor for the first external subtitle. */
 const char *uakino_resolved_subtitle(void);
 int uakino_episodes(const Source *source, Episode *items, int max,
                     char *error, int error_size);

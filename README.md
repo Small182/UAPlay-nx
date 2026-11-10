@@ -4,7 +4,7 @@ Native controller-first app on **libnx + SDL2 + libmpv**, using TMDB movie/serie
 
 ## Install
 
-1. Open [GitHub Actions](https://github.com/Small182/Lampa-nx/actions) and download the latest successful **UAPlay-native** artifact.
+
 2. Extract `UAPlay.nro` to the SD card at `sdmc:/switch/UAPlay.nro`.
 3. Start Homebrew Menu in **full application mode** (hold R while opening a game), select UAPlay.
 

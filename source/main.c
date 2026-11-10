@@ -333,10 +333,12 @@ static const char *fs = "precision mediump float;varying vec2 tc;"
                         "+min(max(q.x,q.y),0.0)-shape.z;"
                         "float a=1.0-smoothstep(-1.0,1.5,d);"
                         "vec3 rgb=tint.rgb;"
-                        "if(gradient>1.5)rgb=mix(vec3(.995,.984,.971),"
-                        "vec3(.914,.932,.951),tc.y);"
-                        "else if(gradient>.5)rgb=mix(vec3(.079,.112,.164),"
-                        "vec3(.019,.027,.041),tc.y);"
+                        /* Switch Basic White / Basic Black: gently shaded,
+                           neutral surfaces rather than blue-black or beige. */
+                        "if(gradient>1.5)rgb=mix(vec3(.957,.960,.965),"
+                        "vec3(.902,.907,.914),tc.y);"
+                        "else if(gradient>.5)rgb=mix(vec3(.205,.208,.213),"
+                        "vec3(.135,.139,.145),tc.y);"
                         "gl_FragColor=texture2D(image,tc)*vec4(rgb,tint.a)*a;}";
 static void *proc(void *ctx, const char *name) {
     (void)ctx; return SDL_GL_GetProcAddress(name);
@@ -397,9 +399,22 @@ static void box_alpha(Paint *p,int x,int y,int w,int h,float r,float g,float b,f
     float vertices[]={x0,y0,0,0, x1,y0,1,0, x0,y1,0,1,
                       x1,y0,1,0, x1,y1,1,1, x0,y1,0,1};
     glUseProgram(p->program);
-    /* Solid UI colors invert for the light palette, not poster/video pixels. */
+    /* Neutral Switch-inspired surfaces. Distinctly colored accents and
+       bright buttons keep their original colors. This runs only for flat UI
+       rectangles, never movie posters, textures or video overlays. */
     if(ui_theme_enabled && ui_light_theme && p->tex==p->solid_tex && !ui_gradient_pass){
-        r=1.f-r;g=1.f-g;b=1.f-b;
+        float top=fmaxf(r,fmaxf(g,b)),bottom=fminf(r,fminf(g,b));
+        if(top<=.55f && top-bottom<=.22f){
+            float v=.2126f*r+.7152f*g+.0722f*b;
+            r=g=b=fminf(.992f,.93f+.24f*v);
+        }else{r=1.f-r;g=1.f-g;b=1.f-b;}
+    }else if(ui_theme_enabled && !ui_light_theme &&
+             p->tex==p->solid_tex && !ui_gradient_pass){
+        float top=fmaxf(r,fmaxf(g,b)),bottom=fminf(r,fminf(g,b));
+        if(top<=.55f && top-bottom<=.22f){
+            float v=.2126f*r+.7152f*g+.0722f*b;
+            r=g=b=.19f+.52f*v;
+        }
     }
     glUniform4f(p->tint,r,g,b,a);
     glUniform3f(p->shape,(float)w,(float)h,(float)radius);
@@ -475,7 +490,13 @@ static GLuint create_glyph_texture(const SDL_Surface *rgba){
 static void text_color(Paint *p,const char *str,int x,int y,int limit,
                        float r,float g,float b) {
     if (!str || !*str) return;
-    if(ui_theme_enabled && ui_light_theme){r=1.f-r;g=1.f-g;b=1.f-b;}
+    if(ui_theme_enabled){
+        float top=fmaxf(r,fmaxf(g,b)),bottom=fminf(r,fminf(g,b));
+        if(top-bottom<=.22f){
+            float tone=.2126f*r+.7152f*g+.0722f*b;
+            r=g=b=ui_light_theme?1.f-tone:tone;
+        }else if(ui_light_theme){r=1.f-r;g=1.f-g;b=1.f-b;}
+    }
     TTF_Font *font=choose_font(p,str);
     if(!font)return;
     TextTexture *found=NULL;
@@ -609,18 +630,25 @@ static void card_title(Paint *p,const char *title,int x,int y,int width){
 }
 static void accent(float *r,float *g,float *b){
     if(ui_light_theme){
-        /* box_alpha inverts light-theme UI fills. These pre-inverted
-           values produce Nintendo-style bright blue (#03B0ED). */
-        *r=.99f;*g=.31f;*b=.07f;
+        /* Pre-inverted Switch blue; actual output approximately #4465D5. */
+        *r=.73f;*g=.60f;*b=.16f;
         return;
     }
-    *r=ui_accent_alt?.43f:.89f;
-    *g=ui_accent_alt?.73f:.68f;
-    *b=ui_accent_alt?.84f:.39f;
+    /* Basic Black uses mint/turquoise for active items. */
+    *r=ui_accent_alt?.23f:.24f;
+    *g=ui_accent_alt?.68f:.84f;
+    *b=ui_accent_alt?.88f:.73f;
 }
 static void selection_frame(Paint *p,int x,int y,int w,int h){
-    float r,g,b;accent(&r,&g,&b);
-    box_alpha(p,x-4,y-4,w+8,h+8,r,g,b,1.f,18);
+    /* The Switch focus indicator is an outline, not a filled overlay.
+       This keeps selected text and poster images unobscured. */
+    float r=ui_light_theme?.69f:.20f;
+    float g=ui_light_theme?.13f:.67f;
+    float b=ui_light_theme?.20f:.85f;
+    box_alpha(p,x-3,y-3,w+6,3,r,g,b,1.f,2);
+    box_alpha(p,x-3,y+h,w+6,3,r,g,b,1.f,2);
+    box_alpha(p,x-3,y,3,h,r,g,b,1.f,2);
+    box_alpha(p,x+w,y,3,h,r,g,b,1.f,2);
 }
 static void button(Paint *p,const char *label,int x,int y,int w,int h,int primary){
     box_alpha(p,x,y,w,h,primary?.89f:.15f,primary?.91f:.18f,
@@ -695,6 +723,7 @@ static void list_row(Paint *p,const char *title,int y,int selected,
     if(selected){
         float r,g,b;accent(&r,&g,&b);
         box_alpha(p,UI_EDGE,y+9,4,UI_ROW_HEIGHT-18,r,g,b,1.f,2);
+        selection_frame(p,UI_EDGE,y,1216,UI_ROW_HEIGHT);
     }
     text(p,title,UI_EDGE+22,y+9,detail?915:1155);
     if(detail)text_muted(p,detail,1052,y+13,178);
@@ -704,7 +733,7 @@ static Page footer_page;
 static void footer(Paint *p,const char *message) {
     box_alpha(p,0,UI_FOOTER_TOP,1280,720-UI_FOOTER_TOP,.047f,.057f,.070f,1.f,0);
     /* Monochrome Switch-style controller legend, independent of UI accent. */
-    float ar=.94f,ag=.95f,ab=.97f;
+    float ar=.62f,ag=.64f,ab=.66f;
     box_alpha(p,UI_EDGE,UI_FOOTER_TOP,1216,2,ar,ag,ab,.78f,0);
     char position[30];
     snprintf(position,sizeof(position),"%d / %d",footer_position,footer_total);
@@ -901,7 +930,11 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                       i==settings_selected?.37f:.14f,1.f,16);
             if(i==settings_selected){float r,g,b;accent(&r,&g,&b);
                 box_alpha(p,32,y+15,5,42,r,g,b,1.f,2);}
-            text(p,items[i],55,y+17,372);
+            if(i==settings_selected){
+                float r,g,b;accent(&r,&g,&b);
+                text_font(p,items[i],55,y+17,372,p->font,r,g,b);
+                selection_frame(p,32,y,417,72);
+            }else text(p,items[i],55,y+17,372);
         }
         box_alpha(p,475,136,773,480,.10f,.12f,.15f,1.f,20);
         headline(p,items[settings_selected],513,174,685);
@@ -909,7 +942,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         if(settings_selected==0)snprintf(description,sizeof(description),"Оформлення: %s",ui_light_theme?"Світла тема":"Темна тема");
         else if(settings_selected==1){
             if(ui_light_theme)snprintf(description,sizeof(description),"Акцент світлої теми: синій Nintendo Switch");
-            else snprintf(description,sizeof(description),"Акцент: %s",ui_accent_alt?"Блакитний":"Золотистий");
+            else snprintf(description,sizeof(description),"Акцент: %s",ui_accent_alt?"Блакитний":"Бірюзовий");
         }
         else if(settings_selected==2)snprintf(description,sizeof(description),"Швидкість: %.2f · гучність: %.0f",video_options[0],video_options[1]);
         else if(settings_selected==3)snprintf(description,sizeof(description),"Пріоритет: %s",source_mode==0?"Усі джерела":source_mode==1?"UAFlix":"UASerials");

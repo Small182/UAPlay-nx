@@ -97,9 +97,22 @@ static const char *headings[]={"Популярні фільми","Популяр
 #define ANIMATION_LAST 15
 static int expanded_catalog=0;
 /* 0: posters, 1: Watch, 2: Favorite, 3: All,
-   7...11: main navigation, 12...14: expanded sorting/back controls,
+   5: search, 6: settings, 7...11: main navigation,
+   12...14: expanded sorting/back controls,
    16...: subsection tabs, 18: clear watch history. */
 static int catalog_hero_focus=0;
+static int header_focus_step(int focus,int key){
+    if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT){
+        if(focus==6)return 5;
+        if(focus==5)return 11;
+        if(focus>=8 && focus<=11)return focus-1;
+    }else if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT){
+        if(focus>=7 && focus<=10)return focus+1;
+        if(focus==11)return 5;
+        if(focus==5)return 6;
+    }
+    return focus;
+}
 static int clear_history_confirm=0;
 /* 0 popularity, 1 TMDB rating. */
 static int catalog_sort_mode=0;
@@ -957,10 +970,12 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         }
         /* Search is a real touch target, not a missing Unicode glyph. */
         box_alpha(p,767,17,277,47,.13f,.16f,.19f,1.f,15);
+        if(catalog_hero_focus==5)selection_frame(p,767,17,277,47);
         search_icon(p,800,38,.13f,.16f,.19f);
         text_font(p,"Пошук",831,17+(47-text_height(p,"Пошук",p->font_small))/2,
                   177,p->font_small,1.f,1.f,1.f);
         box_alpha(p,1058,17,53,47,.13f,.16f,.19f,1.f,15);
+        if(catalog_hero_focus==6)selection_frame(p,1058,17,53,47);
         gear_icon(p,1085,40,.13f,.16f,.19f);
         time_t now=time(NULL);
         struct tm *local=localtime(&now);
@@ -1060,15 +1075,6 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                 button(p,library_favorite(&movies[active])?
                        "✓  У вибраному":"+  У вибране",hero_favorite_x,hero_button_y,
                        218,HERO_BUTTON_H,0);
-                if(movies[active].rating>0.f){
-                    char score[36];
-                    snprintf(score,sizeof(score),"%.1f",movies[active].rating);
-                    int badge_x=hero_favorite_x+233;
-                    box_alpha(p,badge_x,hero_button_y+9,60,32,
-                              .16f,.20f,.24f,1.f,9);
-                    text_center_button(p,score,badge_x,hero_button_y+9,60,32,
-                                       p->font_tiny,.94f,.96f,.98f);
-                }
             }
             int section_tabs=subsection_count(ui_category);
             if(section_tabs){
@@ -1888,6 +1894,11 @@ int main(void) {
             if(key==SDL_CONTROLLER_BUTTON_START){running=0;continue;}
             if(page==CATALOG){
                 if(key==SDL_CONTROLLER_BUTTON_BACK){page=SETTINGS;continue;}
+                if(key==SDL_CONTROLLER_BUTTON_A && catalog_hero_focus==5)
+                    key=SDL_CONTROLLER_BUTTON_X;
+                else if(key==SDL_CONTROLLER_BUTTON_A && catalog_hero_focus==6){
+                    settings_selected=0;page=SETTINGS;continue;
+                }
                 if(key==SDL_CONTROLLER_BUTTON_RIGHTSTICK){
                     if(category==11 || category==12)continue;
                     expanded_catalog=!expanded_catalog;chosen=0;catalog_hero_focus=0;continue;
@@ -1910,11 +1921,8 @@ int main(void) {
                         if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)catalog_hero_focus=11;
                         if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && n)
                             catalog_hero_focus=0;
-                    }else if(catalog_hero_focus>=7 && catalog_hero_focus<=11){
-                        if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus>7)
-                            catalog_hero_focus--;
-                        if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && catalog_hero_focus<11)
-                            catalog_hero_focus++;
+                    }else if(catalog_hero_focus>=5 && catalog_hero_focus<=11){
+                        catalog_hero_focus=header_focus_step(catalog_hero_focus,key);
                         if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)
                             catalog_hero_focus=focused_subsection(category);
                     }else{
@@ -1947,11 +1955,8 @@ int main(void) {
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)
                         catalog_hero_focus=n?1:7+tab_for_category(category);
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)catalog_hero_focus=0;
-                }else if(catalog_hero_focus>=7 && catalog_hero_focus<=11){
-                    if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus>7)
-                        catalog_hero_focus--;
-                    if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && catalog_hero_focus<11)
-                        catalog_hero_focus++;
+                }else if(catalog_hero_focus>=5 && catalog_hero_focus<=11){
+                    catalog_hero_focus=header_focus_step(catalog_hero_focus,key);
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)
                         catalog_hero_focus=expanded_catalog?12+sort_button_for_mode(catalog_sort_mode):
                             (subsection_count(category)?focused_subsection(category):n?1:0);

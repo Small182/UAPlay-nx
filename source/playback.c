@@ -1,4 +1,5 @@
 #include "playback.h"
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -20,6 +21,13 @@ static int int_field(const mpv_node *map, const char *key) {
     if (field->format==MPV_FORMAT_FLAG) return field->u.flag;
     return 0;
 }
+static int has_track_name(const char *value) {
+    while (*value) {
+        if (!isspace((unsigned char)*value)) return 1;
+        value++;
+    }
+    return 0;
+}
 int playback_tracks(mpv_handle *player, int subtitles, MediaTrack *out, int maximum) {
     int count=0;
     if (subtitles && maximum>0) {
@@ -36,11 +44,18 @@ int playback_tracks(mpv_handle *player, int subtitles, MediaTrack *out, int maxi
         for (int i=0; i<list->num && count<maximum; i++) {
             const mpv_node *track=&list->values[i];
             if (strcmp(string_field(track,"type"),subtitles?"sub":"audio")) continue;
+            const char *lang=string_field(track,"lang");
+            const char *title=string_field(track,"title");
+            /* HLS manifests often expose several anonymous audio stream
+               entries representing renditions of the same soundtrack.
+               They show up as Audio #1/#2/#3 but provide no meaningful
+               dubbed-language choice. Keep only named/language-tagged mpv
+               audio tracks; actual PlayerJS dub URLs appear separately. */
+            if (!subtitles && !has_track_name(lang) && !has_track_name(title))
+                continue;
             MediaTrack *dst=&out[count++];
             dst->id=int_field(track,"id");
             dst->selected=int_field(track,"selected");
-            const char *lang=string_field(track,"lang");
-            const char *title=string_field(track,"title");
             snprintf(dst->label,sizeof(dst->label),"%s #%d  %s  %s%s",
                      subtitles?"Субтитри":"Аудіо",dst->id,lang,title,
                      dst->selected?" [активна]":"");

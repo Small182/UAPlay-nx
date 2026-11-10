@@ -295,7 +295,7 @@ static int load_category(int category,const char *query,Movie *movies,char *mess
 }
 typedef struct {
     GLuint program, vbo, tex, solid_tex;
-    GLint tint, shape, gradient;
+    GLint tint, shape, gradient, sampler;
     TTF_Font *font;
     TTF_Font *font_big;
     TTF_Font *font_small;
@@ -372,6 +372,9 @@ static int paint_init(Paint *p) {
     p->tint=glGetUniformLocation(p->program,"tint");
     p->shape=glGetUniformLocation(p->program,"shape");
     p->gradient=glGetUniformLocation(p->program,"gradient");
+    p->sampler=glGetUniformLocation(p->program,"image");
+    glUseProgram(p->program);
+    glUniform1i(p->sampler,0);
     glGenBuffers(1,&p->vbo);
     glGenTextures(1,&p->tex);
     p->solid_tex=p->tex;
@@ -1169,10 +1172,10 @@ int main(void) {
         mpv_set_option_string(player,"sub-visibility","yes");
         mpv_set_option_string(player,"sub-auto","fuzzy");
         mpv_set_option_string(player,"cache","yes");
-        /* Bound mpv's demuxer queue and back-buffer across long TV sessions. */
-        mpv_set_option_string(player,"demuxer-max-bytes","8MiB");
+        /* Retain enough buffering for high bitrate streams while constraining
+           old frames that remain in the back-buffer after seeking. */
+        mpv_set_option_string(player,"demuxer-max-bytes","16MiB");
         mpv_set_option_string(player,"demuxer-max-back-bytes","2MiB");
-        mpv_set_option_string(player,"cache-secs","12");
         mpv_set_option_string(player,"video-sync","audio");
         mpv_request_log_messages(player,"warn");
         if(mpv_initialize(player)>=0){
@@ -1206,6 +1209,7 @@ int main(void) {
     int stick_last_key=0;
     int media_playback_mode=0;
     while(running){
+        Uint32 frame_started_at=SDL_GetTicks();
         stick_arrow(pad,&stick_last_time,&stick_last_key);
         SDL_Event e;
         while(SDL_PollEvent(&e)){
@@ -1763,6 +1767,13 @@ int main(void) {
             for (;;) {
                 mpv_event *event=mpv_wait_event(player,0);
                 if(event->event_id==MPV_EVENT_NONE)break;
+                if(event->event_id==MPV_EVENT_START_FILE){
+                    /* Eden and some GLES drivers may recycle renderer-side
+                       resources during source switches. Discard old glyph
+                       handles once per file rather than keeping stale GL
+                       textures for the whole application session. */
+                    text_cache_destroy();
+                }
                 if(event->event_id==MPV_EVENT_FILE_LOADED && pending_subtitle[0]){
                     const char *args[]={"sub-add",pending_subtitle,"auto","Українські", "uk",NULL};
                     mpv_command_async(player,0,args);
@@ -1851,6 +1862,18 @@ int main(void) {
                                       {MPV_RENDER_PARAM_FLIP_Y,&flip},
                                       {MPV_RENDER_PARAM_INVALID,NULL}};
             int render_result=mpv_render_context_render(render,frame);
+            /* libmpv explicitly does not preserve all OpenGL state (viewport,
+               scissor, blend factors). Without restoring it, transparent
+               text glyphs may render as solid white rectangles in Eden. */
+            glBindFramebuffer(GL_FRAMEBUFFER,0);
+            glViewport(0,0,1280,720);
+            glDisable(GL_SCISSOR_TEST);
+            glDisable(GL_DEPTH_TEST);
+            glDisable(GL_CULL_FACE);
+            glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
+            glEnable(GL_BLEND);
+            glBlendEquation(GL_FUNC_ADD);
+            glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
             if(!video_loaded){
                 box(&paint,0,0,1280,720,.035f,.044f,.059f);
                 box_alpha(&paint,35,33,168,53,.10f,.15f,.22f,.95f,14);
@@ -1885,10 +1908,11 @@ int main(void) {
                  query[0]?"Результати пошуку":headings[category],message);
         }
         SDL_GL_SwapWindow(window);
-        /* Menus have no animation requiring 60 fps. Drawing them at roughly
-           30 fps avoids constant GPU load and heat during long sessions;
-           keep the video renderer on its original refresh cadence. */
-        SDL_Delay(page==PLAYER?16:30);
+        /* Do not stack a fixed sleep on top of the time that Eden/Switch
+           already spent drawing or waiting for VSync. */
+        Uint32 frame_elapsed=SDL_GetTicks()-frame_started_at;
+        Uint32 frame_budget=page==PLAYER?16u:33u;
+        if(frame_elapsed<frame_budget)SDL_Delay(frame_budget-frame_elapsed);
     }
     if(media_playback_mode)appletSetMediaPlaybackState(false);
     catalog_loader_shutdown();

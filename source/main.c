@@ -909,27 +909,39 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             if(n)text_muted(p,movies[chosen].title,54,635,1150);
         }else{
             int active=chosen>=0 && chosen<n?chosen:0;
-            box_alpha(p,UI_EDGE,92,1216,222,.09f,.11f,.14f,1.f,22);
+            enum { HERO_Y=92, HERO_W=1216, HERO_H=222, HERO_PAD=12,
+                   HERO_POSTER_W=132, HERO_BUTTON_H=50, HERO_BUTTON_GAP=12 };
+            const int hero_left=UI_EDGE+HERO_PAD;
+            const int hero_top=HERO_Y+HERO_PAD;
+            const int hero_bottom=HERO_Y+HERO_H-HERO_PAD;
+            const int hero_poster_x=UI_EDGE+HERO_W-HERO_PAD-HERO_POSTER_W;
+            const int hero_button_y=hero_bottom-HERO_BUTTON_H;
+            const int hero_favorite_x=hero_left+205+HERO_BUTTON_GAP;
+            box_alpha(p,UI_EDGE,HERO_Y,HERO_W,HERO_H,.09f,.11f,.14f,1.f,22);
             if(n){
-                /* Shared content inset: title/poster begin on the same top
-                   line; poster/buttons finish on the same bottom line. */
-                poster(p,&movies[active],1086,106,132,197,&poster_budget);
-                headline(p,movies[active].title,62,106,967);
+                /* All four inner edges use the same 12px inset, following
+                   the user's corrected Switch-style reference layout. */
+                poster(p,&movies[active],hero_poster_x,hero_top,
+                       HERO_POSTER_W,hero_bottom-hero_top,&poster_budget);
+                headline(p,movies[active].title,hero_left,hero_top,967);
                 char tag[110];
                 snprintf(tag,sizeof(tag),"%s  ·  %s  ·  TMDB",movies[active].year,
                          movies[active].series?"Серіал":"Фільм");
-                text_muted(p,tag,62,159,890);
-                wrapped(p,movies[active].overview,62,198,949,2,27,
+                text_muted(p,tag,hero_left,hero_top+50,890);
+                wrapped(p,movies[active].overview,hero_left,hero_top+90,949,2,27,
                         p->font_small,.74f,.79f,.84f);
             }else{
-                headline(p,"Не знайдено матеріалів",63,121,900);
-                text_muted(p,"Спробуйте інший розділ або пошуковий запит",63,185,920);
+                headline(p,"Не знайдено матеріалів",hero_left,hero_top+14,900);
+                text_muted(p,"Спробуйте інший розділ або пошуковий запит",hero_left,hero_top+78,920);
             }
-            if(n && catalog_hero_focus==1)selection_frame(p,62,253,205,50);
-            if(n && catalog_hero_focus==2)selection_frame(p,279,253,218,50);
-            button(p,"▶  Дивитися",62,253,205,50,1);
+            if(n && catalog_hero_focus==1)
+                selection_frame(p,hero_left,hero_button_y,205,HERO_BUTTON_H);
+            if(n && catalog_hero_focus==2)
+                selection_frame(p,hero_favorite_x,hero_button_y,218,HERO_BUTTON_H);
+            button(p,"▶  Дивитися",hero_left,hero_button_y,205,HERO_BUTTON_H,1);
             button(p,n && library_favorite(&movies[active])?
-                   "✓  У вибраному":"+  У вибране",279,253,218,50,0);
+                   "✓  У вибраному":"+  У вибране",hero_favorite_x,hero_button_y,
+                   218,HERO_BUTTON_H,0);
             if(ui_category>=ANIMATION_FIRST && ui_category<=ANIMATION_LAST){
                 const char *animation_tabs[]={"Мультфільми","Мультсеріали","Аніме"};
                 const int anim_x[]={32,240,465},anim_w[]={191,208,134};

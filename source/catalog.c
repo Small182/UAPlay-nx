@@ -374,7 +374,7 @@ static char *fetch_uafresh(const char *upstream, char *error, int error_size) {
        sources page empty. A successful proxy request still takes priority. */
     int provider_page = !strncmp(upstream,"https://uaserials.my/",21) ||
                         !strncmp(upstream,"https://uafix.net/",18);
-    if(!html && (video_host || provider_page))
+    if(!html && (video_host || (provider_page && !direct_first)))
         return request(upstream,error,error_size);
     return html;
 }
@@ -539,13 +539,13 @@ int uakino_search(const Movie *movie, Source *items, int max,
     int provider_limit=max>2?max/2:max;
     search_provider("https://uafix.net", "UAFlix", 0, localized,movie->series,
                     items, &count, provider_limit, error, error_size);
-    if(count==0 && original[0] && strcmp(original,localized))
+    if(count==0 && !error[0] && original[0] && strcmp(original,localized))
         search_provider("https://uafix.net", "UAFlix", 0, original,movie->series,
                         items, &count, provider_limit, error, error_size);
     int before=count;
     search_provider("https://uaserials.my", "UASerials", 1, localized,movie->series,
                     items, &count, max, error, error_size);
-    if(count==before && original[0] && strcmp(original,localized))
+    if(count==before && !error[0] && original[0] && strcmp(original,localized))
         search_provider("https://uaserials.my", "UASerials", 1, original,movie->series,
                         items, &count, max, error, error_size);
     if (count) error[0]=0;

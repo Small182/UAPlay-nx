@@ -135,16 +135,6 @@ static int category_for_tab(int tab){
     const int destinations[]={0,1,2,ANIMATION_FIRST,11};
     return tab>=0 && tab<5?destinations[tab]:0;
 }
-static void prioritize_sources(Source *items,int count){
-    if(source_mode==0)return;
-    for(int i=0;i<count;i++)for(int j=i+1;j<count;j++){
-        int a=(source_mode==1?strstr(items[i].title,"UAFlix")!=NULL:
-                               strstr(items[i].title,"UASerials")!=NULL);
-        int b=(source_mode==1?strstr(items[j].title,"UAFlix")!=NULL:
-                               strstr(items[j].title,"UASerials")!=NULL);
-        if(b&&!a){Source temp=items[i];items[i]=items[j];items[j]=temp;}
-    }
-}
 
 /* TMDB returns only 20 titles per page. Fetch the remaining pages on an SDL
    worker so gamepad navigation and drawing never wait for ten HTTP requests. */
@@ -1718,7 +1708,7 @@ int main(void) {
                     }else{
                         message[0]=0;
                         sn=uakino_search(&movies[chosen],sources,UAKINO_MAX,message,sizeof(message));
-                        prioritize_sources(sources,sn);
+                        sn=catalog_rank_sources(&movies[chosen],sources,sn,source_mode);
                         source=0;page=SOURCES;
                     }
                 }

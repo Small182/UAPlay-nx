@@ -47,6 +47,11 @@ int catalog_load_page(const char *category, const char *query, int page,
 /* UAFresh integration: current UAFlix/UASerials sources via UAFresh worker. */
 int uakino_search(const Movie *movie, Source *items, int max,
                   char *error, int error_size);
+/* Rank candidates by title match (Ukrainian and original titles), not by
+   their position on provider search pages. preferred_provider: 0=all,
+   1=UAFlix, 2=UASerials. Returns the count after removing clear mismatches. */
+int catalog_rank_sources(const Movie *movie, Source *items, int count,
+                         int preferred_provider);
 int uakino_resolve(const Source *source, char *stream, int size,
                    char *error, int error_size);
 /* Optional WebVTT URL announced by the last successfully resolved embed. */

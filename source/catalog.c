@@ -526,6 +526,124 @@ static void search_provider(const char *host, const char *name, int provider,
     free(html);
 }
 
+/* Normalize Latin and Cyrillic titles without depending on a UTF-8 locale
+   (the Switch C locale does not perform Ukrainian case folding). Preserve
+   spaces as word boundaries so "Home" cannot match "Homeboy". */
+static void normalize_title(const char *s, size_t length, char *out, size_t cap) {
+    size_t i=0,n=0;
+    int space=0;
+    while(i<length && n+4<cap){
+        unsigned int cp=(unsigned char)s[i++];
+        if(cp>=0xc2 && cp<=0xdf && i<length &&
+           ((unsigned char)s[i]&0xc0)==0x80)
+            cp=((cp&0x1f)<<6)|((unsigned char)s[i++]&0x3f);
+        else if(cp>=0xe0 && cp<=0xef && i+1<length &&
+                ((unsigned char)s[i]&0xc0)==0x80 &&
+                ((unsigned char)s[i+1]&0xc0)==0x80){
+            cp=((cp&0x0f)<<12)|(((unsigned char)s[i]&0x3f)<<6)|
+               ((unsigned char)s[i+1]&0x3f);
+            i+=2;
+        }
+        if(cp>='A' && cp<='Z')cp+=32;
+        if(cp>=0x410 && cp<=0x42f)cp+=32;
+        else if(cp>=0x400 && cp<=0x40f)cp+=0x50;
+        else if(cp==0x490)cp=0x491; /* Ґ -> ґ */
+        int letter=(cp>='a' && cp<='z') || (cp>='0' && cp<='9') ||
+                   (cp>=0x430 && cp<=0x52f) ||
+                   (cp>=0xc0 && cp<=0x24f);
+        if(!letter){space=n>0;continue;}
+        if(space && n+1<cap)out[n++]=' ';
+        space=0;
+        if(cp<0x80)out[n++]=(char)cp;
+        else if(cp<0x800){out[n++]=(char)(0xc0|(cp>>6));
+            out[n++]=(char)(0x80|(cp&0x3f));}
+        else {out[n++]=(char)(0xe0|(cp>>12));
+            out[n++]=(char)(0x80|((cp>>6)&0x3f));
+            out[n++]=(char)(0x80|(cp&0x3f));}
+    }
+    out[n]=0;
+}
+
+static int whole_phrase(const char *haystack, const char *phrase) {
+    size_t n=strlen(phrase);
+    if(!n)return 0;
+    const char *p=haystack;
+    while((p=strstr(p,phrase))){
+        if((p==haystack || p[-1]==' ') &&
+           (p[n]==0 || p[n]==' '))return 1;
+        p++;
+    }
+    return 0;
+}
+
+static int title_variant_score(const char *variant, size_t length,
+                               const char *localized, const char *original) {
+    char candidate[512];
+    normalize_title(variant,length,candidate,sizeof(candidate));
+    if(!candidate[0])return 0;
+    if(localized[0] && !strcmp(candidate,localized))return 120;
+    if(original[0] && !strcmp(candidate,original))return 110;
+    if(localized[0] && whole_phrase(candidate,localized))return 78;
+    if(original[0] && whole_phrase(candidate,original))return 68;
+    /* Fuzzy matches are only a last resort; short names like Home should
+       never match Homeboy solely because they share a prefix. */
+    if(strlen(localized)>=6 && strstr(candidate,localized))return 32;
+    if(strlen(original)>=6 && strstr(candidate,original))return 28;
+    return 0;
+}
+
+static int source_match_score(const Movie *movie, const Source *source) {
+    char localized[512],original[512];
+    normalize_title(movie->title,strlen(movie->title),localized,sizeof(localized));
+    normalize_title(movie->original,strlen(movie->original),original,sizeof(original));
+    const char *name=strstr(source->title,": ");
+    name=name?name+2:source->title;
+    int best=0;
+    const char *part=name;
+    for(;;){
+        const char *slash=strchr(part,'/');
+        size_t length=slash?(size_t)(slash-part):strlen(part);
+        int score=title_variant_score(part,length,localized,original);
+        if(score>best)best=score;
+        if(!slash)break;
+        part=slash+1;
+    }
+    return best;
+}
+
+int catalog_rank_sources(const Movie *movie, Source *items, int count,
+                         int preferred_provider) {
+    if(!movie || !items || count<=1)return count;
+    int *scores=malloc((size_t)count*sizeof(int));
+    if(!scores)return count;
+    for(int i=0;i<count;i++)scores[i]=source_match_score(movie,&items[i]);
+    /* Stable insertion sort: source preference only breaks equal-score ties.
+       An exact title always outranks an unrelated preferred provider. */
+    const char *preferred=preferred_provider==1?"UAFlix:":
+                          preferred_provider==2?"UASerials:":NULL;
+    for(int i=1;i<count;i++){
+        Source saved=items[i];
+        int value=scores[i],j=i;
+        int saved_preferred=preferred && strstr(saved.title,preferred)==saved.title;
+        while(j>0 && (scores[j-1]<value ||
+               (scores[j-1]==value && saved_preferred &&
+                strstr(items[j-1].title,preferred)!=items[j-1].title))){
+            items[j]=items[j-1];scores[j]=scores[j-1];j--;
+        }
+        items[j]=saved;scores[j]=value;
+    }
+    /* When a provider offers an exact film title, don't bury it under
+       pages of unrelated keyword hits. For ambiguous/alternative titles,
+       keep the full fallback list so discoverability is not lost. */
+    if(scores[0]>=110){
+        while(count>0 && scores[count-1]<100)count--;
+    }else if(scores[0]>=68){
+        while(count>0 && scores[count-1]==0)count--;
+    }
+    free(scores);
+    return count;
+}
+
 int uakino_search(const Movie *movie, Source *items, int max,
                   char *error, int error_size) {
     int count=0;

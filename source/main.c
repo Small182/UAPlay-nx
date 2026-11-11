@@ -1932,7 +1932,7 @@ int main(void) {
             if(page==PLAYER && key>=0)controls_until=SDL_GetTicks()+3000;
             if(key<0)continue;
             if(clear_history_confirm && !(page==CATALOG && category==12 &&
-               catalog_hero_focus==18 && key==SDL_CONTROLLER_BUTTON_A)){
+               catalog_hero_focus==19 && key==SDL_CONTROLLER_BUTTON_A)){
                 clear_history_confirm=0;
                 if(!strncmp(message,"Натисніть A ще раз",strlen("Натисніть A ще раз")))
                     message[0]=0;
@@ -2137,6 +2137,22 @@ int main(void) {
             }
             if(page==EPISODES){
                 if(key==SDL_CONTROLLER_BUTTON_B)page=SEASONS;
+                if(key==SDL_CONTROLLER_BUTTON_Y){
+                    Episode *ep=selected_episode_item();
+                    if(ep){
+                        Source episode_source={0};
+                        snprintf(episode_source.url,sizeof(episode_source.url),"%s",ep->url);
+                        char url[2048]={0};
+                        if(uakino_resolve(&episode_source,url,sizeof(url),message,sizeof(message))){
+                            char label[96];
+                            snprintf(label,sizeof(label),"Сезон %d · Серія %d",ep->season,ep->number);
+                            int added=downloads_add(&movies[chosen],ep->season,ep->number,label,url);
+                            snprintf(message,sizeof(message),"%s",added>0?"Додано до завантажень":
+                                     added==0?"Уже в завантаженнях":"Черга завантажень заповнена");
+                        }
+                    }
+                    continue;
+                }
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && selected_episode>0)selected_episode--;
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN &&
                    selected_episode<episodes_in_season(season_ids[selected_season])-1)selected_episode++;
@@ -2248,11 +2264,16 @@ int main(void) {
                 }
                 if(!expanded_catalog && (category==11 || category==12)){
                     if(catalog_hero_focus>=16){
+                        if(catalog_hero_focus==18 && key==SDL_CONTROLLER_BUTTON_A){
+                            page=DOWNLOADS;download_selected=0;download_confirm=0;
+                            message[0]=0;continue;
+                        }
                         if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus>16)
                             catalog_hero_focus--;
-                        if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT &&
-                           catalog_hero_focus<(category==12?18:17))
-                            catalog_hero_focus++;
+                        if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT){
+                            if(catalog_hero_focus<18)catalog_hero_focus++;
+                            else if(category==12 && catalog_hero_focus==18)catalog_hero_focus=19;
+                        }
                         if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)catalog_hero_focus=11;
                         if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && n)
                             catalog_hero_focus=0;
@@ -2341,7 +2362,7 @@ int main(void) {
                                 chosen=0;
                             }
                         }
-                    }else if(!expanded_catalog && category==12 && catalog_hero_focus==18){
+                    }else if(!expanded_catalog && category==12 && catalog_hero_focus==19){
                         if(!n){
                             clear_history_confirm=0;
                             snprintf(message,sizeof(message),"Історія вже порожня");
@@ -2467,6 +2488,18 @@ int main(void) {
                 }
             }else if(page==SOURCES){
                 if(key==SDL_CONTROLLER_BUTTON_B){page=PROVIDERS;message[0]=0;}
+                if(key==SDL_CONTROLLER_BUTTON_Y && sn){
+                    if(movies[chosen].series)
+                        snprintf(message,sizeof(message),"Відкрийте серіал і виберіть серію для завантаження");
+                    else {
+                        char url[2048]={0};
+                        if(uakino_resolve(&sources[source],url,sizeof(url),message,sizeof(message))){
+                            int added=downloads_add(&movies[chosen],0,0,"",url);
+                            snprintf(message,sizeof(message),"%s",added>0?"Додано до завантажень":
+                                     added==0?"Уже в завантаженнях":"Черга завантажень заповнена");
+                        }
+                    }
+                }
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && source>0)source--;
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && source<sn-1)source++;
                 if(key==SDL_CONTROLLER_BUTTON_A && sn){

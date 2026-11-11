@@ -1956,7 +1956,10 @@ int main(void) {
                         mpv_get_property(player,"time-pos",MPV_FORMAT_DOUBLE,&position)>=0 &&
                         position>=15.0)
                         { /* Position belongs to a particular episode. */
-                            if(active_episode_variant>=0 && player_return_page==EPISODES)
+                            if(player_return_page==DOWNLOADS && download_episode)
+                                library_set_episode_progress(&playing_movie,
+                                    download_season,download_episode,position);
+                            else if(active_episode_variant>=0 && player_return_page==EPISODES)
                                 library_set_episode_progress(&playing_movie,
                                     episodes[active_episode_variant].season,
                                     episodes[active_episode_variant].number,position);
@@ -2634,7 +2637,9 @@ int main(void) {
                                  mpv_error_string(end->error),end->error);
                         page=player_return_page;
                     }else if(end && end->reason==MPV_END_FILE_REASON_EOF){
-                        if(player_return_page==EPISODES && active_episode_variant>=0)
+                        if(player_return_page==DOWNLOADS && download_episode)
+                            library_set_episode_progress(&playing_movie,download_season,download_episode,0);
+                        else if(player_return_page==EPISODES && active_episode_variant>=0)
                             library_set_episode_progress(&playing_movie,
                                 episodes[active_episode_variant].season,
                                 episodes[active_episode_variant].number,0);
@@ -2661,7 +2666,10 @@ int main(void) {
             double seconds=0;
             if(mpv_get_property(player,"time-pos",MPV_FORMAT_DOUBLE,&seconds)>=0 &&
                seconds>=15.0){
-                if(player_return_page==EPISODES && active_episode_variant>=0)
+                if(player_return_page==DOWNLOADS && download_episode)
+                    library_set_episode_progress(&playing_movie,
+                        download_season,download_episode,seconds);
+                else if(player_return_page==EPISODES && active_episode_variant>=0)
                     library_set_episode_progress(&playing_movie,
                         episodes[active_episode_variant].season,
                         episodes[active_episode_variant].number,seconds);

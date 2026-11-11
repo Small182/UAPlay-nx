@@ -2848,15 +2848,19 @@ int main(void) {
                 snprintf(message,sizeof(message),"Помилка відеорендерера mpv: %s",mpv_error_string(render_result));
                 command(player,"stop",NULL);page=player_return_page;
             }
-            if(video_loaded && SDL_GetTicks()<controls_until)draw_player_controls(&paint,player);
+            /* The battery meter belongs to the player controls overlay:
+               show and hide both at the same time while playing. */
+            if(video_loaded && SDL_GetTicks()<controls_until){
+                draw_player_controls(&paint,player);
+                battery_status_draw(&paint,1128,28,1);
+            }
             if(pending_next_episode>=0){
                 Uint32 elapsed=SDL_GetTicks()-next_episode_countdown_at;
                 int remaining=elapsed<NEXT_EPISODE_DELAY_MS?
                     (int)((NEXT_EPISODE_DELAY_MS-elapsed+999u)/1000u):0;
                 draw_next_episode_prompt(&paint,&episodes[pending_next_episode],remaining);
             }
-            /* Always visible, including when player controls auto-hide. */
-            battery_status_draw(&paint,1128,28,1);
+
         }else{
             ui_category=category;
             /* The focused card takes priority; the remaining worker slots

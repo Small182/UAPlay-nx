@@ -2161,8 +2161,7 @@ int main(void) {
                    catalog_hero_focus==0 &&
                    (key==SDL_CONTROLLER_BUTTON_DPAD_UP ||
                     key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)){
-                    if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && n>0 &&
-                       (chosen>=5 || chosen==n-1)){
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && n>5 && chosen>=5){
                         /* The rightmost visible poster points to More. The
                            horizontal row shifts once the selection reaches
                            its sixth card, keeping that card on the right. */
@@ -2239,8 +2238,11 @@ int main(void) {
                         catalog_hero_focus=expanded_catalog?12+sort_button_for_mode(catalog_sort_mode):
                             (subsection_count(category)?focused_subsection(category):n?1:0);
                 }else if(!expanded_catalog && catalog_hero_focus){
-                    if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus>1)
-                        catalog_hero_focus--;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT){
+                        if(catalog_hero_focus==3 && subsection_count(category))
+                            catalog_hero_focus=16+subsection_count(category)-1;
+                        else if(catalog_hero_focus>1)catalog_hero_focus--;
+                    }
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && catalog_hero_focus<3)
                         catalog_hero_focus++;
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)
@@ -2250,14 +2252,12 @@ int main(void) {
                             focused_subsection(category):0;
                 }else{
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && chosen>0)chosen--;
-                    if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT){
-                        if(!expanded_catalog && n>0 &&
-                           (chosen>=5 || chosen==n-1))
-                            catalog_hero_focus=3; /* Rightmost visible poster. */
-                        else if(chosen<n-1)chosen++;
-                    }
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && chosen<n-1)chosen++;
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_UP){
-                        if(chosen>=6)chosen-=6;
+                        if(!expanded_catalog && n>5 &&
+                           (category==0 && !query[0] ? chosen>=5 : chosen%6==5))
+                            catalog_hero_focus=3; /* Up from rightmost poster. */
+                        else if(chosen>=6)chosen-=6;
                         else if(expanded_catalog)
                             catalog_hero_focus=12+sort_button_for_mode(catalog_sort_mode);
                         else if(!n)catalog_hero_focus=7+tab_for_category(category);

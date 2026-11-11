@@ -2184,6 +2184,60 @@ int main(void) {
                 }
                 continue;
             }
+            if(page==DOWNLOADS){
+                static DownloadInfo rows[DOWNLOADS_MAX];
+                int count=downloads_list(rows,DOWNLOADS_MAX);
+                if(download_selected>=count)download_selected=count?count-1:0;
+                if(key==SDL_CONTROLLER_BUTTON_B){
+                    page=CATALOG;category=11;expanded_catalog=0;
+                    query[0]=message[0]=0;
+                    n=load_category(category,query,movies,message,sizeof(message));
+                    chosen=0;catalog_hero_focus=18;download_confirm=0;continue;
+                }
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && download_selected>0)
+                    {download_selected--;download_confirm=0;}
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && download_selected<count-1)
+                    {download_selected++;download_confirm=0;}
+                if(key==SDL_CONTROLLER_BUTTON_X && count){
+                    unsigned id=rows[download_selected].id;
+                    if(download_confirm!=id){
+                        download_confirm=id;
+                        snprintf(message,sizeof(message),"Натисніть X ще раз для видалення");
+                    }else{
+                        downloads_remove(id);download_confirm=0;
+                        snprintf(message,sizeof(message),"Видалено");
+                    }
+                }
+                if(key==SDL_CONTROLLER_BUTTON_A && count){
+                    const DownloadInfo *info=&rows[download_selected];
+                    static Download item;
+                    if(info->state==DOWNLOAD_FAILED){
+                        downloads_retry(info->id);
+                        snprintf(message,sizeof(message),"Завантаження повторюється");
+                    }else if(info->state!=DOWNLOAD_DONE)
+                        snprintf(message,sizeof(message),"Файл ще завантажується");
+                    else if(!render)snprintf(message,sizeof(message),"Плеєр mpv не ініціалізовано");
+                    else if(downloads_get(info->id,&item)){
+                        char file_path[256];
+                        downloads_play_path(&item,file_path,sizeof(file_path));
+                        playing_movie=item.movie;
+                        active_episode_variant=-1;
+                        download_season=item.season;download_episode=item.episode;
+                        int last_season=0,last_episode=0;double pos=0;
+                        resume_at=!item.episode?library_progress(&playing_movie):
+                            (library_last_episode(&playing_movie,&last_season,&last_episode,&pos)
+                             && last_season==item.season && last_episode==item.episode)?pos:0;
+                        pending_subtitle[0]=0;message[0]=0;
+                        snprintf(playing_url,sizeof(playing_url),"%s",file_path);
+                        configure_stream(player,file_path);
+                        command(player,"loadfile",file_path);
+                        video_started_at=SDL_GetTicks();video_loaded=0;
+                        controls_until=SDL_GetTicks()+3000;
+                        player_return_page=DOWNLOADS;page=PLAYER;
+                    }
+                }
+                continue;
+            }
             if(page==SETTINGS){
                 if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){page=CATALOG;continue;}
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && settings_selected>0)settings_selected--;

@@ -1139,10 +1139,10 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         if(ui_category==11 || ui_category==12){
             /* Favorites uses a poster-only library layout, without the hero.
                Both tabs stay reachable even when their list is empty. */
-            const char *names[]={"На майбутнє","Історія"};
-            const int tab_x[]={32,244},tab_w[]={196,158};
-            for(int i=0;i<2;i++){
-                int selected=ui_category==11+i;
+            const char *names[]={"На майбутнє","Історія","Завантажені"};
+            const int tab_x[]={32,244,417},tab_w[]={196,158,208};
+            for(int i=0;i<3;i++){
+                int selected=i<2 && ui_category==11+i;
                 box_alpha(p,tab_x[i],101,tab_w[i],47,
                           selected?.20f:.12f,selected?.28f:.15f,
                           selected?.35f:.19f,1.f,13);
@@ -1152,7 +1152,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                                    p->font_small,.96f,.97f,.99f);
             }
             if(ui_category==12){
-                if(catalog_hero_focus==18)
+                if(catalog_hero_focus==19)
                     selection_frame(p,982,101,266,47);
                 button(p,clear_history_confirm?"Підтвердити очищення":
                        "Очистити історію",982,101,266,47,0);
@@ -1354,6 +1354,35 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         int first=source/UI_ROWS*UI_ROWS;
         for(int i=first;i<sn && i<first+UI_ROWS;i++){
             list_row(p,sources[i].title,UI_ROW_Y+(i-first)*UI_ROW_STEP,i==source,NULL);
+        }
+        footer(p,status);
+    } else if (page==DOWNLOADS) {
+        static DownloadInfo records[DOWNLOADS_MAX];
+        int count=downloads_list(records,DOWNLOADS_MAX);
+        footer_position=count?download_selected+1:0;
+        footer_total=count;
+        screen_header(p,"Завантажені","Збережені фільми та серії");
+        if(!count)text_center_button(p,"Список порожній. Натисніть Y на джерелі або серії",
+                                      UI_EDGE,305,1216,110,p->font_small,.73f,.77f,.82f);
+        int first=download_selected/UI_ROWS*UI_ROWS;
+        for(int i=first;i<count && i<first+UI_ROWS;i++){
+            const DownloadInfo *d=&records[i];
+            char name[300],detail[80];
+            if(d->label[0])snprintf(name,sizeof(name),"%.150s · %.95s",d->title,d->label);
+            else snprintf(name,sizeof(name),"%.190s",d->title);
+            unsigned mb=(unsigned)(d->bytes>>20);
+            if(d->state==DOWNLOAD_QUEUED)snprintf(detail,sizeof(detail),"У черзі");
+            else if(d->state==DOWNLOAD_ACTIVE && d->permille<0)
+                snprintf(detail,sizeof(detail),"%u МБ",mb);
+            else if(d->state==DOWNLOAD_ACTIVE)
+                snprintf(detail,sizeof(detail),"%d%% · %u МБ",d->permille/10,mb);
+            else if(d->state==DOWNLOAD_DONE)snprintf(detail,sizeof(detail),"Готово · %u МБ",mb);
+            else snprintf(detail,sizeof(detail),"Помилка");
+            int y=UI_ROW_Y+(i-first)*UI_ROW_STEP;
+            list_row(p,name,y,i==download_selected,detail);
+            if(d->state==DOWNLOAD_ACTIVE && d->permille>=0)
+                box_alpha(p,UI_EDGE+12,y+UI_ROW_HEIGHT-5,1192*d->permille/1000,
+                          3,.30f,.71f,.81f,1.f,1);
         }
         footer(p,status);
     } else if (page==SEASONS) {
@@ -1739,6 +1768,8 @@ int main(void) {
                             int tab=-1;
                             if(tx>=32 && tx<228)tab=0;
                             else if(tx>=244 && tx<402)tab=1;
+                            else if(tx>=417 && tx<625)tab=2;
+                            if(tab==2){page=DOWNLOADS;download_selected=0;download_confirm=0;continue;}
                             if(tab>=0){
                                 if(category!=11+tab){
                                     category=11+tab;
@@ -1751,7 +1782,7 @@ int main(void) {
                                 continue;
                             }
                             if(category==12 && tx>=982 && tx<1248){
-                                catalog_hero_focus=18;
+                                catalog_hero_focus=19;
                                 key=SDL_CONTROLLER_BUTTON_A;
                             }
                         }
@@ -1834,6 +1865,16 @@ int main(void) {
                        slot>=0 && slot<7){
                         selected_provider=slot;
                         key=SDL_CONTROLLER_BUTTON_A;
+                    }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
+                }else if(page==DOWNLOADS){
+                    int slot=(ty-UI_ROW_Y)/UI_ROW_STEP;
+                    int index=download_selected/UI_ROWS*UI_ROWS+slot;
+                    if(tx>=UI_EDGE && tx<1280-UI_EDGE && ty>=UI_ROW_Y &&
+                       (ty-UI_ROW_Y)%UI_ROW_STEP<UI_ROW_HEIGHT &&
+                       slot>=0 && slot<UI_ROWS){
+                        DownloadInfo d[DOWNLOADS_MAX];
+                        int count=downloads_list(d,DOWNLOADS_MAX);
+                        if(index<count){download_selected=index;key=SDL_CONTROLLER_BUTTON_A;}
                     }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==SOURCES){
                     int slot=(ty-UI_ROW_Y)/UI_ROW_STEP,new_source=source/UI_ROWS*UI_ROWS+slot;

@@ -11,8 +11,12 @@ int main(void){
     int n=uakino_episodes(&source,episodes,128,error,sizeof(error));
     printf("AnimeON: %d episodes, first=%s (%s) %s\n",n,
            n?episodes[0].title:"none",n?episodes[0].url:"",error);
-    catalog_http_cleanup();
     assert(n>0);
     assert(strstr(episodes[0].url,"/vod/"));
+    snprintf(source.url,sizeof(source.url),"https://animeon.club/api/player/390");
+    n=uakino_episodes(&source,episodes,128,error,sizeof(error));
+    printf("Hunter x Hunter: %d episodes; %s\n",n,error);
+    assert(n>0);
+    catalog_http_cleanup();
     return 0;
 }

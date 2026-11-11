@@ -121,7 +121,15 @@ static void request_options(CURL *curl, const char *url, Response *r,
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, connection_timeout);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Lampa-nx/0.2 (Nintendo Switch)");
+    /* Video hosts frequently reject the non-browser console User-Agent with
+       HTTP 403. Keep the old identifier for unrelated catalogue APIs. */
+    if(strstr(url,"ashdi.vip/") || strstr(url,"moonanime.net/")){
+        curl_easy_setopt(curl,CURLOPT_USERAGENT,
+            "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36");
+        curl_easy_setopt(curl,CURLOPT_REFERER,
+            strstr(url,"ashdi.vip/")?"https://ashdi.vip/":"https://moonanime.net/");
+    }else curl_easy_setopt(curl, CURLOPT_USERAGENT, "Lampa-nx/0.2 (Nintendo Switch)");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, on_data);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, r);
 #ifdef __SWITCH__
@@ -614,7 +622,9 @@ static char *fetch_uafresh(const char *upstream, char *error, int error_size) {
     int direct_first=!strncmp(upstream,"https://uafix.net/",18) ||
                      !strncmp(upstream,"https://eneyida.tv/",19) ||
                      !strncmp(upstream,"https://klonua.com/",19) ||
-                     !strncmp(upstream,"https://uakino.best/",20);
+                     !strncmp(upstream,"https://uakino.best/",20) ||
+                     !strncmp(upstream,"https://uakino.eu/",18) ||
+                     !strncmp(upstream,"https://ashdi.vip/",18);
     int video_host=!strncmp(upstream,"https://zetvideo.net/",21) ||
                    !strncmp(upstream,"https://hdvbua.pro/",19) ||
                    !strncmp(upstream,"https://ashdi.vip/",18);
@@ -953,6 +963,41 @@ static void parse_post_cards(const char *html,const char *host,const char *name,
 
 /* DLE search is POST on Eneyida and Klon; a GET URL alone usually returns
    the home page. UAKino uses a separate JSON-over-AJAX endpoint. */
+static void search_uakino_mirror(const char *query,int series,Source *items,
+                                int *count,int limit,char *error,int error_size){
+    const char *host="https://uakino.eu";
+    char *encoded=encode(query);
+    if(!encoded)return;
+    size_t size=strlen(encoded)+128;
+    char *url=malloc(size);
+    if(!url){free(encoded);return;}
+    snprintf(url,size,"%s/index.php?do=search&subaction=search&story=%s",host,encoded);
+    free(encoded);
+    char *html=request(url,error,error_size);
+    free(url);
+    if(!html)return;
+    const char *p=html;
+    while(*count<limit && (p=strstr(p,"class=\"movie-item short-item\""))){
+        const char *end=strstr(p,"class=\"movie-item short-item\"");
+        end=end?end+strlen("class=\"movie-item short-item\""):NULL;
+        const char *next=end?strstr(end,"class=\"movie-item short-item\""):NULL;
+        if(!next)next=html+strlen(html);
+        const char *title_tag=strstr(p,"class=\"movie-title\"");
+        if(title_tag && title_tag<next){
+            const char *a=title_tag;
+            while(a>p && *a!='<')a--;
+            const char *tag_end=strchr(title_tag,'>');
+            char href[1024]={0},title[192]={0};
+            if(tag_end && tag_end<next &&
+               html_attr(a,tag_end,"href",href,sizeof(href)) &&
+               card_label(a,next,"movie-title",title,sizeof(title)))
+                add_search_card(host,"UAKino",4,series,href,title,items,count,limit);
+        }
+        p=next;
+    }
+    free(html);
+}
+
 static char *json_string_field_alloc(const char *json,const char *key){
     char needle[64];
     snprintf(needle,sizeof(needle),"\"%s\"",key);
@@ -999,6 +1044,12 @@ static void search_new_provider(const char *host,const char *name,int provider,
                                 const char *query,int series,Source *items,
                                 int *count,int limit,char *error,int error_size){
     if(!query || !*query || *count>=limit)return;
+    /* The original .best AJAX endpoint now serves a Cloudflare challenge.
+       The accessible UAKino mirror exposes full GET search result cards. */
+    if(provider==4){
+        search_uakino_mirror(query,series,items,count,limit,error,error_size);
+        return;
+    }
     char *encoded=encode(query);
     if(!encoded)return;
     char url[256],referer[256],*body;
@@ -1196,6 +1247,25 @@ static void search_animeon(const char *query,Source *items,int *count,int max){
     const char *p=strstr(json,"\"results\"");
     p=p?strchr(p,'['):NULL;
     if(p)p++;
+    char normalized_query[512];
+    normalize_title(query,strlen(query),normalized_query,sizeof(normalized_query));
+    /* The API returns OVAs, films and unrelated keyword matches together.
+       Prefer exact anime titles when any exist in the response. */
+    int exact_found=0;
+    const char *scan=p;
+    const char *array_end=p?strchr(p,']'):NULL;
+    while(scan && array_end && scan<array_end){
+        const char *obj=strchr(scan,'{');
+        if(!obj || obj>=array_end)break;
+        const char *end=object_end(obj);
+        if(!end)break;
+        char title[192]={0},normalized[512]={0};
+        json_field(obj,end,"titleUa",title,sizeof(title));
+        if(!title[0])json_field(obj,end,"titleEn",title,sizeof(title));
+        normalize_title(title,strlen(title),normalized,sizeof(normalized));
+        if(!strcmp(normalized,normalized_query))exact_found=1;
+        scan=end;
+    }
     while(p && *p && *p!=']' && *count<max){
         while(*p && *p!='{' && *p!=']')p++;
         if(*p!='{')break;
@@ -1206,7 +1276,10 @@ static void search_animeon(const char *query,Source *items,int *count,int max){
         json_field(p,end,"titleUa",title,sizeof(title));
         if(!title[0])json_field(p,end,"titleEn",title,sizeof(title));
         int numeric=atoi(id);
-        if(numeric>0 && title[0]){
+        char normalized[512]={0};
+        normalize_title(title,strlen(title),normalized,sizeof(normalized));
+        if(numeric>0 && title[0] && (!exact_found ||
+           !strcmp(normalized,normalized_query))){
             Source *dst=&items[(*count)++];
             snprintf(dst->title,sizeof(dst->title),"AnimeON: %s",title);
             snprintf(dst->url,sizeof(dst->url),
@@ -1944,10 +2017,20 @@ int uakino_episodes(const Source *source, Episode *items, int max,
     if(strstr(source->url,"animeon.club/api/player/")){
         char *response=request(source->url,error,error_size);
         if(!response)return 0;
-        /* AnimeON returns an array of players. The first player's `json`
-           is a nested PlayerJS folder tree whose leaves use `file`, not
-           `video_url` (the previous parser never matched a real leaf). */
-        char *episodes_json=json_string_field_alloc(response,"json");
+        /* AnimeON returns multiple players in arbitrary order. Moon stores
+           `videos[].video_url`; Ashdi stores folder leaves with `file`.
+           Locate a folder playlist across ALL players, not only the first. */
+        char *episodes_json=NULL;
+        const char *player_cursor=response;
+        while((player_cursor=strstr(player_cursor,"\"json\""))){
+            char *candidate=json_string_field_alloc(player_cursor,"json");
+            if(candidate && strstr(candidate,"\"file\"")){
+                episodes_json=candidate;
+                break;
+            }
+            free(candidate);
+            player_cursor+=6;
+        }
         free(response);
         if(!episodes_json){
             snprintf(error,error_size,"AnimeON: немає доступних серій");

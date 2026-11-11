@@ -1020,17 +1020,18 @@ static void battery_status_vertical(Paint *p,int x,int y){
     int old_theme=ui_theme_enabled;
     ui_theme_enabled=0;
     float r,g,b;battery_fill_color(&r,&g,&b);
-    /* 15x32 vertical battery, with a small cap on top. */
-    box_alpha(p,x+4,y-4,7,4,.96f,.97f,.98f,1.f,2);
-    box_alpha(p,x,y,15,32,.96f,.97f,.98f,1.f,3);
-    box_alpha(p,x+2,y+2,11,28,.055f,.074f,.092f,1.f,2);
+    /* Wider 22x35 battery, matching the reference screenshot's proportions.
+       Keep a distinct white rim, green fill and a centered top cap. */
+    box_alpha(p,x+7,y-5,8,5,.96f,.97f,.98f,1.f,2);
+    box_alpha(p,x,y,22,35,.96f,.97f,.98f,1.f,4);
+    box_alpha(p,x+2,y+2,18,31,.055f,.074f,.092f,1.f,3);
     if(battery_percentage>=0){
-        int filled=(28*battery_percentage+99)/100;
-        if(filled>28)filled=28;
-        if(filled>0)box_alpha(p,x+2,y+30-filled,11,filled,r,g,b,1.f,2);
+        int filled=(31*battery_percentage+99)/100;
+        if(filled>31)filled=31;
+        if(filled>0)box_alpha(p,x+2,y+33-filled,18,filled,r,g,b,1.f,2);
     }
     if(battery_on_power)
-        box_alpha(p,x+13,y-5,5,5,.42f,.91f,.98f,1.f,3);
+        box_alpha(p,x+20,y-6,5,5,.42f,.91f,.98f,1.f,3);
     ui_theme_enabled=old_theme;
 }
 static void battery_status_horizontal(Paint *p,int x,int y){

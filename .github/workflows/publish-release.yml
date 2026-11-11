@@ -1,0 +1,44 @@
+name: Publish UAPlay beta with NSP
+
+on:
+  push:
+    paths:
+      - ".github/workflows/publish-release.yml"
+      - ".release/UAPlay.nsp"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download verified native build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          gh run download 43074064883 --repo "$GITHUB_REPOSITORY" --name UAPlay-native --dir dist
+          test -s dist/UAPlay.nro
+          test -s .release/UAPlay.nsp
+      - name: Check NSP target and package
+        run: |
+          if ! grep -aFq 'sdmc:/switch/UAPlay.nro' .release/UAPlay.nsp; then
+            echo "::error::NSP does not point to sdmc:/switch/UAPlay.nro"
+            exit 1
+          fi
+          sha256sum dist/UAPlay.nro .release/UAPlay.nsp
+      - name: Publish beta release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create UAPlay_0.5.0.5-beta \
+            dist/UAPlay.nro .release/UAPlay.nsp#UAPlay.nsp \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "UAPlay 0.5.0.5 beta" \
+            --notes-file .release/RELEASE_NOTES.md \
+            --prerelease

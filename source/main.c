@@ -1005,32 +1005,51 @@ static void gear_icon(Paint *p,int cx,int cy,float bg_r,float bg_g,float bg_b){
     polygon(p,teeth,48,fg,fg,fg);
     box_alpha(p,cx-5,cy-5,10,10,bg_r,bg_g,bg_b,1.f,5);
 }
-/* Preserve UAPlay look. Cyan dot means external power is connected. */
-static void battery_status_draw(Paint *p,int x,int y,int pill){
+/* Battery indicators: compact vertical on the catalog header, compact
+   horizontal inside the transient player controls. Neither displays digits.
+   Cyan dot means an external power connection, not necessarily charging. */
+static void battery_fill_color(float *r,float *g,float *b){
+    *r=.22f;*g=.88f;*b=.49f;
+    if(battery_percentage>=0 && battery_percentage<=15){
+        *r=.94f;*g=.31f;*b=.29f;
+    }else if(battery_percentage>=0 && battery_percentage<=30){
+        *r=.96f;*g=.74f;*b=.27f;
+    }
+}
+static void battery_status_vertical(Paint *p,int x,int y){
     int old_theme=ui_theme_enabled;
     ui_theme_enabled=0;
-    if(pill)box_alpha(p,x,y,118,43,.047f,.067f,.088f,.88f,12);
-    int bx=x+(pill?11:0),by=y+(pill?13:0);
-    float red=.22f,green=.88f,blue=.49f;
-    if(battery_percentage>=0 && battery_percentage<=15){
-        red=.94f;green=.31f;blue=.29f;
-    }else if(battery_percentage>=0 && battery_percentage<=30){
-        red=.96f;green=.74f;blue=.27f;
+    float r,g,b;battery_fill_color(&r,&g,&b);
+    /* 15x32 vertical battery, with a small cap on top. */
+    box_alpha(p,x+4,y-4,7,4,.96f,.97f,.98f,1.f,2);
+    box_alpha(p,x,y,15,32,.96f,.97f,.98f,1.f,3);
+    box_alpha(p,x+2,y+2,11,28,.055f,.074f,.092f,1.f,2);
+    if(battery_percentage>=0){
+        int filled=(28*battery_percentage+99)/100;
+        if(filled>28)filled=28;
+        if(filled>0)box_alpha(p,x+2,y+30-filled,11,filled,r,g,b,1.f,2);
     }
+    if(battery_on_power)
+        box_alpha(p,x+13,y-5,5,5,.42f,.91f,.98f,1.f,3);
+    ui_theme_enabled=old_theme;
+}
+static void battery_status_horizontal(Paint *p,int x,int y){
+    int old_theme=ui_theme_enabled;
+    ui_theme_enabled=0;
+    float r,g,b;battery_fill_color(&r,&g,&b);
+    /* Match existing dark, rounded player overlay; icon only. */
+    box_alpha(p,x,y,57,43,.047f,.067f,.088f,.88f,12);
+    int bx=x+11,by=y+13;
     box_alpha(p,bx,by,28,16,.96f,.97f,.98f,1.f,3);
     box_alpha(p,bx+2,by+2,24,12,.055f,.074f,.092f,1.f,2);
     box_alpha(p,bx+28,by+5,4,6,.96f,.97f,.98f,1.f,2);
     if(battery_percentage>=0){
         int filled=(24*battery_percentage+99)/100;
         if(filled>24)filled=24;
-        if(filled>0)box_alpha(p,bx+2,by+2,filled,12,red,green,blue,1.f,2);
+        if(filled>0)box_alpha(p,bx+2,by+2,filled,12,r,g,b,1.f,2);
     }
     if(battery_on_power)
         box_alpha(p,bx+26,by-3,7,7,.42f,.91f,.98f,1.f,4);
-    char percent[16];
-    if(battery_percentage>=0)snprintf(percent,sizeof(percent),"%d%%",battery_percentage);
-    else snprintf(percent,sizeof(percent),"--");
-    text_font(p,percent,bx+39,by-5,70,p->font_small,.96f,.97f,.98f);
     ui_theme_enabled=old_theme;
 }
 static void screen_header(Paint *p,const char *name,const char *context){
@@ -1039,7 +1058,7 @@ static void screen_header(Paint *p,const char *name,const char *context){
     text_center(p,"‹",UI_EDGE,25,55,p->font_big,.96f,.97f,.99f);
     headline(p,name,105,23,860);
     if(context && *context && strcmp(context,"UAPlay"))
-        text_tiny(p,context,804,67,312);
+        text_tiny(p,context,979,38,264);
 }
 static void list_row(Paint *p,const char *title,int y,int selected,
                      const char *detail){
@@ -1212,7 +1231,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         struct tm *local=localtime(&now);
         char clock_label[32]="--:--";
         if(local)strftime(clock_label,sizeof(clock_label),"%H:%M",local);
-        text_font(p,clock_label,1217,25,62,p->font_small,.95f,.97f,.99f);
+        text_font(p,clock_label,1120,20,105,p->font_big,.95f,.97f,.99f);
         if(ui_category==11 || ui_category==12){
             /* Favorites uses a poster-only library layout, without the hero.
                Both tabs stay reachable even when their list is empty. */
@@ -1526,9 +1545,9 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         float remain=1.f-(float)elapsed/160.f;
         box_alpha(p,0,80,1280,UI_FOOTER_TOP-80,.034f,.042f,.054f,
                   .13f*remain*remain,0);
-    }    /* Fixed placement in catalog and other menu headers. */
-    battery_status_draw(p,page==CATALOG?1120:1128,
-                           page==CATALOG?30:28,page!=CATALOG);
+    }
+    /* No battery on details, provider, source, season, episode or settings pages. */
+    if(page==CATALOG)battery_status_vertical(p,1232,29);
 }
 static void command(mpv_handle *player,const char *verb,const char *arg) {
     const char *args[]={verb,arg,NULL};
@@ -2852,7 +2871,7 @@ int main(void) {
                show and hide both at the same time while playing. */
             if(video_loaded && SDL_GetTicks()<controls_until){
                 draw_player_controls(&paint,player);
-                battery_status_draw(&paint,1128,28,1);
+                battery_status_horizontal(&paint,1187,28);
             }
             if(pending_next_episode>=0){
                 Uint32 elapsed=SDL_GetTicks()-next_episode_countdown_at;

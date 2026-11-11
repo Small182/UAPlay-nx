@@ -23,6 +23,23 @@ typedef enum { CATALOG, DETAILS, PROVIDERS, SOURCES, PLAYER, SETTINGS,
 static int selected_provider=0;
 static int download_selected=0;
 static unsigned download_confirm=0;
+/* Read the real battery percentage at most once every 15 seconds. */
+static int battery_service_ready=0,battery_percentage=-1,battery_on_power=0;
+static void battery_status_poll(void){
+    static Uint32 last_checked=0;
+    static int first=1;
+    if(!battery_service_ready)return;
+    Uint32 now=SDL_GetTicks();
+    if(!first && now-last_checked<15000u)return;
+    first=0;last_checked=now;
+    u32 amount=0;
+    if(R_SUCCEEDED(psmGetBatteryChargePercentage(&amount)) && amount<=100)
+        battery_percentage=(int)amount;
+    else battery_percentage=-1;
+    PsmChargerType charger=PsmChargerType_Unconnected;
+    battery_on_power=R_SUCCEEDED(psmGetChargerType(&charger)) &&
+        charger!=PsmChargerType_Unconnected;
+}
 static int download_season=0, download_episode=0;
 static const char *provider_names[]={"UAFlix","UASerials","Eneyida",
     "UAFilm","UAKino","Mikai (аніме)","AnimeON (аніме)"};
@@ -988,13 +1005,41 @@ static void gear_icon(Paint *p,int cx,int cy,float bg_r,float bg_g,float bg_b){
     polygon(p,teeth,48,fg,fg,fg);
     box_alpha(p,cx-5,cy-5,10,10,bg_r,bg_g,bg_b,1.f,5);
 }
+/* Preserve UAPlay look. Cyan dot means external power is connected. */
+static void battery_status_draw(Paint *p,int x,int y,int pill){
+    int old_theme=ui_theme_enabled;
+    ui_theme_enabled=0;
+    if(pill)box_alpha(p,x,y,118,43,.047f,.067f,.088f,.88f,12);
+    int bx=x+(pill?11:0),by=y+(pill?13:0);
+    float red=.22f,green=.88f,blue=.49f;
+    if(battery_percentage>=0 && battery_percentage<=15){
+        red=.94f;green=.31f;blue=.29f;
+    }else if(battery_percentage>=0 && battery_percentage<=30){
+        red=.96f;green=.74f;blue=.27f;
+    }
+    box_alpha(p,bx,by,28,16,.96f,.97f,.98f,1.f,3);
+    box_alpha(p,bx+2,by+2,24,12,.055f,.074f,.092f,1.f,2);
+    box_alpha(p,bx+28,by+5,4,6,.96f,.97f,.98f,1.f,2);
+    if(battery_percentage>=0){
+        int filled=(24*battery_percentage+99)/100;
+        if(filled>24)filled=24;
+        if(filled>0)box_alpha(p,bx+2,by+2,filled,12,red,green,blue,1.f,2);
+    }
+    if(battery_on_power)
+        box_alpha(p,bx+26,by-3,7,7,.42f,.91f,.98f,1.f,4);
+    char percent[16];
+    if(battery_percentage>=0)snprintf(percent,sizeof(percent),"%d%%",battery_percentage);
+    else snprintf(percent,sizeof(percent),"--");
+    text_font(p,percent,bx+39,by-5,70,p->font_small,.96f,.97f,.98f);
+    ui_theme_enabled=old_theme;
+}
 static void screen_header(Paint *p,const char *name,const char *context){
     box_alpha(p,0,0,1280,92,.058f,.069f,.083f,1.f,0);
     box_alpha(p,UI_EDGE,23,55,48,.13f,.16f,.20f,1.f,13);
     text_center(p,"‹",UI_EDGE,25,55,p->font_big,.96f,.97f,.99f);
     headline(p,name,105,23,860);
     if(context && *context && strcmp(context,"UAPlay"))
-        text_tiny(p,context,979,38,264);
+        text_tiny(p,context,804,67,312);
 }
 static void list_row(Paint *p,const char *title,int y,int selected,
                      const char *detail){
@@ -1167,7 +1212,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         struct tm *local=localtime(&now);
         char clock_label[32]="--:--";
         if(local)strftime(clock_label,sizeof(clock_label),"%H:%M",local);
-        text_font(p,clock_label,1140,21,116,p->font_big,.95f,.97f,.99f);
+        text_font(p,clock_label,1217,25,62,p->font_small,.95f,.97f,.99f);
         if(ui_category==11 || ui_category==12){
             /* Favorites uses a poster-only library layout, without the hero.
                Both tabs stay reachable even when their list is empty. */
@@ -1481,7 +1526,9 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         float remain=1.f-(float)elapsed/160.f;
         box_alpha(p,0,80,1280,UI_FOOTER_TOP-80,.034f,.042f,.054f,
                   .13f*remain*remain,0);
-    }
+    }    /* Fixed placement in catalog and other menu headers. */
+    battery_status_draw(p,page==CATALOG?1120:1128,
+                           page==CATALOG?30:28,page!=CATALOG);
 }
 static void command(mpv_handle *player,const char *verb,const char *arg) {
     const char *args[]={verb,arg,NULL};
@@ -1520,8 +1567,8 @@ static void draw_player_controls(Paint *p,mpv_handle *player) {
     text_center(p,"‹  Назад",32,37,141,p->font_small,.96f,.97f,.99f);
     if(active_episode_variant>=0 &&
        catalog_next_episode(episodes,episode_count,active_episode_variant)>=0){
-        box_alpha(p,969,27,275,49,.045f,.063f,.079f,.92f,14);
-        text_center(p,"»  Наступна серія",969,37,275,
+        box_alpha(p,869,27,241,49,.045f,.063f,.079f,.92f,14);
+        text_center(p,"»  Наступна серія",869,37,241,
                     p->font_small,.96f,.97f,.99f);
     }
     box_alpha(p,0,507,1280,213,.027f,.034f,.044f,.93f,0);
@@ -1630,6 +1677,8 @@ int main(void) {
     if (R_SUCCEEDED(network_result)) curl_global_init(CURL_GLOBAL_DEFAULT);
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS,"1");
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_GAMECONTROLLER)) return 1;
+    battery_service_ready=R_SUCCEEDED(psmInitialize());
+    battery_status_poll();
     catalog_http_init();
     downloads_init();
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,SDL_GL_CONTEXT_PROFILE_ES);
@@ -1742,7 +1791,7 @@ int main(void) {
                     controls_until=SDL_GetTicks()+3000;
                     if(!was_visible)continue;
                     if(ty>=24 && ty<=83 && tx>=27 && tx<=180)key=SDL_CONTROLLER_BUTTON_B;
-                    else if(ty>=24 && ty<=83 && tx>=969 && tx<=1244 &&
+                    else if(ty>=24 && ty<=83 && tx>=869 && tx<=1110 &&
                             active_episode_variant>=0 &&
                             catalog_next_episode(episodes,episode_count,
                                                  active_episode_variant)>=0)
@@ -2757,6 +2806,7 @@ int main(void) {
             appletSetMediaPlaybackState(watching_video!=0);
             media_playback_mode=watching_video;
         }
+        battery_status_poll();
         if(page==PLAYER && render){
             ui_theme_enabled=0;
             mpv_opengl_fbo fbo={.fbo=0,.w=1280,.h=720};int flip=1;
@@ -2805,6 +2855,8 @@ int main(void) {
                     (int)((NEXT_EPISODE_DELAY_MS-elapsed+999u)/1000u):0;
                 draw_next_episode_prompt(&paint,&episodes[pending_next_episode],remaining);
             }
+            /* Always visible, including when player controls auto-hide. */
+            battery_status_draw(&paint,1128,28,1);
         }else{
             ui_category=category;
             /* The focused card takes priority; the remaining worker slots
@@ -2861,7 +2913,7 @@ int main(void) {
     glDeleteProgram(paint.program);
 cleanup:
     SDL_GL_DeleteContext(gl);
-    SDL_DestroyWindow(window);SDL_Quit();romfsExit();
+    SDL_DestroyWindow(window);SDL_Quit();if(battery_service_ready)psmExit();romfsExit();
     if (R_SUCCEEDED(network_result)) { curl_global_cleanup(); socketExit(); }
     return 0;
 }

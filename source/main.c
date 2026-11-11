@@ -1808,6 +1808,14 @@ int main(void) {
                             }
                         }
                     }
+                }else if(page==PROVIDERS){
+                    int slot=(ty-UI_ROW_Y)/UI_ROW_STEP;
+                    if(tx>=UI_EDGE && tx<1280-UI_EDGE && ty>=UI_ROW_Y &&
+                       (ty-UI_ROW_Y)%UI_ROW_STEP<UI_ROW_HEIGHT &&
+                       slot>=0 && slot<7){
+                        selected_provider=slot;
+                        key=SDL_CONTROLLER_BUTTON_A;
+                    }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==SOURCES){
                     int slot=(ty-UI_ROW_Y)/UI_ROW_STEP,new_source=source/UI_ROWS*UI_ROWS+slot;
                     if(ty>=UI_ROW_Y && (ty-UI_ROW_Y)%UI_ROW_STEP<UI_ROW_HEIGHT &&
@@ -2218,8 +2226,10 @@ int main(void) {
                     int count=subsection_count(category);
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus>16)
                         catalog_hero_focus--;
-                    if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT &&
-                       catalog_hero_focus<16+count-1)catalog_hero_focus++;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT){
+                        if(catalog_hero_focus<16+count-1)catalog_hero_focus++;
+                        else catalog_hero_focus=3; /* From the last tab to All. */
+                    }
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)
                         catalog_hero_focus=n?1:7+tab_for_category(category);
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)catalog_hero_focus=0;
@@ -2240,7 +2250,12 @@ int main(void) {
                             focused_subsection(category):0;
                 }else{
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && chosen>0)chosen--;
-                    if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && chosen<n-1)chosen++;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT){
+                        if(!expanded_catalog && n>0 &&
+                           (chosen>=5 || chosen==n-1))
+                            catalog_hero_focus=3; /* Rightmost visible poster. */
+                        else if(chosen<n-1)chosen++;
+                    }
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_UP){
                         if(chosen>=6)chosen-=6;
                         else if(expanded_catalog)

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <time.h>
 #include <math.h>
+#include <stdint.h>
 #include <sys/stat.h>
 #include <switch.h>
 #include <SDL.h>
@@ -812,19 +813,50 @@ static void text_muted(Paint *p,const char *s,int x,int y,int limit){
 static void text_tiny(Paint *p,const char *s,int x,int y,int limit){
     text_font(p,s,x,y,limit,p->font_tiny,.78f,.83f,.88f);
 }
+/* Avoid repeated HarfBuzz shaping for identical labels every frame.
+   Fixed capacity and bounded allocations prevent unbounded memory growth. */
+#define MEASURE_CACHE_ENTRIES 512
+typedef struct { TTF_Font *font; unsigned hash; char *label; int width,height; } MeasureEntry;
+static MeasureEntry measure_cache[MEASURE_CACHE_ENTRIES];
+static unsigned measure_hash(const char *label){
+    unsigned hash=2166136261u;
+    for(const unsigned char *p=(const unsigned char*)label;*p;p++)
+        hash=(hash^*p)*16777619u;
+    return hash;
+}
+static void cached_measure(TTF_Font *font,const char *label,int *w,int *h){
+    *w=*h=0;
+    if(!font || !label)return;
+    unsigned hash=measure_hash(label);
+    MeasureEntry *e=&measure_cache[(hash^((unsigned)(uintptr_t)font>>4))%MEASURE_CACHE_ENTRIES];
+    if(e->font==font && e->hash==hash && e->label && !strcmp(e->label,label)){
+        *w=e->width;*h=e->height;return;
+    }
+    TTF_SizeUTF8(font,label,w,h);
+    char *copy=malloc(strlen(label)+1);
+    if(!copy)return;
+    strcpy(copy,label);
+    free(e->label);
+    *e=(MeasureEntry){font,hash,copy,*w,*h};
+}
+static void measure_cache_destroy(void){
+    for(int i=0;i<MEASURE_CACHE_ENTRIES;i++){
+        free(measure_cache[i].label);
+        measure_cache[i].label=NULL;
+    }
+}
 static int measure(Paint *p,const char *s,TTF_Font *font){
     TTF_Font *prev=p->font;p->font=font;
     int w=0,h=0;
-    TTF_SizeUTF8(choose_font(p,s),s,&w,&h);
+    cached_measure(choose_font(p,s),s,&w,&h);
     p->font=prev;
     return w;
 }
 static int text_height(Paint *p,const char *s,TTF_Font *font){
     TTF_Font *previous=p->font;
     p->font=font;
-    TTF_Font *actual=choose_font(p,s);
     int w=0,h=0;
-    if(actual)TTF_SizeUTF8(actual,s,&w,&h);
+    cached_measure(choose_font(p,s),s,&w,&h);
     p->font=previous;
     return h;
 }
@@ -2812,6 +2844,7 @@ int main(void) {
     posters_destroy();
     catalog_http_cleanup();
     text_cache_destroy();
+    measure_cache_destroy();
     for(int i=0;i<7;i++){
         if(paint.scripts[i])TTF_CloseFont(paint.scripts[i]);
         if(paint.scripts_small[i])TTF_CloseFont(paint.scripts_small[i]);

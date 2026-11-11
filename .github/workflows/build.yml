@@ -2,7 +2,7 @@ name: Build native UAPlay with libmpv
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/vita-performance-downloads]
   workflow_dispatch:
 
 jobs:

@@ -15,10 +15,14 @@
 #include "posters.h"
 #include "library.h"
 #include "playback.h"
+#include "downloads.h"
 
 typedef enum { CATALOG, DETAILS, PROVIDERS, SOURCES, PLAYER, SETTINGS,
-               SEASONS, EPISODES, TRACK_PICKER, VIDEO_SETTINGS } Page;
+               SEASONS, EPISODES, TRACK_PICKER, VIDEO_SETTINGS, DOWNLOADS } Page;
 static int selected_provider=0;
+static int download_selected=0;
+static unsigned download_confirm=0;
+static int download_season=0, download_episode=0;
 static const char *provider_names[]={"UAFlix","UASerials","Eneyida",
     "UAFilm","UAKino","Mikai (аніме)","AnimeON (аніме)"};
 
@@ -1004,7 +1008,11 @@ static void footer(Paint *p,const char *message) {
     }else if(footer_page==SEASONS){
         HINT("↑↓","Сезон");HINT("A","Серії");HINT("B","Назад");
     }else if(footer_page==EPISODES){
-        HINT("↑↓","Серія");HINT("A","Дивитися");HINT("B","Назад");
+        HINT("↑↓","Серія");HINT("A","Дивитися");HINT("Y","Завантажити");HINT("B","Назад");
+    }else if(footer_page==SOURCES){
+        HINT("↑↓","Вибір");HINT("A","Відкрити");HINT("Y","Завантажити");HINT("B","Назад");
+    }else if(footer_page==DOWNLOADS){
+        HINT("↑↓","Файл");HINT("A","Відкрити");HINT("X","Видалити");HINT("B","Назад");
     }else{
         HINT("↑↓","Вибір");HINT("A","Відкрити");HINT("B","Назад");
     }
@@ -1029,6 +1037,16 @@ static void footer(Paint *p,const char *message) {
         text_font(p,labels[i],x+badge_width+8,681,widths[i]-badge_width-8,
                   p->font_small,ar,ag,ab);
         x+=widths[i]+12;
+    }
+    /* Background download indicator using the same footer typography. */
+    int download_percent=0; unsigned long long downloaded_bytes=0;
+    int pending_downloads=downloads_progress(&download_percent,&downloaded_bytes);
+    if(pending_downloads){
+        char progress_label[80];
+        if(download_percent>=0)
+            snprintf(progress_label,sizeof(progress_label),"↓ %d%% · %d",download_percent/10,pending_downloads);
+        else snprintf(progress_label,sizeof(progress_label),"↓ %u МБ · %d",(unsigned)(downloaded_bytes>>20),pending_downloads);
+        text_font(p,progress_label,250,682,175,p->font_small,ar,ag,ab);
     }
     /* Notification occupies its own safe zone, never the last selectable row. */
     if(message && *message && strncmp(message,"Offline catalog",15) &&
@@ -1552,6 +1570,7 @@ int main(void) {
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS,"1");
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_GAMECONTROLLER)) return 1;
     catalog_http_init();
+    downloads_init();
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,SDL_GL_CONTEXT_PROFILE_ES);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION,3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,0);
@@ -2565,6 +2584,7 @@ int main(void) {
            and auto-sleep only for the duration of video playback. */
         int watching_video=(page==PLAYER || page==TRACK_PICKER ||
                             (page==VIDEO_SETTINGS && !video_settings_from_menu));
+        downloads_pause(watching_video);
         if(watching_video!=media_playback_mode){
             appletSetMediaPlaybackState(watching_video!=0);
             media_playback_mode=watching_video;
@@ -2647,6 +2667,7 @@ int main(void) {
         if(frame_elapsed<frame_budget)SDL_Delay(frame_budget-frame_elapsed);
     }
     if(media_playback_mode)appletSetMediaPlaybackState(false);
+    downloads_shutdown();
     catalog_loader_shutdown();
     free(movies);
     if(render)mpv_render_context_free(render);

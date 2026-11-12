@@ -42,7 +42,7 @@ $(TARGET).elf: main.o catalog.o posters.o library.o playback.o downloads.o
 	$(CC) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(TARGET).nacp:
-	nacptool --create "UAPlay" "Small182" "0.5.0" $@
+	nacptool --create "UAPlay" "Small182" "0.5.1" $@
 
 $(TARGET).nro: $(TARGET).elf $(TARGET).nacp
 	elf2nro $< $@ --nacp=$(TARGET).nacp --icon=icon.jpg --romfsdir=romfs

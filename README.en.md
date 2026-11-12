@@ -6,11 +6,11 @@ The application is written in C using **libnx, SDL2, and libmpv**. It is not a w
 
 [Українська](README.md) | **English**
 
-> **Current release: [UAPlay 0.5.0.5 beta](https://github.com/Small182/UAPlay-nx/releases/tag/UAPlay_0.5.0.5-beta).** This project is under active development, and video availability depends on third-party services. A successful build does not guarantee that every video will play on a Switch.
+> **Current release: [UAPlay 0.5.1](https://github.com/Small182/UAPlay-nx/releases/tag/UAPlay_0.5.1).** This project is under active development, and video availability depends on third-party services. A successful build does not guarantee that every video will play on a Switch.
 
 ## Download and installation
 
-Download both files from the [0.5.0.5 beta release](https://github.com/Small182/UAPlay-nx/releases/tag/UAPlay_0.5.0.5-beta). Older versions are available on the [Releases page](https://github.com/Small182/UAPlay-nx/releases).
+Download both files from the [0.5.1 release](https://github.com/Small182/UAPlay-nx/releases/tag/UAPlay_0.5.1). Older versions are available on the [Releases page](https://github.com/Small182/UAPlay-nx/releases).
 
 | File | Purpose |
 |---|---|
@@ -34,6 +34,8 @@ When updating, **replace only `UAPlay.nro`**. Do not delete user-data folders. T
 - **Title details:** Synopsis, year, genres, and available metadata; choose a video provider before searching for streams.
 - **Favorites and watch history:** Separate “На майбутнє” (*Watch Later*) and “Історія” (*History*) lists, playback-position saving, and the ability to clear watch history without deleting favorites.
 - **TV series and anime:** Season and episode selection when the provider supplies structured information, with support for advancing to the next episode.
+- **Offline downloads:** Press **Y** on a movie source or episode. The **Downloads** tab under Favorites provides progress, retry, deletion, and offline playback for supported streams.
+- **Switch battery:** Charge indicator in the catalog and player controls, without extra charging markers.
 - **libmpv player:** Pause, seeking, volume control, and selection of available audio tracks, dubbed versions, and subtitles.
 - **Video settings:** Playback speed, volume, subtitle size, and HLS quality presets (Auto / 360p / 480p / 720p / 1080p).
 - **Controls:** Joy-Con / Pro Controller and touchscreen.
@@ -96,6 +98,10 @@ make -j2
 Official release builds receive the TMDB key from the `TMDB_API_KEY` GitHub Actions secret during compilation. **The key is not stored in the public repository.** A local build without this setup may require a key at `sdmc:/switch/uaplay/tmdb.key`. Do not commit your API keys or include them in logs.
 
 Some catalog and parser tests are located in [`tests/`](tests/). They do not replace testing on a real console.
+
+## Acknowledgments
+
+Video downloads and some performance improvements were adapted from [UAPlay Vita](https://github.com/antoxa2584x/UAPlay-vita) by [antoxa2584x](https://github.com/antoxa2584x).
 
 ## Limitations and legal notice
 

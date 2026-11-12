@@ -1543,7 +1543,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                   .13f*remain*remain,0);
     }
     /* No battery on details, provider, source, season, episode or settings pages. */
-    if(page==CATALOG)battery_status_vertical(p,1218,30);
+    if(page==CATALOG)battery_status_vertical(p,1218,27);
 }
 static void command(mpv_handle *player,const char *verb,const char *arg) {
     const char *args[]={verb,arg,NULL};

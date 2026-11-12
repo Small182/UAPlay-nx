@@ -24,7 +24,7 @@ static int selected_provider=0;
 static int download_selected=0;
 static unsigned download_confirm=0;
 /* Read the real battery percentage at most once every 15 seconds. */
-static int battery_service_ready=0,battery_percentage=-1,battery_on_power=0;
+static int battery_service_ready=0,battery_percentage=-1;
 static void battery_status_poll(void){
     static Uint32 last_checked=0;
     static int first=1;
@@ -36,9 +36,6 @@ static void battery_status_poll(void){
     if(R_SUCCEEDED(psmGetBatteryChargePercentage(&amount)) && amount<=100)
         battery_percentage=(int)amount;
     else battery_percentage=-1;
-    PsmChargerType charger=PsmChargerType_Unconnected;
-    battery_on_power=R_SUCCEEDED(psmGetChargerType(&charger)) &&
-        charger!=PsmChargerType_Unconnected;
 }
 static int download_season=0, download_episode=0;
 static const char *provider_names[]={"UAFlix","UASerials","Eneyida",
@@ -507,6 +504,7 @@ typedef struct {
     GLint tint, shape, gradient, outline, sampler;
     TTF_Font *font;
     TTF_Font *font_big;
+    TTF_Font *font_clock;
     TTF_Font *font_small;
     TTF_Font *font_tiny;
     TTF_Font *scripts[7];
@@ -610,6 +608,7 @@ static int paint_init(Paint *p) {
     /* Inter has SF/Helvetica-like proportions and includes Ukrainian glyphs. */
     p->font=TTF_OpenFont("romfs:/InterVariable.ttf",22);
     p->font_big=TTF_OpenFont("romfs:/InterVariable.ttf",31);
+    p->font_clock=TTF_OpenFont("romfs:/InterVariable.ttf",34);
     p->font_small=TTF_OpenFont("romfs:/InterVariable.ttf",19);
     p->font_tiny=TTF_OpenFont("romfs:/InterVariable.ttf",15);
     for(int i=0;i<7;i++){
@@ -1006,8 +1005,7 @@ static void gear_icon(Paint *p,int cx,int cy,float bg_r,float bg_g,float bg_b){
     box_alpha(p,cx-5,cy-5,10,10,bg_r,bg_g,bg_b,1.f,5);
 }
 /* Battery indicators: compact vertical on the catalog header, compact
-   horizontal inside the transient player controls. Neither displays digits.
-   Cyan dot means an external power connection, not necessarily charging. */
+   horizontal inside transient player controls. Neither displays digits. */
 static void battery_fill_color(float *r,float *g,float *b){
     *r=.22f;*g=.88f;*b=.49f;
     if(battery_percentage>=0 && battery_percentage<=15){
@@ -1030,8 +1028,6 @@ static void battery_status_vertical(Paint *p,int x,int y){
         if(filled>28)filled=28;
         if(filled>0)box_alpha(p,x+2,y+30-filled,15,filled,r,g,b,1.f,2);
     }
-    if(battery_on_power)
-        box_alpha(p,x+17,y-5,5,5,.42f,.91f,.98f,1.f,3);
     ui_theme_enabled=old_theme;
 }
 static void battery_status_horizontal(Paint *p,int x,int y){
@@ -1049,8 +1045,6 @@ static void battery_status_horizontal(Paint *p,int x,int y){
         if(filled>24)filled=24;
         if(filled>0)box_alpha(p,bx+2,by+2,filled,12,r,g,b,1.f,2);
     }
-    if(battery_on_power)
-        box_alpha(p,bx+26,by-3,7,7,.42f,.91f,.98f,1.f,4);
     ui_theme_enabled=old_theme;
 }
 static void screen_header(Paint *p,const char *name,const char *context){
@@ -1232,7 +1226,8 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         struct tm *local=localtime(&now);
         char clock_label[32]="--:--";
         if(local)strftime(clock_label,sizeof(clock_label),"%H:%M",local);
-        text_font(p,clock_label,1120,20,105,p->font_big,.95f,.97f,.99f);
+        text_font(p,clock_label,1116,18,106,
+                  p->font_clock?p->font_clock:p->font_big,.95f,.97f,.99f);
         if(ui_category==11 || ui_category==12){
             /* Favorites uses a poster-only library layout, without the hero.
                Both tabs stay reachable even when their list is empty. */
@@ -1548,7 +1543,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                   .13f*remain*remain,0);
     }
     /* No battery on details, provider, source, season, episode or settings pages. */
-    if(page==CATALOG)battery_status_vertical(p,1216,29);
+    if(page==CATALOG)battery_status_vertical(p,1218,30);
 }
 static void command(mpv_handle *player,const char *verb,const char *arg) {
     const char *args[]={verb,arg,NULL};
@@ -2931,6 +2926,7 @@ int main(void) {
     if(paint.font_tiny)TTF_CloseFont(paint.font_tiny);
     if(paint.font_small)TTF_CloseFont(paint.font_small);
     if(paint.font_big)TTF_CloseFont(paint.font_big);
+    if(paint.font_clock)TTF_CloseFont(paint.font_clock);
     TTF_CloseFont(paint.font);TTF_Quit();
     glDeleteTextures(1,&paint.tex);
     glDeleteBuffers(1,&paint.vbo);

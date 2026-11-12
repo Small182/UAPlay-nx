@@ -1,11 +1,10 @@
-name: Publish UAPlay beta with NSP
+name: Publish UAPlay 0.5.1 with NSP
 
 on:
-  push:
-    paths:
-      - ".github/workflows/publish-release.yml"
-      - ".release/UAPlay.nsp"
-  workflow_dispatch:
+  workflow_run:
+    workflows: ["Build native UAPlay with libmpv"]
+    types: [completed]
+    branches: [main]
 
 permissions:
   actions: read
@@ -13,32 +12,46 @@ permissions:
 
 jobs:
   publish:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-24.04
+    concurrency:
+      group: uaplay-release-0.5.1
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
-      - name: Download verified native build
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Download NRO from the exact successful main build
         env:
           GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
+          set -eu
           mkdir -p dist
-          gh run download 43074064883 --repo "$GITHUB_REPOSITORY" --name UAPlay-native --dir dist
+          gh run download "$BUILD_RUN_ID" --repo "$GITHUB_REPOSITORY" --name UAPlay-native --dir dist
           test -s dist/UAPlay.nro
           test -s .release/UAPlay.nsp
-      - name: Check NSP target and package
+      - name: Verify NSP forwarder target
         run: |
+          set -eu
           if ! grep -aFq 'sdmc:/switch/UAPlay.nro' .release/UAPlay.nsp; then
             echo "::error::NSP does not point to sdmc:/switch/UAPlay.nro"
             exit 1
           fi
           sha256sum dist/UAPlay.nro .release/UAPlay.nsp
-      - name: Publish beta release
+      - name: Publish UAPlay 0.5.1
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          gh release create UAPlay_0.5.0.5-beta \
+          set -eu
+          if gh release view UAPlay_0.5.1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "UAPlay_0.5.1 is already published; not replacing assets."
+            exit 0
+          fi
+          gh release create UAPlay_0.5.1 \
             dist/UAPlay.nro .release/UAPlay.nsp#UAPlay.nsp \
             --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "UAPlay 0.5.0.5 beta" \
-            --notes-file .release/RELEASE_NOTES.md \
-            --prerelease
+            --target "$SOURCE_SHA" \
+            --title "UAPlay 0.5.1" \
+            --notes-file .release/RELEASE_NOTES.md

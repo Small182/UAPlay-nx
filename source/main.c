@@ -43,11 +43,13 @@ static void battery_status_poll(void){
 }
 static int download_season=0, download_episode=0;
 static const UiText provider_names[]={{"UAFlix","UAFlix"},{"UASerials","UASerials"},{"Eneyida","Eneyida"},
-    {"UAFilm","UAFilm"},{"UAKino","UAKino"},{"Mikai (аніме)","Mikai (anime)"},{"AnimeON (аніме)","AnimeON (anime)"},{"HydraHD (тестове)","HydraHD (experimental)"}};
+    {"UAFilm","UAFilm"},{"UAKino","UAKino"},{"Mikai (аніме)","Mikai (anime)"},{"AnimeON (аніме)","AnimeON (anime)"},{"HydraHD (тестове)","HydraHD (experimental)"},
+    {"Aether (Lul)","Aether (Lul)"}};
 enum { PROVIDER_COUNT=sizeof(provider_names)/sizeof(provider_names[0]),
        ALL_PROVIDERS=(1u<<PROVIDER_COUNT)-1u };
 /* Bit positions follow the provider IDs in uakino_search_provider (index + 1). */
-static unsigned enabled_providers=ALL_PROVIDERS & ~(1u<<(UAKINO_PROVIDER_HYDRAHD-1));
+static unsigned enabled_providers=ALL_PROVIDERS &
+    ~((1u<<(UAKINO_PROVIDER_HYDRAHD-1)) | (1u<<(UAKINO_PROVIDER_AETHER-1)));
 
 static int provider_for_row(int row){
     if(row<0)return -1;
@@ -3246,7 +3248,8 @@ int main(void) {
                     if(provider<0)continue;
                     message[0]=0;
                     Movie lookup=movies[chosen];
-                    if(provider+1!=UAKINO_PROVIDER_HYDRAHD || lookup.series)
+                    if(provider+1!=UAKINO_PROVIDER_AETHER &&
+                       (provider+1!=UAKINO_PROVIDER_HYDRAHD || lookup.series))
                         catalog_use_ukrainian_search_title(&lookup);
                     sn=uakino_search_provider(&lookup,sources,UAKINO_MAX,
                                               provider+1,message,sizeof(message));
@@ -3291,7 +3294,8 @@ int main(void) {
                                     }
                             page=SEASONS;continue;
                         }
-                        if(!strncmp(sources[source].url,HYDRAHD_SERIES_URL,sizeof(HYDRAHD_SERIES_URL)-1))
+                        if(!strncmp(sources[source].url,HYDRAHD_SERIES_URL,sizeof(HYDRAHD_SERIES_URL)-1) ||
+                           !strncmp(sources[source].url,AETHER_SERIES_URL,sizeof(AETHER_SERIES_URL)-1))
                             continue;
                     }
                     char url[2048]={0};

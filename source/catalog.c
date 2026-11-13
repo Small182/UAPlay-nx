@@ -30,6 +30,8 @@
 #endif
 #define UAFRESH_WORKER "https://uakino.ofreshofresh.workers.dev"
 #define HYDRAHD_HOST "https://hydrahd.gd"
+#define AETHER_ORIGIN "https://aether.ist"
+#define AETHER_LUL_URL "https://lul.raccoonunbutteredbagel.zip/"
 
 typedef struct { char *data; size_t length, capacity; } Response;
 static void json_field(const char *object,const char *end,const char *key,
@@ -174,6 +176,10 @@ static char *request_form(const char *url, const char *post_data,
     int ajax=strstr(url,"/engine/ajax/")!=NULL ||
              strstr(url,"/engine/lazydev/")!=NULL;
     if(ajax)headers=curl_slist_append(headers,"X-Requested-With: XMLHttpRequest");
+    if(!strncmp(url,AETHER_LUL_URL,sizeof(AETHER_LUL_URL)-1)){
+        headers=curl_slist_append(headers,"Accept: application/json");
+        headers=curl_slist_append(headers,"Origin: " AETHER_ORIGIN);
+    }
     if(post_data)headers=curl_slist_append(headers,
                               "Content-Type: application/x-www-form-urlencoded; charset=UTF-8");
     request_options(curl, url, &r, post_data?4L:6L, post_data?8L:14L);
@@ -308,7 +314,7 @@ static int subdl_resource(char *value) {
     return 1;
 }
 
-static const char *subdl_array(const char *start,const char *end,const char *key) {
+static const char *json_array_start(const char *start,const char *end,const char *key) {
     char needle[48];
     snprintf(needle,sizeof(needle),"\"%s\"",key);
     const char *p=strstr(start,needle);
@@ -324,7 +330,7 @@ static int subdl_parse(const char *json,int season,int episode,
                        const char *language,SubdlSubtitle *out,int max) {
     int count=0;
     const char *end=json+strlen(json);
-    const char *row=subdl_array(json,end,"subtitles");
+    const char *row=json_array_start(json,end,"subtitles");
     while(row && row<end && count<max){
         if(isspace((unsigned char)*row) || *row==','){row++;continue;}
         if(*row!='{')break;
@@ -334,7 +340,7 @@ static int subdl_parse(const char *json,int season,int episode,
         json_field(row,row_end,"release_name",release,sizeof(release));
         json_field(row,row_end,"season",number,sizeof(number));
         int parent_season=atoi(number);
-        const char *file=subdl_array(row,row_end,"unpack_files");
+        const char *file=json_array_start(row,row_end,"unpack_files");
         while(file && file<row_end && count<max){
             if(isspace((unsigned char)*file) || *file==','){file++;continue;}
             if(*file!='{')break;
@@ -1573,6 +1579,27 @@ static void search_animeon(const char *query,Source *items,int *count,int max){
     free(json);
 }
 
+static int aether_resolve(const char *url,char *stream,int size,
+                          char *error,int error_size){
+    char *json=request_form(url,NULL,AETHER_ORIGIN "/",error,error_size);
+    if(!json)return 0;
+    char candidate[2048];
+    const char *end=json+strlen(json);
+    json_field(json,end,"stream_url",candidate,sizeof(candidate));
+    if(!candidate[0] || !strcmp(candidate,"null"))
+        json_field(json,end,"stream",candidate,sizeof(candidate));
+    free(json);
+    if(strncmp(candidate,"https://",8) || !candidate[8] ||
+       candidate[strcspn(candidate," \t\r\n")] ||
+       strlen(candidate)>=sizeof(candidate)-1 || strlen(candidate)>=(size_t)size){
+        snprintf(error,error_size,"%s",TR("Aether (Lul): відеопотік недоступний",
+                                         "Aether (Lul): video stream unavailable"));
+        return 0;
+    }
+    snprintf(stream,(size_t)size,"%s",candidate);
+    return 1;
+}
+
 static int hydrahd_resolve(const char *player,char *stream,int size,
                            char *error,int error_size){
     const char *params=strchr(player,'?');
@@ -1671,6 +1698,13 @@ int uakino_search_provider(const Movie *movie, Source *items, int max,
     error[0]=0;
     if(selected==UAKINO_PROVIDER_HYDRAHD)
         return max>0?search_hydrahd(movie,items,error,error_size):0;
+    if(selected==UAKINO_PROVIDER_AETHER){
+        if(max<1 || movie->id<=0)return 0;
+        snprintf(items->title,sizeof(items->title),"Aether (Lul): %.176s",localized);
+        snprintf(items->url,sizeof(items->url),"%s%d",
+                 movie->series?AETHER_SERIES_URL:AETHER_LUL_URL "movie/",movie->id);
+        return 1;
+    }
     int provider_limit=selected? (max>=4?max/4:max) : (max>=7?max/7:max);
     if(selected==0 || selected==1){
     search_provider("https://uafix.net", "UAFlix", 0, localized,movie->series,
@@ -2082,6 +2116,8 @@ int uakino_resolve(const Source *source, char *stream, int size,
                    char *error, int error_size) {
     resolved_subtitle_count=0;
     resolved_audio_count=0;
+    if(!strncmp(source->url,AETHER_LUL_URL,sizeof(AETHER_LUL_URL)-1))
+        return aether_resolve(source->url,stream,size,error,error_size);
     if(!strncmp(source->url,HYDRAHD_PLAYER_URL "tvplayer.php?",sizeof(HYDRAHD_PLAYER_URL "tvplayer.php?")-1) ||
        !strncmp(source->url,HYDRAHD_PLAYER_URL "movieplayer.php?",sizeof(HYDRAHD_PLAYER_URL "movieplayer.php?")-1))
         return hydrahd_resolve(source->url,stream,size,error,error_size);
@@ -2430,8 +2466,56 @@ static int hydrahd_episodes(const char *url,Episode *items,int max,char *error,i
     return count;
 }
 
+static int aether_parse_episodes(const char *json,int tmdb,Episode *items,int max){
+    int count=0;
+    const char *p=json_array_start(json,json+strlen(json),"seasons");
+    while(p && count<max){
+        p+=strspn(p," \t\r\n,");
+        if(*p!='{')break;
+        const char *end=object_end(p);
+        if(!end)break;
+        char season[16],episodes[16];
+        json_field(p,end,"season_number",season,sizeof(season));
+        json_field(p,end,"episode_count",episodes,sizeof(episodes));
+        int s=atoi(season),total=atoi(episodes);
+        p=end;
+        if(s<1 || s>999 || total<1 || total>9999)continue;
+        for(int e=1;e<=total && count<max;e++){
+            Episode *item=&items[count++];
+            memset(item,0,sizeof(*item));
+            item->season=s;
+            item->number=e;
+            snprintf(item->title,sizeof(item->title),
+                     TR("Сезон %d · Серія %d","Season %d · Episode %d"),s,e);
+            snprintf(item->url,sizeof(item->url),AETHER_LUL_URL "tv/%d/%d/%d",tmdb,s,e);
+        }
+    }
+    if(count>1)qsort(items,(size_t)count,sizeof(*items),episode_order);
+    return count;
+}
+
+static int aether_episodes(int tmdb,Episode *items,int max,char *error,int error_size){
+    char key[256];
+    tmdb_key(key,sizeof(key));
+    if(tmdb>0 && key[0]){
+        char url[600];
+        snprintf(url,sizeof(url),"https://api.themoviedb.org/3/tv/%d?api_key=%s&language=%s",
+                 tmdb,key,tmdb_language(ui_language()));
+        char *json=request(url,error,error_size);
+        if(!json)return 0;
+        int count=aether_parse_episodes(json,tmdb,items,max);
+        free(json);
+        if(count)return count;
+    }
+    snprintf(error,error_size,"%s",TR("Aether (Lul): перелік серій недоступний",
+                                     "Aether (Lul): episode list unavailable"));
+    return 0;
+}
+
 int uakino_episodes(const Source *source, Episode *items, int max,
                     char *error, int error_size) {
+    if(!strncmp(source->url,AETHER_SERIES_URL,sizeof(AETHER_SERIES_URL)-1))
+        return aether_episodes(atoi(source->url+sizeof(AETHER_SERIES_URL)-1),items,max,error,error_size);
     if(!strncmp(source->url,HYDRAHD_SERIES_URL,sizeof(HYDRAHD_SERIES_URL)-1))
         return hydrahd_episodes(source->url,items,max,error,error_size);
     if(strstr(source->url,"animeon.club/api/player/")){

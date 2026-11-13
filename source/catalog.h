@@ -1,6 +1,8 @@
 #ifndef LAMPA_CATALOG_H
 #define LAMPA_CATALOG_H
 
+#include <stddef.h>
+
 #define CATALOG_MAX 200
 #define CATALOG_LOCAL_MAX 256
 #define CATALOG_PAGE_SIZE 20
@@ -62,8 +64,8 @@ int catalog_load_page_sorted(const char *category, const char *query, int page,
                             char *error, int error_size, int *has_more);
 /* Exclude titles associated with Russia, using TMDB's country metadata. */
 int catalog_filter_countries(Movie *items,int count);
-/* Fetch localized text and runtime (movie) or season/episode totals (TV). */
-int catalog_fetch_details(Movie *movie);
+/* Fetch localized text, the primary movie genre, and runtime or TV totals. */
+int catalog_fetch_details(Movie *movie,char *genre,size_t genre_size);
 /* Use the Ukrainian TMDB title in a temporary copy for provider lookup. */
 void catalog_use_ukrainian_search_title(Movie *movie);
 

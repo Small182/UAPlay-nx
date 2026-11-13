@@ -320,10 +320,13 @@ typedef struct {
     int ready,ready_generation,ready_count,ready_page,ready_has_more;
     int details_requested,details_ready,locale_generation;
     Movie details_request,details_result;
+    char details_genre[64];
     char category[48],query[192],ready_error[192];
     Movie ready_items[CATALOG_PAGE_SIZE];
 } CatalogLoader;
 static CatalogLoader catalog_loader;
+static int displayed_genre_id;
+static char displayed_genre[64];
 static int catalog_next_page=2,catalog_loading=0,catalog_has_more=0;
 static int compare_movie_sort(const void *a,const void *b){
     const Movie *left=a,*right=b;
@@ -360,10 +363,12 @@ static int catalog_worker(void *opaque){
             int locale_generation=loader->locale_generation;
             loader->details_requested=0;
             SDL_UnlockMutex(loader->mutex);
-            catalog_fetch_details(&target);
+            char genre[sizeof(loader->details_genre)];
+            catalog_fetch_details(&target,genre,sizeof(genre));
             SDL_LockMutex(loader->mutex);
             if(!loader->quit && locale_generation==loader->locale_generation){
                 loader->details_result=target;
+                snprintf(loader->details_genre,sizeof(loader->details_genre),"%s",genre);
                 loader->details_ready=1;
             }
             SDL_UnlockMutex(loader->mutex);
@@ -460,6 +465,7 @@ static void catalog_invalidate_language(int category,const char *query){
     catalog_loader_reset(category,query,0,0);
     home_cache_initialized=0;
     home_current_loaded=0;
+    displayed_genre_id=0;
     if(!loader->mutex)return;
     SDL_LockMutex(loader->mutex);
     loader->locale_generation++;
@@ -500,7 +506,8 @@ static int catalog_home_copy(int shelf,Movie *movies,int start,int capacity){
 }
 static void catalog_details_request(const Movie *movie){
     CatalogLoader *loader=&catalog_loader;
-    if(!loader->thread || !movie || movie->details_state)return;
+    if(!loader->thread || !movie || movie->details_state<0 ||
+       (movie->details_state>0 && (movie->series || movie->id==displayed_genre_id)))return;
     SDL_LockMutex(loader->mutex);
     loader->details_request=*movie;
     loader->details_requested=1;
@@ -513,6 +520,10 @@ static void catalog_details_poll(Movie *movies,int count){
     SDL_LockMutex(loader->mutex);
     int ready=loader->details_ready;
     Movie result=loader->details_result;
+    if(ready && !result.series){
+        displayed_genre_id=result.id;
+        snprintf(displayed_genre,sizeof(displayed_genre),"%s",loader->details_genre);
+    }
     loader->details_ready=0;
     SDL_UnlockMutex(loader->mutex);
     if(!ready)return;
@@ -1535,6 +1546,34 @@ static int touched_list_row(int x,int y){
     if(absolute_y<0 || absolute_y%UI_ROW_STEP>=UI_ROW_HEIGHT)return -1;
     return absolute_y/UI_ROW_STEP;
 }
+static void append_details_metadata(char *text,size_t size,const char *part){
+    if(!part[0])return;
+    size_t used=strlen(text);
+    snprintf(text+used,size-used,"%s%s",used?"  ·  ":"",part);
+}
+static void format_details_metadata(char *text,size_t size,const Movie *movie,const char *genre){
+    snprintf(text,size,"%s",movie->year);
+    char part[48];
+    if(movie->series){
+        if(movie->season_count>0){
+            snprintf(part,sizeof(part),TR("Сезонів: %d","Seasons: %d"),movie->season_count);
+            append_details_metadata(text,size,part);
+        }
+        if(movie->episode_count>0){
+            snprintf(part,sizeof(part),TR("Серій: %d","Episodes: %d"),movie->episode_count);
+            append_details_metadata(text,size,part);
+        }
+    }else{
+        append_details_metadata(text,size,genre);
+        int minutes=movie->runtime_minutes;
+        if(minutes>0){
+            if(minutes<60)snprintf(part,sizeof(part),TR("%d хв","%d min"),minutes);
+            else snprintf(part,sizeof(part),TR("%d год %02d хв","%d h %02d min"),
+                          minutes/60,minutes%60);
+            append_details_metadata(text,size,part);
+        }
+    }
+}
 static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                  Source *sources,int sn,int source,const char *heading,const char *status) {
     glViewport(0,0,1280,720);
@@ -1810,20 +1849,8 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         text_muted(p,movies[chosen].original,67,198,815);
         char tag[192];
         const Movie *selected=&movies[chosen];
-        if(selected->series && selected->details_state>0 &&
-           selected->season_count>0 && selected->episode_count>0)
-            snprintf(tag,sizeof(tag),TR("%s  ·  Серіал  ·  Сезонів: %d  ·  Серій: %d","%s  ·  TV Show  ·  Seasons: %d  ·  Episodes: %d"),
-                     selected->year,selected->season_count,selected->episode_count);
-        else if(!selected->series && selected->details_state>0 &&
-                selected->runtime_minutes>0){
-            if(selected->runtime_minutes<60)
-                snprintf(tag,sizeof(tag),TR("%s  ·  Фільм  ·  %d хв","%s  ·  Movie  ·  %d min"),
-                         selected->year,selected->runtime_minutes);
-            else snprintf(tag,sizeof(tag),TR("%s  ·  Фільм  ·  %d год %02d хв","%s  ·  Movie  ·  %d h %02d min"),
-                          selected->year,selected->runtime_minutes/60,
-                          selected->runtime_minutes%60);
-        }else snprintf(tag,sizeof(tag),"%s  ·  %s",selected->year,
-                       selected->series?TR("Серіал","TV Show"):TR("Фільм","Movie"));
+        format_details_metadata(tag,sizeof(tag),selected,
+                                selected->id==displayed_genre_id?displayed_genre:"");
         text(p,tag,66,259,815);
         summary(p,movies[chosen].overview,66,313,815);
         if(!details_button_focus)selection_frame(p,65,526,238,58);

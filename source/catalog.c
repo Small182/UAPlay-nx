@@ -707,7 +707,22 @@ static void catalog_parse_details_json(Movie *movie,const char *json){
     movie->details_state=1;
 }
 
-static int catalog_fetch_details_language(Movie *movie,UiLanguage language){
+static void catalog_primary_genre(const char *json,char *genre,size_t size){
+    genre[0]=0;
+    const char *end=json+strlen(json);
+    const char *first=json_array_start(json,end,"genres");
+    if(!first)return;
+    first+=strspn(first," \t\r\n");
+    if(first>=end || *first!='{')return;
+    const char *next=object_end(first);
+    if(!next || next>end)return;
+    json_field(first,next,"name",genre,size);
+    if(!strcmp(genre,"null"))genre[0]=0;
+}
+
+static int catalog_fetch_details_language(Movie *movie,UiLanguage language,
+                                          char *genre,size_t genre_size){
+    if(genre && genre_size)genre[0]=0;
     if(!movie || movie->id<=0)return 0;
     char key[256];tmdb_key(key,sizeof(key));
     if(!key[0]){movie->details_state=-1;return 0;}
@@ -717,12 +732,13 @@ static int catalog_fetch_details_language(Movie *movie,UiLanguage language){
     char *json=request(url,error,sizeof(error));
     if(!json){movie->details_state=-1;return 0;}
     catalog_parse_details_json(movie,json);
+    if(!movie->series && genre && genre_size)catalog_primary_genre(json,genre,genre_size);
     free(json);
     return 1;
 }
 
-int catalog_fetch_details(Movie *movie){
-    return catalog_fetch_details_language(movie,ui_language());
+int catalog_fetch_details(Movie *movie,char *genre,size_t genre_size){
+    return catalog_fetch_details_language(movie,ui_language(),genre,genre_size);
 }
 
 void catalog_use_ukrainian_search_title(Movie *movie){
@@ -732,7 +748,7 @@ void catalog_use_ukrainian_search_title(Movie *movie){
     static char cached_title[sizeof(movie->title)];
     if(movie->id!=cached_id || movie->series!=cached_series){
         Movie ukrainian={.id=movie->id,.series=movie->series};
-        if(!catalog_fetch_details_language(&ukrainian,UI_UKRAINIAN))return;
+        if(!catalog_fetch_details_language(&ukrainian,UI_UKRAINIAN,NULL,0))return;
         cached_id=movie->id;
         cached_series=movie->series;
         snprintf(cached_title,sizeof(cached_title),"%s",ukrainian.title);

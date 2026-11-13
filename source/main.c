@@ -2839,7 +2839,17 @@ int main(void) {
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && chosen>0)chosen--;
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && chosen<n-1)chosen++;
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_UP){
-                        if(!expanded_catalog && n>5 &&
+                        if(category!=0 && !expanded_catalog){
+                            int last=poster_row_start(chosen,0)+POSTER_COLUMNS-1;
+                            if(last>=n)last=n-1;
+                            if(!n)catalog_hero_focus=7+tab_for_category(category);
+                            else if(chosen==last)catalog_hero_focus=3;
+                            else catalog_hero_focus=subsection_count(category)?
+                                focused_subsection(category):1;
+                        }else if(expanded_catalog && category!=0 &&
+                                 chosen%GRID_ITEMS<POSTER_COLUMNS){
+                            catalog_hero_focus=12+sort_button_for_mode(catalog_sort_mode);
+                        }else if(!expanded_catalog && n>5 &&
                            (category==0 && !query[0] ? chosen>=5 : chosen%6==5))
                             catalog_hero_focus=3; /* Up from rightmost poster. */
                         else if(chosen>=6)chosen-=6;

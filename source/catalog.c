@@ -439,9 +439,20 @@ int catalog_filter_countries(Movie *items,int count){
     return kept;
 }
 
+static const char *tmdb_language(UiLanguage language){
+    return language==UI_ENGLISH?"en-US":"uk-UA";
+}
+
 static void catalog_parse_details_json(Movie *movie,const char *json){
     char value[32];
     const char *end=json+strlen(json);
+    char title[sizeof(movie->title)],overview[sizeof(movie->overview)];
+    json_field(json,end,movie->series?"name":"title",title,sizeof(title));
+    json_field(json,end,"overview",overview,sizeof(overview));
+    if(title[0] && strcmp(title,"null"))
+        snprintf(movie->title,sizeof(movie->title),"%s",title);
+    if(overview[0] && strcmp(overview,"null"))
+        snprintf(movie->overview,sizeof(movie->overview),"%s",overview);
     if(movie->series){
         json_field(json,end,"number_of_seasons",value,sizeof(value));
         movie->season_count=atoi(value);
@@ -454,18 +465,37 @@ static void catalog_parse_details_json(Movie *movie,const char *json){
     movie->details_state=1;
 }
 
-int catalog_fetch_details(Movie *movie){
+static int catalog_fetch_details_language(Movie *movie,UiLanguage language){
     if(!movie || movie->id<=0)return 0;
     char key[256];tmdb_key(key,sizeof(key));
     if(!key[0]){movie->details_state=-1;return 0;}
     char url[600],error[160]={0};
-    snprintf(url,sizeof(url),"https://api.themoviedb.org/3/%s/%d?api_key=%s&language=uk-UA",
-             movie->series?"tv":"movie",movie->id,key);
+    snprintf(url,sizeof(url),"https://api.themoviedb.org/3/%s/%d?api_key=%s&language=%s",
+             movie->series?"tv":"movie",movie->id,key,tmdb_language(language));
     char *json=request(url,error,sizeof(error));
     if(!json){movie->details_state=-1;return 0;}
     catalog_parse_details_json(movie,json);
     free(json);
     return 1;
+}
+
+int catalog_fetch_details(Movie *movie){
+    return catalog_fetch_details_language(movie,ui_language());
+}
+
+void catalog_use_ukrainian_search_title(Movie *movie){
+    if(ui_language()!=UI_ENGLISH || movie->id<=0)return;
+    /* The source picker can query several Ukrainian providers for one title. */
+    static int cached_id,cached_series;
+    static char cached_title[sizeof(movie->title)];
+    if(movie->id!=cached_id || movie->series!=cached_series){
+        Movie ukrainian={.id=movie->id,.series=movie->series};
+        if(!catalog_fetch_details_language(&ukrainian,UI_UKRAINIAN))return;
+        cached_id=movie->id;
+        cached_series=movie->series;
+        snprintf(cached_title,sizeof(cached_title),"%s",ukrainian.title);
+    }
+    if(cached_title[0])snprintf(movie->title,sizeof(movie->title),"%s",cached_title);
 }
 
 int catalog_load_page_sorted(const char *category, const char *query, int page,
@@ -480,6 +510,7 @@ int catalog_load_page_sorted(const char *category, const char *query, int page,
         return 0;
     }
 
+    const char *language=tmdb_language(ui_language());
     char url[1800];
     char today[16]={0};
     if(sort_mode==2){
@@ -495,24 +526,24 @@ int catalog_load_page_sorted(const char *category, const char *query, int page,
                         sort_mode==2?"first_air_date.desc":"popularity.desc";
     const char *rating_filter=sort_mode==1?"&vote_count.gte=100":"";
     if (q) {
-        snprintf(url, sizeof(url), "https://api.themoviedb.org/3/search/multi?api_key=%s&language=uk-UA&include_adult=false&query=%s", key, q);
+        snprintf(url, sizeof(url), "https://api.themoviedb.org/3/search/multi?api_key=%s&language=%s&include_adult=false&query=%s", key, language, q);
     } else {
         if (!strcmp(category,"cartoon_series"))
-            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/tv?api_key=%s&language=uk-UA&sort_by=%s&with_genres=16%s",key,tv_sort,rating_filter);
+            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/tv?api_key=%s&language=%s&sort_by=%s&with_genres=16%s",key,language,tv_sort,rating_filter);
         else if (!strcmp(category,"anime"))
-            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/tv?api_key=%s&language=uk-UA&sort_by=%s&with_genres=16&with_original_language=ja%s",key,tv_sort,rating_filter);
+            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/tv?api_key=%s&language=%s&sort_by=%s&with_genres=16&with_original_language=ja%s",key,language,tv_sort,rating_filter);
         else if (!strcmp(category,"cartoons"))
-            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/movie?api_key=%s&language=uk-UA&sort_by=%s&with_genres=16%s",key,movie_sort,rating_filter);
+            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/movie?api_key=%s&language=%s&sort_by=%s&with_genres=16%s",key,language,movie_sort,rating_filter);
         else if (!strncmp(category,"genre_",6))
-            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/movie?api_key=%s&language=uk-UA&sort_by=%s&with_genres=%s%s",key,movie_sort,category+6,rating_filter);
+            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/movie?api_key=%s&language=%s&sort_by=%s&with_genres=%s%s",key,language,movie_sort,category+6,rating_filter);
         else if (!strcmp(category,"films"))
-            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/movie?api_key=%s&language=uk-UA&sort_by=%s%s",key,movie_sort,rating_filter);
+            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/movie?api_key=%s&language=%s&sort_by=%s%s",key,language,movie_sort,rating_filter);
         else if (!strcmp(category,"series"))
-            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/tv?api_key=%s&language=uk-UA&sort_by=%s%s",key,tv_sort,rating_filter);
+            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/discover/tv?api_key=%s&language=%s&sort_by=%s%s",key,language,tv_sort,rating_filter);
         else {
             const char *path = !strcmp(category, "series") ? "trending/tv/week" :
                                !strcmp(category, "top") ? "movie/top_rated" : "trending/movie/week";
-            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/%s?api_key=%s&language=uk-UA", path, key);
+            snprintf(url, sizeof(url), "https://api.themoviedb.org/3/%s?api_key=%s&language=%s", path, key, language);
         }
     }
     free(q);

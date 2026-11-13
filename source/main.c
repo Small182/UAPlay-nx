@@ -276,7 +276,7 @@ typedef struct {
     SDL_cond *cond;
     int quit,requested,generation,request_generation,request_page,request_sort;
     int ready,ready_generation,ready_count,ready_page,ready_has_more;
-    int details_requested,details_ready;
+    int details_requested,details_ready,locale_generation;
     Movie details_request,details_result;
     char category[48],query[192];
     Movie ready_items[CATALOG_PAGE_SIZE];
@@ -315,11 +315,12 @@ static int catalog_worker(void *opaque){
         if(loader->quit){SDL_UnlockMutex(loader->mutex);break;}
         if(loader->details_requested){
             Movie target=loader->details_request;
+            int locale_generation=loader->locale_generation;
             loader->details_requested=0;
             SDL_UnlockMutex(loader->mutex);
             catalog_fetch_details(&target);
             SDL_LockMutex(loader->mutex);
-            if(!loader->quit){
+            if(!loader->quit && locale_generation==loader->locale_generation){
                 loader->details_result=target;
                 loader->details_ready=1;
             }
@@ -331,6 +332,7 @@ static int catalog_worker(void *opaque){
             for(int i=0;i<HOME_SHELF_COUNT;i++)
                 if(home_shelves[i].state==1){shelf=i;break;}
             if(shelf>=0)home_shelves[shelf].state=2;
+            int locale_generation=loader->locale_generation;
             SDL_UnlockMutex(loader->mutex);
             if(shelf<0)continue;
             memset(batch,0,CATALOG_PAGE_SIZE*sizeof(Movie));
@@ -338,7 +340,7 @@ static int catalog_worker(void *opaque){
             int count=catalog_load_page_sorted(categories[home_categories[shelf]],
                          "",1,0,batch,CATALOG_PAGE_SIZE,error,sizeof(error),NULL);
             SDL_LockMutex(loader->mutex);
-            if(!loader->quit){
+            if(!loader->quit && locale_generation==loader->locale_generation){
                 home_shelves[shelf].count=count;
                 if(count>0)memcpy(home_shelves[shelf].items,batch,
                                   (size_t)count*sizeof(Movie));
@@ -410,15 +412,31 @@ static void catalog_loader_reset(int category,const char *query,int count,int on
     if(catalog_has_more && count<CATALOG_MAX)
         catalog_loader_request(catalog_next_page++,category,query);
 }
+static void catalog_invalidate_language(int category,const char *query){
+    CatalogLoader *loader=&catalog_loader;
+    catalog_loader_reset(category,query,0,0);
+    home_cache_initialized=0;
+    home_current_loaded=0;
+    if(!loader->mutex)return;
+    SDL_LockMutex(loader->mutex);
+    loader->locale_generation++;
+    loader->details_requested=0;
+    loader->details_ready=0;
+    for(int i=0;i<HOME_SHELF_COUNT;i++){
+        home_shelves[i].state=0;
+        home_shelves[i].count=0;
+    }
+    SDL_UnlockMutex(loader->mutex);
+}
+
 static void catalog_home_prime(const Movie *movies,int count){
     CatalogLoader *loader=&catalog_loader;
     if(!loader->mutex)return;
     SDL_LockMutex(loader->mutex);
     if(count>CATALOG_PAGE_SIZE)count=CATALOG_PAGE_SIZE;
-    home_shelves[0].count=count;
-    if(count>0)memcpy(home_shelves[0].items,movies,(size_t)count*sizeof(Movie));
-    home_shelves[0].state=3;
-    for(int i=1;i<HOME_SHELF_COUNT;i++)home_shelves[i].state=1;
+    home_shelves[home_shelf].count=count;
+    if(count>0)memcpy(home_shelves[home_shelf].items,movies,(size_t)count*sizeof(Movie));
+    for(int i=0;i<HOME_SHELF_COUNT;i++)home_shelves[i].state=i==home_shelf?3:1;
     home_cache_initialized=1;
     home_current_loaded=1;
     if(loader->cond)SDL_CondSignal(loader->cond);
@@ -456,12 +474,8 @@ static void catalog_details_poll(Movie *movies,int count){
     SDL_UnlockMutex(loader->mutex);
     if(!ready)return;
     for(int i=0;i<count;i++)if(movies[i].id==result.id &&
-                             movies[i].series==result.series){
-        movies[i].runtime_minutes=result.runtime_minutes;
-        movies[i].season_count=result.season_count;
-        movies[i].episode_count=result.episode_count;
-        movies[i].details_state=result.details_state;
-    }
+                             movies[i].series==result.series)
+        movies[i]=result;
 }
 static void catalog_loader_poll(Movie **movies,int *count,int *capacity,int chosen,
                                 int category,const char *query){
@@ -1712,7 +1726,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             TR("Налаштуйте відео, гучність та субтитри.","Adjust playback, volume, and subtitles."),
             TR("Після завершення серії пропонує наступну через 3 секунди. Кнопка B скасовує перехід. Вибір зберігається.","Start the next episode after 3 seconds. Press B to cancel. Your choice is saved."),
             TR("Виберіть джерела, у яких UAPlay може шукати відео. Вибір зберігається на SD-карті.","Choose which providers UAPlay can search. Your choices are saved to the SD card."),
-            TR("Змінює мову меню та повідомлень.","Changes the language of menus and messages.")};
+            TR("Змінює мову інтерфейсу, назв і описів TMDb.","Changes the language of the interface and TMDb titles and descriptions.")};
         wrapped(p,help[settings_selected],517,315,675,3,29,p->font_small,.73f,.78f,.84f);
         button(p,settings_selected==SETTING_PLAYER?TR("Відкрити параметри","Open player settings"):
                settings_selected==SETTING_PROVIDERS?TR("Відкрити джерела","Manage providers"):
@@ -2103,6 +2117,7 @@ int main(void) {
     Uint32 stick_last_time=0;
     int stick_last_key=0;
     int media_playback_mode=0;
+    int catalog_language_changed=0;
     TouchGesture touch={0};
     ui_touch=&touch;
     int pending_key=-1;
@@ -2770,7 +2785,15 @@ int main(void) {
                 continue;
             }
             if(page==SETTINGS){
-                if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){page=CATALOG;continue;}
+                if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){
+                    if(catalog_language_changed){
+                        n=load_category(category,query,movies,message,sizeof(message));
+                        if(chosen>=n)chosen=n?n-1:0;
+                        catalog_language_changed=0;
+                    }
+                    page=CATALOG;
+                    continue;
+                }
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && settings_selected>0)settings_selected--;
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && settings_selected<SETTING_COUNT-1)
                     settings_selected++;
@@ -2789,7 +2812,9 @@ int main(void) {
                         page=PROVIDER_SETTINGS;
                     }else if(settings_selected==SETTING_LANGUAGE){
                         ui_set_language(ui_language()==UI_ENGLISH?UI_UKRAINIAN:UI_ENGLISH);
-                        if(!offline_catalog_status(message))message[0]=0;
+                        catalog_invalidate_language(category,query);
+                        catalog_language_changed=1;
+                        message[0]=0;
                         if(!theme_save())
                             snprintf(message,sizeof(message),"%s",
                                      TR("Не вдалося зберегти мову на SD-карті",
@@ -3110,9 +3135,12 @@ int main(void) {
                     int provider=provider_for_row(selected_provider);
                     if(provider<0)continue;
                     message[0]=0;
-                    sn=uakino_search_provider(&movies[chosen],sources,UAKINO_MAX,
+                    Movie lookup=movies[chosen];
+                    if(provider+1!=UAKINO_PROVIDER_HYDRAHD || lookup.series)
+                        catalog_use_ukrainian_search_title(&lookup);
+                    sn=uakino_search_provider(&lookup,sources,UAKINO_MAX,
                                               provider+1,message,sizeof(message));
-                    sn=catalog_rank_sources(&movies[chosen],sources,sn,source_mode);
+                    sn=catalog_rank_sources(&lookup,sources,sn,source_mode);
                     if(!sn && (provider+1!=UAKINO_PROVIDER_HYDRAHD || !message[0]))
                         snprintf(message,sizeof(message),TR("Нічого не знайдено","No results found"));
                     source=0;page=SOURCES;

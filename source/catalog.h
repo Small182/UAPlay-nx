@@ -59,8 +59,10 @@ int catalog_load_page_sorted(const char *category, const char *query, int page,
                             char *error, int error_size, int *has_more);
 /* Exclude titles associated with Russia, using TMDB's country metadata. */
 int catalog_filter_countries(Movie *items,int count);
-/* Fetch runtime (movie) or total seasons/episodes (TV) for details screen. */
+/* Fetch localized text and runtime (movie) or season/episode totals (TV). */
 int catalog_fetch_details(Movie *movie);
+/* Use the Ukrainian TMDB title in a temporary copy for provider lookup. */
+void catalog_use_ukrainian_search_title(Movie *movie);
 
 /* Native source search: UAFlix, UASerials, Eneyida, UAFilm/Klon UA, UAKino. */
 int uakino_search(const Movie *movie, Source *items, int max,

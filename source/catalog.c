@@ -398,7 +398,11 @@ static int subdl_get(const char *url,const char *key,Response *response,
         curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
         curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,0L);
     }else{
+#if LIBCURL_VERSION_NUM >= 0x075500
         curl_easy_setopt(curl,CURLOPT_REDIR_PROTOCOLS_STR,"https");
+#else
+        curl_easy_setopt(curl,CURLOPT_REDIR_PROTOCOLS,(long)CURLPROTO_HTTPS);
+#endif
     }
     CURLcode result=curl_easy_perform(curl);
     if(transient_network_error(result)){

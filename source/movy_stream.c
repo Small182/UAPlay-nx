@@ -14,7 +14,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-enum { MAX_RESOURCES=24000, MAX_PLAYLIST=1024*1024 };
+enum { MAX_RESOURCES=24000, MAX_PLAYLIST=1024*1024, MAX_SEGMENT=16*1024*1024 };
 typedef struct {
     char *url;
     const char *suffix;
@@ -23,11 +23,12 @@ typedef struct {
 } Resource;
 typedef struct {
     char *text;
-    size_t length,capacity;
-} Playlist;
+    size_t length,capacity,limit;
+} Buffer;
 
 static int listener=-1;
 static unsigned port;
+static long preferred_bandwidth;
 static pthread_t worker;
 static atomic_int stopping;
 static Resource resources[MAX_RESOURCES];
@@ -57,12 +58,13 @@ static void response(int fd,int status,const char *type,long long size){
     send_all(fd,header,(size_t)n+2);
 }
 
-static size_t write_playlist(char *data,size_t size,size_t count,void *opaque){
-    Playlist *p=opaque;
+static size_t write_buffer(char *data,size_t size,size_t count,void *opaque){
+    Buffer *p=opaque;
     size_t n=size*count;
-    if(n>MAX_PLAYLIST-p->length)return 0;
+    if(n>p->limit-p->length)return 0;
     if(p->length+n+1>p->capacity){
         size_t capacity=(p->length+n+1)*2;
+        if(capacity>p->limit+1)capacity=p->limit+1;
         char *buffer=realloc(p->text,capacity);
         if(!buffer)return 0;
         p->text=buffer;
@@ -72,25 +74,6 @@ static size_t write_playlist(char *data,size_t size,size_t count,void *opaque){
     p->length+=n;
     p->text[p->length]=0;
     return n;
-}
-
-typedef struct {
-    int fd,started;
-    CURL *curl;
-} Segment;
-
-static size_t write_segment(char *data,size_t size,size_t count,void *opaque){
-    Segment *segment=opaque;
-    if(!segment->started){
-        long code=0;
-        curl_easy_getinfo(segment->curl,CURLINFO_RESPONSE_CODE,&code);
-        if(code<200 || code>=300)return 0;
-        curl_off_t length=-1;
-        curl_easy_getinfo(segment->curl,CURLINFO_CONTENT_LENGTH_DOWNLOAD_T,&length);
-        response(segment->fd,200,"video/mp4",(long long)length);
-        segment->started=1;
-    }
-    return send_all(segment->fd,data,size*count)?size*count:0;
 }
 
 static int cancelled(void *unused,curl_off_t a,curl_off_t b,curl_off_t c,curl_off_t d){
@@ -106,18 +89,24 @@ static const char *resource_suffix(const char *url){
     return NULL;
 }
 
-static int append_resource(Playlist *out,const char *base,const char *ref,size_t length){
+static char *absolute_https(const char *base,const char *ref){
+    CURLU *parsed=curl_url();
+    if(!parsed)return NULL;
+    char *url=NULL;
+    if(!curl_url_set(parsed,CURLUPART_URL,base,0) &&
+       !curl_url_set(parsed,CURLUPART_URL,ref,0))
+        curl_url_get(parsed,CURLUPART_URL,&url,0);
+    curl_url_cleanup(parsed);
+    if(url && strncmp(url,"https://",8)){curl_free(url);return NULL;}
+    return url;
+}
+
+static int append_resource(Buffer *out,const char *base,const char *ref,size_t length){
     char reference[2048];
     if(!length || length>=sizeof(reference) || resource_count>=MAX_RESOURCES)return 0;
     memcpy(reference,ref,length);
     reference[length]=0;
-    CURLU *parsed=curl_url();
-    if(!parsed)return 0;
-    char *url=NULL;
-    if(!curl_url_set(parsed,CURLUPART_URL,base,0) &&
-       !curl_url_set(parsed,CURLUPART_URL,reference,0))
-        curl_url_get(parsed,CURLUPART_URL,&url,0);
-    curl_url_cleanup(parsed);
+    char *url=absolute_https(base,reference);
     const char *suffix=url && !strncmp(url,"https://",8)?resource_suffix(url):NULL;
     if(!suffix){curl_free(url);return 0;}
     char *copy=strdup(url);
@@ -127,10 +116,10 @@ static int append_resource(Playlist *out,const char *base,const char *ref,size_t
     resources[id]=(Resource){.url=copy,.suffix=suffix};
     char local[96];
     int n=snprintf(local,sizeof(local),"http://127.0.0.1:%u/%u/%s",port,id,suffix);
-    return write_playlist(local,1,(size_t)n,out)==(size_t)n;
+    return write_buffer(local,1,(size_t)n,out)==(size_t)n;
 }
 
-static int rewrite_playlist(Playlist *out,Playlist *input,const char *base){
+static int rewrite_playlist(Buffer *out,Buffer *input,const char *base){
     if(!input->text || strncmp(input->text,"#EXTM3U",7))return 0;
     char *save=NULL;
     for(char *line=strtok_r(input->text,"\r\n",&save);line;line=strtok_r(NULL,"\r\n",&save)){
@@ -141,24 +130,103 @@ static int rewrite_playlist(Playlist *out,Playlist *input,const char *base){
             if(uri){
                 uri+=5;
                 const char *end=strchr(uri,'"');
-                if(!end || write_playlist(line,1,(size_t)(uri-line),out)!=(size_t)(uri-line) ||
+                if(!end || write_buffer(line,1,(size_t)(uri-line),out)!=(size_t)(uri-line) ||
                    !append_resource(out,base,uri,(size_t)(end-uri)) ||
-                   write_playlist((char *)end,1,strlen(end),out)!=strlen(end))return 0;
-            }else if(write_playlist(line,1,strlen(line),out)!=strlen(line))return 0;
+                   write_buffer((char *)end,1,strlen(end),out)!=strlen(end))return 0;
+            }else if(write_buffer(line,1,strlen(line),out)!=strlen(line))return 0;
         }
-        if(write_playlist("\n",1,1,out)!=1)return 0;
+        if(write_buffer("\n",1,1,out)!=1)return 0;
     }
     return 1;
 }
 
+/* Movy advertises muxed renditions up to 4K. Present one media playlist so
+   libavformat does not have to open every rendition just to start playback. */
+static char *choose_variant(char *manifest,const char *base,long ceiling){
+    char *save=NULL,*best=NULL,*lowest=NULL;
+    long bandwidth=0,best_rate=0,lowest_rate=0;
+    for(char *line=strtok_r(manifest,"\r\n",&save);line;line=strtok_r(NULL,"\r\n",&save)){
+        if(!strncmp(line,"#EXT-X-STREAM-INF:",18)){
+            const char *rate=strstr(line,"BANDWIDTH=");
+            if(rate && rate>line && (rate[-1]==',' || rate[-1]==':') &&
+               !strstr(line,",AUDIO="))
+                bandwidth=strtol(rate+10,NULL,10);
+            else bandwidth=0;
+        }else if(*line!='#' && bandwidth>0){
+            if(!lowest || bandwidth<lowest_rate){lowest=line;lowest_rate=bandwidth;}
+            if(bandwidth<=ceiling && bandwidth>best_rate){best=line;best_rate=bandwidth;}
+            bandwidth=0;
+        }
+    }
+    return best || lowest?absolute_https(base,best?best:lowest):NULL;
+}
+
+static int fetch(CURL *curl,const char *url,Buffer *out){
+    curl_easy_setopt(curl,CURLOPT_URL,url);
+    curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,write_buffer);
+    curl_easy_setopt(curl,CURLOPT_WRITEDATA,out);
+    for(int attempt=0;attempt<2 && !atomic_load(&stopping);attempt++){
+        out->length=0;
+        curl_easy_setopt(curl,CURLOPT_FRESH_CONNECT,(long)attempt);
+        CURLcode code=curl_easy_perform(curl);
+        long status=0;
+        curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status);
+        if(code==CURLE_OK && out->length && status>=200 && status<300)return 1;
+        if((status>=400 && status<500 && status!=408 && status!=429) ||
+           code==CURLE_WRITE_ERROR)break;
+    }
+    return 0;
+}
+
 static void serve(int fd,CURL *curl,Resource *resource){
+    int playlist=!strcmp(resource->suffix,"playlist.m3u8");
     if(resource->playlist){
         response(fd,200,"application/vnd.apple.mpegurl",(long long)resource->playlist_size);
         send_all(fd,resource->playlist,resource->playlist_size);
         return;
     }
-    curl_easy_reset(curl);
-    curl_easy_setopt(curl,CURLOPT_URL,resource->url);
+    Buffer input={.limit=playlist?MAX_PLAYLIST:MAX_SEGMENT};
+    int ok=fetch(curl,resource->url,&input);
+    if(ok && !playlist){
+        response(fd,200,"video/mp4",(long long)input.length);
+        send_all(fd,input.text,input.length);
+    }else if(ok){
+        Buffer out={.limit=MAX_PLAYLIST};
+        char *effective=NULL;
+        curl_easy_getinfo(curl,CURLINFO_EFFECTIVE_URL,&effective);
+        if(effective && !strncmp(input.text,"#EXTM3U",7) &&
+           strstr(input.text,"#EXT-X-STREAM-INF:")){
+            char *variant=choose_variant(input.text,effective,preferred_bandwidth);
+            ok=variant && fetch(curl,variant,&input);
+            curl_free(variant);
+            curl_easy_getinfo(curl,CURLINFO_EFFECTIVE_URL,&effective);
+        }
+        unsigned before=resource_count;
+        if(ok && effective && strstr(input.text,"#EXTINF:") &&
+           rewrite_playlist(&out,&input,effective)){
+            resource->playlist=out.text;
+            resource->playlist_size=out.length;
+            response(fd,200,"application/vnd.apple.mpegurl",(long long)out.length);
+            send_all(fd,out.text,out.length);
+        }else{
+            while(resource_count>before)free(resources[--resource_count].url);
+            free(out.text);
+            ok=0;
+        }
+    }
+    if(!ok){
+        long status=0;
+        curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status);
+        fprintf(stderr,"Movy %s unavailable (HTTP %ld)\n",playlist?"playlist":"segment",status);
+        response(fd,502,"text/plain",0);
+    }
+    free(input.text);
+}
+
+static void *relay_worker(void *opaque){
+    CURL *curl=opaque;
+    struct curl_slist *headers=curl_slist_append(NULL,"Origin: " MOVY_ORIGIN);
+    curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
     curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,1L);
     curl_easy_setopt(curl,CURLOPT_MAXREDIRS,4L);
 #if LIBCURL_VERSION_NUM >= 0x075500
@@ -167,8 +235,6 @@ static void serve(int fd,CURL *curl,Resource *resource){
     curl_easy_setopt(curl,CURLOPT_REDIR_PROTOCOLS,CURLPROTO_HTTPS);
 #endif
     curl_easy_setopt(curl,CURLOPT_REFERER,MOVY_ORIGIN "/");
-    struct curl_slist *headers=curl_slist_append(NULL,"Origin: " MOVY_ORIGIN);
-    curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
     curl_easy_setopt(curl,CURLOPT_ACCEPT_ENCODING,"");
     curl_easy_setopt(curl,CURLOPT_HTTP_VERSION,CURL_HTTP_VERSION_1_1);
     curl_easy_setopt(curl,CURLOPT_USERAGENT,"Mozilla/5.0 (Nintendo Switch; UAPlay/1.0)");
@@ -176,58 +242,11 @@ static void serve(int fd,CURL *curl,Resource *resource){
     curl_easy_setopt(curl,CURLOPT_IPRESOLVE,(long)CURL_IPRESOLVE_V4);
 #endif
     curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);
-    curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT,9L);
-    curl_easy_setopt(curl,CURLOPT_TIMEOUT,18L);
+    curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT,6L);
+    curl_easy_setopt(curl,CURLOPT_TIMEOUT,14L);
     curl_easy_setopt(curl,CURLOPT_FAILONERROR,1L);
     curl_easy_setopt(curl,CURLOPT_NOPROGRESS,0L);
     curl_easy_setopt(curl,CURLOPT_XFERINFOFUNCTION,cancelled);
-    if(strcmp(resource->suffix,"playlist.m3u8")){
-        Segment segment={.fd=fd,.curl=curl};
-        curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,write_segment);
-        curl_easy_setopt(curl,CURLOPT_WRITEDATA,&segment);
-        CURLcode code=curl_easy_perform(curl);
-        if(code!=CURLE_OK && !segment.started && !atomic_load(&stopping)){
-            curl_easy_setopt(curl,CURLOPT_FRESH_CONNECT,1L);
-            curl_easy_perform(curl);
-        }
-        if(!segment.started)response(fd,502,"text/plain",0);
-        curl_easy_setopt(curl,CURLOPT_HTTPHEADER,NULL);
-        curl_slist_free_all(headers);
-        return;
-    }
-    Playlist input={0},out={0};
-    curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,write_playlist);
-    curl_easy_setopt(curl,CURLOPT_WRITEDATA,&input);
-    CURLcode code=curl_easy_perform(curl);
-    if(code!=CURLE_OK && !input.length && !atomic_load(&stopping)){
-        curl_easy_setopt(curl,CURLOPT_FRESH_CONNECT,1L);
-        code=curl_easy_perform(curl);
-    }
-    char *effective=NULL;
-    curl_easy_getinfo(curl,CURLINFO_EFFECTIVE_URL,&effective);
-    unsigned before=resource_count;
-    if(code==CURLE_OK && effective && rewrite_playlist(&out,&input,effective)){
-        resource->playlist=out.text;
-        resource->playlist_size=out.length;
-        out.text=NULL;
-        response(fd,200,"application/vnd.apple.mpegurl",(long long)resource->playlist_size);
-        send_all(fd,resource->playlist,resource->playlist_size);
-    }else{
-        while(resource_count>before)free(resources[--resource_count].url);
-        long status=0;
-        curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status);
-        fprintf(stderr,"Movy playlist: curl=%d, HTTP=%ld, bytes=%lu\n",
-                (int)code,status,(unsigned long)input.length);
-        response(fd,502,"text/plain",0);
-    }
-    free(input.text);
-    free(out.text);
-    curl_easy_setopt(curl,CURLOPT_HTTPHEADER,NULL);
-    curl_slist_free_all(headers);
-}
-
-static void *relay_worker(void *opaque){
-    CURL *curl=opaque;
     struct pollfd waiting={.fd=listener,.events=POLLIN};
     const struct timeval timeout={.tv_sec=2};
     while(!atomic_load(&stopping)){
@@ -253,6 +272,7 @@ static void *relay_worker(void *opaque){
         close(client);
     }
     curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
     return NULL;
 }
 
@@ -270,8 +290,8 @@ void movy_stream_close(void){
     }
 }
 
-int movy_stream_open(const char *upstream,char *url,size_t size){
-    if(listener>=0 && !strcmp(resources[0].url,upstream)){
+int movy_stream_open(const char *upstream,long bandwidth,char *url,size_t size){
+    if(listener>=0 && preferred_bandwidth==bandwidth && !strcmp(resources[0].url,upstream)){
         int n=snprintf(url,size,"http://127.0.0.1:%u/0/playlist.m3u8",port);
         return n>0 && (size_t)n<size;
     }
@@ -302,6 +322,7 @@ int movy_stream_open(const char *upstream,char *url,size_t size){
     resources[0]=(Resource){.url=root,.suffix="playlist.m3u8"};
     resource_count=1;
     listener=fd;
+    preferred_bandwidth=bandwidth;
     atomic_store(&stopping,0);
     if(pthread_create(&worker,NULL,relay_worker,curl)!=0){
         close(fd);

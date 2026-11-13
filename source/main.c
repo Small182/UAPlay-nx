@@ -2124,12 +2124,14 @@ static void play_stream(mpv_handle *player,const char *url){
     if(!player)return;
     char local[96];
     if(movy_stream_url(url)){
-        if(movy_stream_open(url,local,sizeof(local)))url=local;
+        static const long movy_bitrates[]={1800000,1000000,1800000,3600000,6800000};
+        long bitrate=movy_bitrates[(int)video_options[6]];
+        if(movy_stream_open(url,bitrate,local,sizeof(local)))url=local;
     }else movy_stream_close();
     configure_stream(player,url);
     if(url==local){
         const char *args[]={"loadfile",url,"replace",
-            "demuxer-lavf-o=%33%http_persistent=0,http_multiple=0",NULL};
+            "demuxer-lavf-o=%65%http_persistent=0,http_multiple=0,http_seekable=0,seg_max_retry=2",NULL};
         mpv_command_async(player,0,args);
     }else command(player,"loadfile",url);
 }
@@ -3540,8 +3542,9 @@ int main(void) {
                 }
                 text_center(&paint,TR("Завантаження відео","Loading video"),
                             loading_center_x-310,426,620,paint.font,.76f,.78f,.82f);
-                if(video_started_at && SDL_GetTicks()-video_started_at>30000){
-                    snprintf(message,sizeof(message),TR("Час очікування відео вичерпано (30 с)","Video timed out (30 s)"));
+                unsigned timeout=movy_stream_url(playing_url)?60000u:30000u;
+                if(video_started_at && SDL_GetTicks()-video_started_at>timeout){
+                    snprintf(message,sizeof(message),TR("Час очікування відео вичерпано (%u с)","Video timed out (%u s)"),timeout/1000);
                     command(player,"stop",NULL);page=player_return_page;
                 }
             }else if(render_result<0){

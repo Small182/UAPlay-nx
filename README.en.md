@@ -83,6 +83,14 @@ Swipe horizontally to browse poster rows. On Home, swipe vertically over the pos
 
 The touch-enabled player provides playback controls, a seek bar, and a volume slider. The overlay hides automatically after a few seconds of inactivity.
 
+## SubDL subtitles
+
+1. Save your [SubDL API key](https://subdl.com/api-doc) on the SD card at `switch/uaplay/subdl.key`. Put only the key on one line.
+2. While playing a movie or episode, press **X → Search subtitles on SubDL** and select a Ukrainian or English subtitle by release name.
+3. If the captions lead or lag, open **− → Subtitle delay** and adjust it with the arrow buttons.
+
+Search and download start when selected in the menu. UAPlay reuses subtitle files in `switch/uaplay/subtitles/` when you select the same result again.
+
 ## User data and updates
 
 Favorites, watch history, and playback positions are stored **locally on the SD card**, not in the NRO. The main library file is `sdmc:/switch/uaflix/library.tsv` (a legacy path preserved for compatibility with earlier versions).

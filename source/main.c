@@ -18,10 +18,11 @@
 #include "library.h"
 #include "playback.h"
 #include "downloads.h"
+#include "subdl.h"
 
 typedef enum { CATALOG, DETAILS, PROVIDERS, SOURCES, PLAYER, SETTINGS,
                SEASONS, EPISODES, TRACK_PICKER, VIDEO_SETTINGS, DOWNLOADS,
-               PROVIDER_SETTINGS } Page;
+               PROVIDER_SETTINGS, SUBDL_PICKER } Page;
 static int selected_provider=0;
 static int provider_settings_selected=0;
 static int download_selected=0;
@@ -62,10 +63,43 @@ static MediaTrack tracks[TRACKS_MAX];
 static int track_count,selected_track,subtitle_picker;
 #define SOURCE_AUDIO_TRACK_BASE 10000
 #define SOURCE_SUBTITLE_TRACK_BASE 20000
+#define SUBDL_SEARCH_TRACK (-30000)
+static struct {
+    SDL_Thread *thread;
+    SDL_atomic_t done;
+    Movie movie;
+    int season,episode,downloading,success,count,selected;
+    SubdlSubtitle results[SUBDL_MAX];
+    char file[SUBDL_FILE_SIZE],error[256];
+} subdl_job;
+
+static int subdl_worker(void *unused){
+    (void)unused;
+    if(subdl_job.downloading)
+        subdl_job.success=subdl_download(&subdl_job.results[subdl_job.selected],
+                                         subdl_job.file,sizeof(subdl_job.file),
+                                         subdl_job.error,sizeof(subdl_job.error));
+    else
+        subdl_job.count=subdl_search(&subdl_job.movie,subdl_job.season,subdl_job.episode,
+                                     subdl_job.results,subdl_job.error,sizeof(subdl_job.error));
+    SDL_AtomicSet(&subdl_job.done,1);
+    return 0;
+}
+
+static void subdl_start(int downloading){
+    subdl_job.downloading=downloading;
+    subdl_job.error[0]=0;
+    SDL_AtomicSet(&subdl_job.done,0);
+    subdl_job.thread=SDL_CreateThread(subdl_worker,"subdl",NULL);
+    if(!subdl_job.thread)
+        snprintf(subdl_job.error,sizeof(subdl_job.error),"%s",
+                 TR("Не вдалося запустити SubDL.","Could not start SubDL."));
+}
+
 static int selected_video_option;
 /* Only player controls useful on the console: speed, volume, subtitle size,
-   and HLS quality. Keep mpv's existing option storage intact. */
-static const int visible_video_options[]={0,1,4,6};
+   subtitle delay and HLS quality. Keep mpv's existing option storage intact. */
+static const int visible_video_options[]={0,1,4,5,6};
 #define VIDEO_OPTION_COUNT ((int)(sizeof(visible_video_options)/sizeof(visible_video_options[0])))
 static double video_options[]={1.0,100.0,0.0,0.0,48.0,0.0,0.0};
 static const char *video_props[]={"speed","volume","brightness","contrast",
@@ -1326,7 +1360,7 @@ static void footer(Paint *p,const char *message) {
         HINT("↑↓",TR("Пункт","Item"));HINT("A",TR("Змінити","Change"));HINT("B",TR("Закрити","Close"));
     }else if(footer_page==PROVIDER_SETTINGS){
         HINT("↑↓",TR("Джерело","Provider"));HINT("A",TR("Перемкнути","Toggle"));HINT("B",TR("Назад","Back"));
-    }else if(footer_page==TRACK_PICKER){
+    }else if(footer_page==TRACK_PICKER || footer_page==SUBDL_PICKER){
         HINT("↑↓",TR("Доріжка","Track"));HINT("A",TR("Застосувати","Apply"));HINT("B",TR("Назад","Back"));
     }else if(footer_page==VIDEO_SETTINGS){
         HINT("↑↓",TR("Параметр","Option"));HINT("←→",TR("Змінити","Change"));HINT("B",TR("Назад","Back"));
@@ -1871,6 +1905,28 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         paint_clip(p,0,0,0,0);
         if (!track_count) text_muted(p,TR("У цьому відео немає доступних доріжок","No tracks are available for this video"),60,200,1100);
         footer(p,status);
+    } else if (page==SUBDL_PICKER) {
+        screen_header(p,"SubDL",TR("Українська · English","Ukrainian · English"));
+        if(subdl_job.thread){
+            text_muted(p,subdl_job.downloading?
+                       TR("Завантаження субтитрів…","Downloading subtitles…"):
+                       TR("Пошук субтитрів…","Searching for subtitles…"),60,200,1100);
+        }else{
+            int offset=list_offset(p,page,subdl_job.selected,subdl_job.count);
+            int first=first_visible_row(offset);
+            for(int i=first;i<subdl_job.count && i<first+UI_ROWS+2;i++){
+                const SubdlSubtitle *subtitle=&subdl_job.results[i];
+                const char *language=!strcmp(subtitle->language,"uk")?
+                                     TR("Українська","Ukrainian"):TR("Англійська","English");
+                char label[220];
+                snprintf(label,sizeof(label),"%s · %s%s",language,subtitle->release,
+                         subtitle->hearing_impaired?" [SDH]":"");
+                list_row(p,label,UI_ROW_Y+i*UI_ROW_STEP-offset,i==subdl_job.selected,NULL);
+            }
+            paint_clip(p,0,0,0,0);
+            if(subdl_job.error[0])text_muted(p,subdl_job.error,60,subdl_job.count?610:200,1150);
+        }
+        footer(p,NULL);
     } else if (page==VIDEO_SETTINGS) {
         screen_header(p,TR("Налаштування відео","Video settings"),TR("Плеєр","Player"));
         for(int i=0;i<VIDEO_OPTION_COUNT;i++) {
@@ -1888,6 +1944,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                 snprintf(value,sizeof(value),"%s",quality?hls_labels[quality]:TR("Авто","Auto"));
             }
             else if(option==0)snprintf(value,sizeof(value),"%.2f",video_options[option]);
+            else if(option==5)snprintf(value,sizeof(value),TR("%+.2f с","%+.2f s"),video_options[option]);
             else snprintf(value,sizeof(value),"%.0f",video_options[option]);
             text_center_button(p,value,963,y,240,60,p->font,.95f,.96f,.98f);
             if(i==selected_video_option){float r,g,b;accent(&r,&g,&b);
@@ -2213,6 +2270,11 @@ int main(void) {
                                         count=episodes_in_season(season_ids[selected_season]);
                                     break;
                                 case TRACK_PICKER:selected=&selected_track;count=track_count;break;
+                                case SUBDL_PICKER:
+                                    if(!subdl_job.thread){
+                                        selected=&subdl_job.selected;count=subdl_job.count;
+                                    }
+                                    break;
                                 case DOWNLOADS:
                                     selected=&download_selected;
                                     count=downloads_list(download_rows,DOWNLOADS_MAX);
@@ -2427,6 +2489,11 @@ int main(void) {
                     if(new_track>=0 && new_track<track_count){
                         selected_track=new_track;key=SDL_CONTROLLER_BUTTON_A;
                     }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
+                }else if(page==SUBDL_PICKER){
+                    int row=touched_list_row(tx,ty);
+                    if(!subdl_job.thread && row>=0 && row<subdl_job.count){
+                        subdl_job.selected=row;key=SDL_CONTROLLER_BUTTON_A;
+                    }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==VIDEO_SETTINGS){
                     int slot=(ty-132)/68;
                     if(ty>=132 && (ty-132)%68<60 && slot>=0 && slot<VIDEO_OPTION_COUNT){
@@ -2521,12 +2588,16 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)change_volume(player,-1);
                 if(key==SDL_CONTROLLER_BUTTON_X || key==SDL_CONTROLLER_BUTTON_Y){
                     subtitle_picker=key==SDL_CONTROLLER_BUTTON_X;
-                    track_count=playback_tracks(player,subtitle_picker,tracks,TRACKS_MAX);
+                    int subdl_available=subtitle_picker && video_loaded && playing_movie.id>0 &&
+                        (!playing_movie.series || active_episode_variant>=0 ||
+                         (player_return_page==DOWNLOADS && download_episode>0));
+                    int track_limit=TRACKS_MAX-subdl_available;
+                    track_count=playback_tracks(player,subtitle_picker,tracks,track_limit);
                     /* Even if an external subtitle failed to load into mpv,
                        keep the provider's caption URL available for retry. */
                     if(subtitle_picker)
                         for(int i=0;i<uakino_resolved_subtitle_count() &&
-                            track_count<TRACKS_MAX;i++){
+                            track_count<track_limit;i++){
                             if(playback_has_external_subtitle(player,
                                    uakino_resolved_subtitle_url(i)))continue;
                             MediaTrack *choice=&tracks[track_count++];
@@ -2568,6 +2639,13 @@ int main(void) {
                                      episodes[i].voice[0]?episodes[i].voice:TR("Основна","Main"));
                         }
                     }
+                    if(subdl_available){
+                        MediaTrack *choice=&tracks[track_count++];
+                        choice->id=SUBDL_SEARCH_TRACK;
+                        choice->selected=0;
+                        snprintf(choice->label,sizeof(choice->label),"%s",
+                                 TR("Шукати субтитри в SubDL","Search subtitles on SubDL"));
+                    }
                     selected_track=0;
                     for(int i=0;i<track_count;i++) if(tracks[i].selected)selected_track=i;
                     page=TRACK_PICKER;
@@ -2584,7 +2662,27 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && selected_track<track_count-1)selected_track++;
                 if(key==SDL_CONTROLLER_BUTTON_A && track_count){
                     int id=tracks[selected_track].id;
-                    if(subtitle_picker && id<=-(SOURCE_SUBTITLE_TRACK_BASE+1) &&
+                    if(subtitle_picker && id==SUBDL_SEARCH_TRACK){
+                        if(!subdl_job.thread){
+                            message[0]=0;
+                            subdl_job.movie=playing_movie;
+                            subdl_job.season=0;
+                            subdl_job.episode=0;
+                            if(player_return_page==DOWNLOADS){
+                                subdl_job.season=download_season;
+                                subdl_job.episode=download_episode;
+                            }else if(player_return_page==EPISODES && active_episode_variant>=0){
+                                const Episode *active=&episodes[active_episode_variant];
+                                subdl_job.season=active->season;
+                                subdl_job.episode=active->number;
+                            }
+                            subdl_job.count=subdl_job.selected=0;
+                            subdl_start(0);
+                            page=SUBDL_PICKER;
+                        }else snprintf(message,sizeof(message),"%s",
+                                       TR("Попередній запит SubDL ще триває.",
+                                          "The previous SubDL request is still running."));
+                    }else if(subtitle_picker && id<=-(SOURCE_SUBTITLE_TRACK_BASE+1) &&
                        id>=-(SOURCE_SUBTITLE_TRACK_BASE+UAKINO_PLAYER_TRACK_MAX)){
                         int index=-id-SOURCE_SUBTITLE_TRACK_BASE-1;
                         const char *args[]={"sub-add",
@@ -2639,6 +2737,18 @@ int main(void) {
                                  tracks[selected_track].label);
                         page=PLAYER;
                     }else snprintf(message,sizeof(message),TR("Не вдалося перемкнути доріжку","Could not switch tracks"));
+                }
+                continue;
+            }
+            if(page==SUBDL_PICKER){
+                if(key==SDL_CONTROLLER_BUTTON_B)page=TRACK_PICKER;
+                else if(!subdl_job.thread){
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && subdl_job.selected>0)
+                        subdl_job.selected--;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && subdl_job.selected<subdl_job.count-1)
+                        subdl_job.selected++;
+                    if(key==SDL_CONTROLLER_BUTTON_A && subdl_job.count)
+                        subdl_start(1);
                 }
                 continue;
             }
@@ -3236,7 +3346,8 @@ int main(void) {
                     mpv_command_async(player,0,args);
                     resume_at=0;
                 }
-                if(event->event_id==MPV_EVENT_END_FILE && page==PLAYER){
+                if(event->event_id==MPV_EVENT_END_FILE &&
+                   (page==PLAYER || page==SUBDL_PICKER || page==TRACK_PICKER)){
                     mpv_event_end_file *end=(mpv_event_end_file*)event->data;
                     if(end && end->reason==MPV_END_FILE_REASON_ERROR){
                         snprintf(message,sizeof(message),TR("Помилка відео: %s (%d)","Video error: %s (%d)"),
@@ -3254,6 +3365,7 @@ int main(void) {
                             catalog_next_episode(episodes,episode_count,
                                                  active_episode_variant):-1;
                         if(autoplay_episodes && following>=0){
+                            page=PLAYER;
                             pending_next_episode=following;
                             next_episode_countdown_at=SDL_GetTicks();
                         }else page=player_return_page;
@@ -3263,6 +3375,22 @@ int main(void) {
                     mpv_event_log_message *log=(mpv_event_log_message*)event->data;
                     if(log && log->text) fprintf(stderr,"mpv [%s]: %s",log->prefix,log->text);
                 }
+            }
+        }
+        if(subdl_job.thread && SDL_AtomicGet(&subdl_job.done)){
+            SDL_WaitThread(subdl_job.thread,NULL);
+            subdl_job.thread=NULL;
+            if(page==SUBDL_PICKER && subdl_job.downloading && subdl_job.success){
+                const SubdlSubtitle *subtitle=&subdl_job.results[subdl_job.selected];
+                const char *args[]={"sub-add",subdl_job.file,"cached",subtitle->release,
+                                    subtitle->language,NULL};
+                if(mpv_command(player,args)>=0){
+                    mpv_set_property_string(player,"sub-visibility","yes");
+                    controls_until=SDL_GetTicks()+3000;
+                    page=PLAYER;
+                }else snprintf(subdl_job.error,sizeof(subdl_job.error),"%s",
+                               TR("Плеєр не зміг відкрити субтитри.",
+                                  "The player could not open the subtitles."));
             }
         }
         /* Opening a source (or an invalid stream) must not put a film into
@@ -3324,7 +3452,7 @@ int main(void) {
            Switch otherwise treats it as idle and progressively dims the
            display. libnx's media playback state inhibits that idle dimming
            and auto-sleep only for the duration of video playback. */
-        int watching_video=(page==PLAYER || page==TRACK_PICKER ||
+        int watching_video=(page==PLAYER || page==TRACK_PICKER || page==SUBDL_PICKER ||
                             (page==VIDEO_SETTINGS && !video_settings_from_menu));
         downloads_pause(watching_video);
         if(watching_video!=media_playback_mode){
@@ -3422,6 +3550,7 @@ int main(void) {
         if(frame_elapsed<frame_budget)SDL_Delay(frame_budget-frame_elapsed);
     }
     if(media_playback_mode)appletSetMediaPlaybackState(false);
+    if(subdl_job.thread)SDL_WaitThread(subdl_job.thread,NULL);
     downloads_shutdown();
     catalog_loader_shutdown();
     free(movies);

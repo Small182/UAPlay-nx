@@ -20,10 +20,10 @@ LIBS := $(shell pkg-config --libs mpv sdl2 SDL2_ttf SDL2_image libcurl) -lGLESv2
 .PHONY: all clean
 all: $(TARGET).nro
 
-main.o: source/main.c source/catalog.h source/posters.h source/library.h source/playback.h source/downloads.h source/platform.h source/i18n.h
+main.o: source/main.c source/catalog.h source/posters.h source/library.h source/playback.h source/downloads.h source/platform.h source/i18n.h source/subdl.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-catalog.o: source/catalog.c source/catalog.h source/i18n.h
+catalog.o: source/catalog.c source/catalog.h source/i18n.h source/platform.h source/subdl.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 posters.o: source/posters.c source/posters.h source/catalog.h

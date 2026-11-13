@@ -1,11 +1,14 @@
 #include "i18n.h"
 #include "catalog.h"
+#include "platform.h"
+#include "subdl.h"
 
 #include <curl/curl.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
 
@@ -284,6 +287,237 @@ static const char *object_end(const char *p) {
         if (!quoted && *p == '}' && --depth == 0) return p + 1;
     }
     return NULL;
+}
+
+#define SUBDL_API "https://api.subdl.com/api/v2/subtitles/search"
+#define SUBDL_HOST "https://dl.subdl.com"
+#define SUBDL_KEY_PATH UAPLAY_DATA_DIR "/subdl.key"
+#define SUBDL_CACHE UAPLAY_DATA_DIR "/subtitles"
+
+/* Keep only the documented CDN resource path. API responses can append
+   the user's key to this URL, and the free CDN download works without it. */
+static int subdl_resource(char *value) {
+    const char prefix[]="/subtitle/";
+    if(strncmp(value,prefix,sizeof(prefix)-1))return 0;
+    value[strcspn(value,"?#")]=0;
+    const char *part=value+sizeof(prefix)-1;
+    const char *slash=strchr(part,'/');
+    if(!slash || slash==part || !slash[1])return 0;
+    for(const char *p=part;*p;p++)
+        if(p!=slash && !isalnum((unsigned char)*p) && *p!='-' && *p!='_')return 0;
+    return 1;
+}
+
+static const char *subdl_array(const char *start,const char *end,const char *key) {
+    char needle[48];
+    snprintf(needle,sizeof(needle),"\"%s\"",key);
+    const char *p=strstr(start,needle);
+    if(!p || p>=end)return NULL;
+    p+=strlen(needle);
+    while(p<end && isspace((unsigned char)*p))p++;
+    if(p==end || *p++!=':')return NULL;
+    while(p<end && isspace((unsigned char)*p))p++;
+    return p<end && *p=='['?p+1:NULL;
+}
+
+static int subdl_parse(const char *json,int season,int episode,
+                       const char *language,SubdlSubtitle *out,int max) {
+    int count=0;
+    const char *end=json+strlen(json);
+    const char *row=subdl_array(json,end,"subtitles");
+    while(row && row<end && count<max){
+        if(isspace((unsigned char)*row) || *row==','){row++;continue;}
+        if(*row!='{')break;
+        const char *row_end=object_end(row);
+        if(!row_end || row_end>end)break;
+        char release[176],number[16];
+        json_field(row,row_end,"release_name",release,sizeof(release));
+        json_field(row,row_end,"season",number,sizeof(number));
+        int parent_season=atoi(number);
+        const char *file=subdl_array(row,row_end,"unpack_files");
+        while(file && file<row_end && count<max){
+            if(isspace((unsigned char)*file) || *file==','){file++;continue;}
+            if(*file!='{')break;
+            const char *file_end=object_end(file);
+            if(!file_end || file_end>row_end)break;
+            SubdlSubtitle sub={0};
+            char code[12],format[12],hi[8];
+            json_field(file,file_end,"language",code,sizeof(code));
+            json_field(file,file_end,"format",format,sizeof(format));
+            json_field(file,file_end,"url",sub.resource,sizeof(sub.resource));
+            json_field(file,file_end,"hi",hi,sizeof(hi));
+            sub.hearing_impaired=!strcmp(hi,"true");
+            json_field(file,file_end,"season",number,sizeof(number));
+            int file_season=atoi(number);
+            if(file_season==0)file_season=parent_season;
+            json_field(file,file_end,"episode",number,sizeof(number));
+            int file_episode=atoi(number);
+            if(!strcasecmp(code,language) && strlen(sub.resource)<sizeof(sub.resource)-1 &&
+               (!strcmp(format,"srt") || !strcmp(format,"ass") || !strcmp(format,"vtt") ||
+                !strcmp(format,"ssa") || !strcmp(format,"sub")) &&
+               (!episode || (file_season==season && file_episode==episode)) &&
+               subdl_resource(sub.resource)){
+                int duplicate=0;
+                for(int i=0;i<count;i++)
+                    if(!strcmp(out[i].resource,sub.resource)){duplicate=1;break;}
+                if(!duplicate){
+                    snprintf(sub.format,sizeof(sub.format),"%.3s",format);
+                    memcpy(sub.language,language,sizeof(sub.language));
+                    if(release[0])snprintf(sub.release,sizeof(sub.release),"%s",release);
+                    else json_field(file,file_end,"name",sub.release,sizeof(sub.release));
+                    out[count++]=sub;
+                }
+            }
+            file=file_end;
+        }
+        row=row_end;
+    }
+    return count;
+}
+
+static int subdl_get(const char *url,const char *key,Response *response,
+                     char *error,int error_size) {
+    CURL *curl=curl_easy_init();
+    if(!curl){
+        snprintf(error,error_size,"%s",TR("Не вдалося запустити curl","Could not initialize curl"));
+        return 0;
+    }
+    request_options(curl,url,response,6L,15L);
+    curl_easy_setopt(curl,CURLOPT_USERAGENT,"UAPlay/0.5.1");
+    curl_easy_setopt(curl,CURLOPT_ACCEPT_ENCODING,"");
+    struct curl_slist *headers=NULL;
+    if(key){
+        char auth[320];
+        snprintf(auth,sizeof(auth),"Authorization: Bearer %s",key);
+        headers=curl_slist_append(NULL,auth);
+        if(!headers){
+            curl_easy_cleanup(curl);
+            snprintf(error,error_size,"%s",TR("Недостатньо пам'яті","Out of memory"));
+            return 0;
+        }
+        curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
+        curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,0L);
+    }else{
+        curl_easy_setopt(curl,CURLOPT_REDIR_PROTOCOLS_STR,"https");
+    }
+    CURLcode result=curl_easy_perform(curl);
+    if(transient_network_error(result)){
+        response->length=0;
+        if(response->data)response->data[0]=0;
+        result=curl_easy_perform(curl);
+    }
+    long status=0;
+    curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status);
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+    if(result==CURLE_OK && status==200 && response->length)return 1;
+    if(status==401 || status==403)
+        snprintf(error,error_size,"%s",TR("SubDL відхилив запит. Перевірте ключ або доступ до сервісу.",
+                                          "SubDL denied the request. Check the key or service access."));
+    else if(status==429)
+        snprintf(error,error_size,"%s",TR("Ліміт SubDL. Спробуйте пізніше.","SubDL limit reached. Try again later."));
+    else if(result==CURLE_OK)
+        snprintf(error,error_size,TR("SubDL: відповідь HTTP %ld","SubDL: HTTP %ld"),status);
+    else
+        snprintf(error,error_size,"SubDL: %s",curl_easy_strerror(result));
+    return 0;
+}
+
+int subdl_search(const Movie *movie,int season,int episode,SubdlSubtitle *out,
+                 char *error,int error_size) {
+    error[0]=0;
+    if(movie->id<=0 || (movie->series && (season<0 || episode<=0))){
+        snprintf(error,error_size,"%s",TR("Номер сезону або серії недоступний.",
+                                          "Season or episode number is unavailable."));
+        return 0;
+    }
+    char key[256]={0};
+    FILE *file=fopen(SUBDL_KEY_PATH,"r");
+    if(file){fgets(key,sizeof(key),file);fclose(file);}
+    key[strcspn(key,"\r\n \t")]=0;
+    if(!key[0]){
+        snprintf(error,error_size,"%s",TR("Додайте ключ у /switch/uaplay/subdl.key на SD-карті.",
+                                          "Add your key to /switch/uaplay/subdl.key on the SD card."));
+        return 0;
+    }
+    int count=0;
+    char problem[256]={0};
+    const char *preferred=TR("uk","en");
+    const char *languages[]={preferred,!strcmp(preferred,"uk")?"en":"uk"};
+    for(int i=0;i<2;i++){
+        char url[512],query[72]="";
+        if(movie->series)snprintf(query,sizeof(query),"&season=%d&episode=%d",season,episode);
+        snprintf(url,sizeof(url),SUBDL_API "?tmdb_id=%d&type=%s&languages=%s"
+                 "&unpack=1&subs_per_page=20%s",
+                 movie->id,movie->series?"tv":"movie",languages[i],query);
+        Response response={0};
+        if(subdl_get(url,key,&response,problem,sizeof(problem))){
+            char status[16];
+            json_field(response.data,response.data+response.length,"status",status,sizeof(status));
+            if(!strcmp(status,"true"))
+                count+=subdl_parse(response.data,season,episode,languages[i],out+count,SUBDL_MAX/2);
+            else
+                snprintf(problem,sizeof(problem),"%s",TR("SubDL не виконав пошук.","SubDL could not complete the search."));
+        }
+        free(response.data);
+    }
+    if(!count)snprintf(error,error_size,"%s",problem[0]?problem:
+                       TR("Українських і англійських субтитрів не знайдено.",
+                          "No Ukrainian or English subtitles found."));
+    return count;
+}
+
+int subdl_download(const SubdlSubtitle *subtitle,char *path,int path_size,
+                   char *error,int error_size) {
+    error[0]=0;
+    const char *first=subtitle->resource+sizeof("/subtitle/")-1;
+    const char *slash=strchr(first,'/');
+    if(!slash)return 0;
+    int length=snprintf(path,(size_t)path_size,SUBDL_CACHE "/%.*s_%s.%s",
+                        (int)(slash-first),first,slash+1,subtitle->format);
+    if(length<0 || length>=path_size)return 0;
+    struct stat info;
+    if(stat(path,&info)==0 && S_ISREG(info.st_mode) && info.st_size>0)return 1;
+    char url[256];
+    snprintf(url,sizeof(url),SUBDL_HOST "%s",subtitle->resource);
+    Response response={0};
+    int ok=subdl_get(url,NULL,&response,error,error_size);
+    if(ok){
+        /* The raw endpoint must deliver text, even when the original upload
+           was a season archive. Never pass a service error page to mpv. */
+        const unsigned char *data=(const unsigned char *)response.data;
+        size_t start=0;
+        if(response.length>=3 && !memcmp(data,"\xef\xbb\xbf",3))start=3;
+        while(start<response.length && isspace(data[start]))start++;
+        ok=start<response.length && !memchr(data,0,response.length) &&
+           data[start]!='<' && data[start]!='{' &&
+           (data[start]!='[' || strcmp(subtitle->format,"ass")==0 ||
+            strcmp(subtitle->format,"ssa")==0) &&
+           (response.length<4 || memcmp(data,"PK\x03\x04",4));
+        if(!ok)snprintf(error,error_size,"%s",TR("SubDL повернув некоректний файл.",
+                                                "SubDL returned an invalid subtitle file."));
+    }
+    if(ok){
+        mkdir(UAPLAY_DATA_ROOT,0777);
+        mkdir(UAPLAY_DATA_DIR,0777);
+        mkdir(SUBDL_CACHE,0777);
+        char temporary[SUBDL_FILE_SIZE+5];
+        snprintf(temporary,sizeof(temporary),"%s.tmp",path);
+        FILE *file=fopen(temporary,"wb");
+        ok=file && fwrite(response.data,1,response.length,file)==response.length;
+        if(file && fclose(file)!=0)ok=0;
+        if(ok){
+            remove(path); /* An old empty file may remain after a failed write. */
+            ok=rename(temporary,path)==0;
+        }
+        if(!ok){
+            remove(temporary);
+            snprintf(error,error_size,"%s",TR("Не вдалося зберегти субтитри на SD-карті.",
+                                              "Could not save subtitles to the SD card."));
+        }
+    }
+    free(response.data);
+    return ok;
 }
 
 static int already_released(const char *release_date,const char *today){

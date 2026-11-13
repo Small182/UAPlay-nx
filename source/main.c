@@ -813,6 +813,52 @@ static void headline(Paint *p,const char *str,int x,int y,int limit){
 /* A single 8-point scale keeps every screen aligned and touch targets stable. */
 enum { UI_EDGE=32, UI_FOOTER_TOP=668, UI_ROW_Y=130,
        UI_ROW_HEIGHT=50, UI_ROW_STEP=58, UI_ROWS=8 };
+enum { POSTER_COLUMNS=6, POSTER_ROW_Y=389, POSTER_ROW_BOTTOM=661,
+       POSTER_GRID_Y=153, LIBRARY_GRID_Y=162, POSTER_GRID_BOTTOM=613 };
+
+typedef enum { TOUCH_NONE, TOUCH_TAP, SWIPE_LEFT, SWIPE_RIGHT,
+               SWIPE_UP, SWIPE_DOWN } TouchAction;
+typedef struct {
+    SDL_TouchID device;
+    SDL_FingerID finger;
+    Page page;
+    int x,y,active,moved;
+} TouchGesture;
+
+static TouchAction touch_gesture(TouchGesture *gesture,const SDL_TouchFingerEvent *event,
+                                 Page page,int x,int y){
+    if(event->type==SDL_FINGERDOWN && !gesture->active){
+        *gesture=(TouchGesture){.device=event->touchId,.finger=event->fingerId,
+                                .page=page,.x=x,.y=y,.active=1};
+        return TOUCH_NONE;
+    }
+    if(!gesture->active || gesture->device!=event->touchId ||
+       gesture->finger!=event->fingerId)return TOUCH_NONE;
+
+    int dx=x-gesture->x,dy=y-gesture->y;
+    int ax=abs(dx),ay=abs(dy);
+    if(ax>16 || ay>16)gesture->moved=1;
+    if(event->type!=SDL_FINGERUP)return TOUCH_NONE;
+    gesture->active=0;
+    if(!gesture->moved)return TOUCH_TAP;
+    if(ax>=52 && 4*ax>=5*ay)return dx<0?SWIPE_LEFT:SWIPE_RIGHT;
+    if(ay>=52 && 4*ay>=5*ax)return dy<0?SWIPE_UP:SWIPE_DOWN;
+    return TOUCH_NONE;
+}
+
+static int swipe_page_selection(int selected,int count,int page_size,int direction){
+    if(!count)return 0;
+    if(selected>=count)selected=count-1;
+    int first=selected/page_size*page_size;
+    int next=first+direction*page_size;
+    return next>=0 && next<count?next:selected;
+}
+
+static int poster_row_start(int chosen,int is_home){
+    return is_home && chosen>=POSTER_COLUMNS-1?
+           chosen-(POSTER_COLUMNS-1):chosen/POSTER_COLUMNS*POSTER_COLUMNS;
+}
+
 static void text_font(Paint *p,const char *s,int x,int y,int limit,
                       TTF_Font *font,float r,float g,float b){
     TTF_Font *prev=p->font;
@@ -1255,7 +1301,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             }
             const int start=chosen/12*12;
             for(int i=start;i<n && i<start+12;i++){
-                int k=i-start,x=54+k%6*201,y=162+k/6*245;
+                int k=i-start,x=54+k%6*201,y=LIBRARY_GRID_Y+k/6*245;
                 if(i==chosen && catalog_hero_focus==0)
                     selection_frame(p,x,y,138,206);
                 poster(p,&movies[i],x,y,138,206,&poster_budget);
@@ -1280,7 +1326,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             button(p,"‹  Назад",1106,98,142,44,0);
             int start=chosen/12*12;
             for(int i=start;i<n && i<start+12;i++){
-                int k=i-start,x=54+k%6*201,y=153+k/6*246;
+                int k=i-start,x=54+k%6*201,y=POSTER_GRID_Y+k/6*246;
                 if(i==chosen)selection_frame(p,x,y,138,206);
                 poster(p,&movies[i],x,y,138,206,&poster_budget);
             }
@@ -1351,9 +1397,9 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                 text_tiny(p,"Офлайн",1026,340,77);
             if(n && catalog_hero_focus==3)selection_frame(p,1110,329,138,42);
             button(p,ui_category==0?"Більше  ›":"Усі  ›",1110,329,138,42,0);
-            int start=ui_category==0 && chosen>=5?chosen-5:chosen/6*6;
-            for(int i=start;i<n && i<start+6;i++){
-                int k=i-start,x=53+k*201,y=389;
+            int start=poster_row_start(chosen,ui_category==0);
+            for(int i=start;i<n && i<start+POSTER_COLUMNS;i++){
+                int k=i-start,x=53+k*201,y=POSTER_ROW_Y;
                 if(i==chosen && !catalog_hero_focus)selection_frame(p,x,y,150,221);
                 poster(p,&movies[i],x,y,150,221,&poster_budget);
                 card_title(p,movies[i].title,x,y+224,164);
@@ -1758,6 +1804,8 @@ int main(void) {
     Uint32 stick_last_time=0;
     int stick_last_key=0;
     int media_playback_mode=0;
+    TouchGesture touch={0};
+    static DownloadInfo download_rows[DOWNLOADS_MAX];
     while(running){
         Uint32 frame_started_at=SDL_GetTicks();
         stick_arrow(pad,&stick_last_time,&stick_last_key);
@@ -1781,18 +1829,87 @@ int main(void) {
                     case SDLK_ESCAPE:key=SDL_CONTROLLER_BUTTON_START;break;
                 }
             }
+            if(touch.page!=page || key>=0 || e.type==SDL_APP_WILLENTERBACKGROUND ||
+               (e.type==SDL_WINDOWEVENT && e.window.event==SDL_WINDOWEVENT_FOCUS_LOST))
+                touch.active=0;
             int tx=-1,ty=-1;
-            if(e.type==SDL_FINGERDOWN ||
-               (page==PLAYER && e.type==SDL_FINGERMOTION && video_loaded &&
-                SDL_GetTicks()<controls_until)){
-                tx=(int)(e.tfinger.x*1280);ty=(int)(e.tfinger.y*720);
+            if(e.type==SDL_FINGERDOWN || e.type==SDL_FINGERMOTION || e.type==SDL_FINGERUP){
+                int x=(int)(e.tfinger.x*1280),y=(int)(e.tfinger.y*720);
+                if(page==PLAYER){
+                    if(e.type==SDL_FINGERDOWN ||
+                       (e.type==SDL_FINGERMOTION && video_loaded && SDL_GetTicks()<controls_until)){
+                        tx=x;ty=y;
+                    }
+                }else{
+                    /* Activate the existing touch targets only after a tap is released. */
+                    TouchAction action=touch_gesture(&touch,&e.tfinger,page,x,y);
+                    if(action==TOUCH_TAP){
+                        tx=touch.x;ty=touch.y;
+                    }else if(action!=TOUCH_NONE && touch.x>=UI_EDGE && touch.x<1280-UI_EDGE){
+                        int vertical=action==SWIPE_UP || action==SWIPE_DOWN;
+                        int direction=action==SWIPE_LEFT || action==SWIPE_UP?1:-1;
+                        if(page==CATALOG){
+                            int library=category==11 || category==12;
+                            int home=category==0 && !expanded_catalog && !query[0];
+                            if(library || expanded_catalog){
+                                int top=library?LIBRARY_GRID_Y:POSTER_GRID_Y;
+                                if(vertical && touch.y>=top && touch.y<POSTER_GRID_BOTTOM){
+                                    chosen=swipe_page_selection(chosen,n,2*POSTER_COLUMNS,direction);
+                                    catalog_hero_focus=0;
+                                    if(clear_history_confirm)message[0]=0;
+                                    clear_history_confirm=0;
+                                }
+                            }else if(touch.y>=POSTER_ROW_Y && touch.y<POSTER_ROW_BOTTOM){
+                                if(vertical && home){
+                                    int next=home_shelf+direction;
+                                    if(next>=0 && next<HOME_SHELF_COUNT){
+                                        home_shelf=next;
+                                        n=load_category(category,query,movies,message,sizeof(message));
+                                        chosen=0;
+                                        catalog_hero_focus=0;
+                                    }
+                                }else if(!vertical && n){
+                                    if(home){
+                                        int step=POSTER_COLUMNS-1;
+                                        int last=poster_row_start(chosen,1)+step;
+                                        int next=last+direction*step;
+                                        chosen=next<0?0:next>=n?n-1:next;
+                                    }else chosen=swipe_page_selection(chosen,n,POSTER_COLUMNS,direction);
+                                    catalog_hero_focus=0;
+                                }
+                            }
+                        }else if(vertical && touch.y>=UI_ROW_Y && touch.y<UI_ROW_Y+UI_ROWS*UI_ROW_STEP){
+                            int *selected=NULL,count=0;
+                            switch(page){
+                                case SOURCES:selected=&source;count=sn;break;
+                                case SEASONS:selected=&selected_season;count=season_count;break;
+                                case EPISODES:
+                                    selected=&selected_episode;
+                                    if(selected_season<season_count)
+                                        count=episodes_in_season(season_ids[selected_season]);
+                                    break;
+                                case TRACK_PICKER:selected=&selected_track;count=track_count;break;
+                                case DOWNLOADS:
+                                    selected=&download_selected;
+                                    count=downloads_list(download_rows,DOWNLOADS_MAX);
+                                    if(download_confirm)message[0]=0;
+                                    download_confirm=0;
+                                    break;
+                                default:break;
+                            }
+                            if(selected)*selected=swipe_page_selection(*selected,count,UI_ROWS,direction);
+                        }
+                    }
+                }
             }else if(e.type==SDL_MOUSEBUTTONDOWN &&
                      e.button.button==SDL_BUTTON_LEFT && e.button.which!=SDL_TOUCH_MOUSEID){
+                touch.active=0;
                 int ww=1280,hh=720;
                 SDL_GetWindowSize(window,&ww,&hh);
                 tx=e.button.x*1280/(ww?ww:1280);
                 ty=e.button.y*720/(hh?hh:720);
             }else if(page==PLAYER && e.type==SDL_MOUSEMOTION &&
+                     e.motion.which!=SDL_TOUCH_MOUSEID &&
                      (e.motion.state&SDL_BUTTON_LMASK) && video_loaded &&
                      SDL_GetTicks()<controls_until){
                 int ww=1280,hh=720;
@@ -1882,11 +1999,11 @@ int main(void) {
                                 key=SDL_CONTROLLER_BUTTON_A;
                             }
                         }
-                        if(ty>=162 && ty<613 && tx>=54){
-                            int col=(tx-54)/201,row=(ty-162)/245;
+                        if(ty>=LIBRARY_GRID_Y && ty<POSTER_GRID_BOTTOM && tx>=54){
+                            int col=(tx-54)/201,row=(ty-LIBRARY_GRID_Y)/245;
                             int index=chosen/12*12+row*6+col;
                             if(col<6 && row<2 && index<n && (tx-54)%201<138 &&
-                               (ty-162)%245<206){
+                               (ty-LIBRARY_GRID_Y)%245<206){
                                 chosen=index;
                                 catalog_hero_focus=0;
                                 clear_history_confirm=0;
@@ -1903,11 +2020,11 @@ int main(void) {
                                 }
                         }
                         if(ty>=95 && ty<145 && tx>=1106){expanded_catalog=0;chosen=0;catalog_hero_focus=0;continue;}
-                        if(ty>=153 && ty<613 && tx>=54){
-                            int col=(tx-54)/201,row=(ty-153)/246;
+                        if(ty>=POSTER_GRID_Y && ty<POSTER_GRID_BOTTOM && tx>=54){
+                            int col=(tx-54)/201,row=(ty-POSTER_GRID_Y)/246;
                             int index=chosen/12*12+row*6+col;
                             if(col<6 && row<2 && index<n && (tx-54)%201<138 &&
-                               (ty-153)%246<206){
+                               (ty-POSTER_GRID_Y)%246<206){
                                 chosen=index;catalog_hero_focus=0;key=SDL_CONTROLLER_BUTTON_A;
                             }
                         }
@@ -1915,7 +2032,7 @@ int main(void) {
                         if(ty>=326 && ty<375 && tx>=1095){
                             catalog_hero_focus=3;key=SDL_CONTROLLER_BUTTON_A;
                         }
-                        if(subsection_count(category) && ty>=326 && ty<375){
+                        else if(subsection_count(category) && ty>=326 && ty<375){
                             const int anim_x[]={32,240,465},anim_w[]={191,208,134};
                             const int film_x[]={32,197,373,513,672},film_w[]={157,168,132,151,225};
                             int film=tab_for_category(category)==2;
@@ -1945,9 +2062,8 @@ int main(void) {
                             catalog_hero_focus=1;
                             key=SDL_CONTROLLER_BUTTON_A;
                         }
-                        else if(ty>=389 && ty<661 && tx>=53){
-                            int start=category==0 && !query[0] && chosen>=5?
-                                      chosen-5:chosen/6*6;
+                        else if(ty>=POSTER_ROW_Y && ty<POSTER_ROW_BOTTOM && tx>=53){
+                            int start=poster_row_start(chosen,category==0);
                             int col=(tx-53)/201,index=start+col;
                             if(col<6 && index<n && (tx-53)%201<164){
                                 chosen=index;catalog_hero_focus=0;key=SDL_CONTROLLER_BUTTON_A;
@@ -1968,8 +2084,7 @@ int main(void) {
                     if(tx>=UI_EDGE && tx<1280-UI_EDGE && ty>=UI_ROW_Y &&
                        (ty-UI_ROW_Y)%UI_ROW_STEP<UI_ROW_HEIGHT &&
                        slot>=0 && slot<UI_ROWS){
-                        DownloadInfo d[DOWNLOADS_MAX];
-                        int count=downloads_list(d,DOWNLOADS_MAX);
+                        int count=downloads_list(download_rows,DOWNLOADS_MAX);
                         if(index<count){download_selected=index;key=SDL_CONTROLLER_BUTTON_A;}
                     }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==SOURCES){
@@ -2284,8 +2399,7 @@ int main(void) {
                 continue;
             }
             if(page==DOWNLOADS){
-                static DownloadInfo rows[DOWNLOADS_MAX];
-                int count=downloads_list(rows,DOWNLOADS_MAX);
+                int count=downloads_list(download_rows,DOWNLOADS_MAX);
                 if(download_selected>=count)download_selected=count?count-1:0;
                 if(key==SDL_CONTROLLER_BUTTON_B){
                     page=CATALOG;category=11;expanded_catalog=0;
@@ -2298,7 +2412,7 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && download_selected<count-1)
                     {download_selected++;download_confirm=0;}
                 if(key==SDL_CONTROLLER_BUTTON_X && count){
-                    unsigned id=rows[download_selected].id;
+                    unsigned id=download_rows[download_selected].id;
                     if(download_confirm!=id){
                         download_confirm=id;
                         snprintf(message,sizeof(message),"Натисніть X ще раз для видалення");
@@ -2308,7 +2422,7 @@ int main(void) {
                     }
                 }
                 if(key==SDL_CONTROLLER_BUTTON_A && count){
-                    const DownloadInfo *info=&rows[download_selected];
+                    const DownloadInfo *info=&download_rows[download_selected];
                     static Download item;
                     if(info->state==DOWNLOAD_FAILED){
                         downloads_retry(info->id);

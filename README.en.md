@@ -75,6 +75,8 @@ Button labels correspond to the **Nintendo Switch** layout, not the Xbox control
 | Player | **A** — pause; **←/→** — seek by 10 seconds; **R + ←/→** — seek by 60 seconds; **↑/↓** — volume; **B** — close player. |
 | Tracks and video | **X** — subtitles; **Y** — audio / dubbing; **− (Minus)** — video settings. |
 
+Swipe horizontally to browse poster rows. On Home, swipe vertically over the posters to switch collections. Vertical swipes also page through poster grids and long lists of sources, seasons, episodes, tracks, and downloads. Tap a poster or list item to open it.
+
 The touch-enabled player provides playback controls, a seek bar, and a volume slider. The overlay hides automatically after a few seconds of inactivity.
 
 ## User data and updates

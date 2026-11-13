@@ -46,7 +46,9 @@ The catalog filters productions by TMDB country-of-origin metadata, including ex
 
 ## Video providers
 
-You select a provider **before** searching for a playable stream. The current beta includes:
+You select a provider **before** searching for a playable stream. In **Settings → Providers**, press **A** or tap a row to toggle a provider. Disabled providers are hidden from the picker and receive no search requests. Your choices are saved to the SD card.
+
+The current beta includes:
 
 | Provider | Notes |
 |---|---|

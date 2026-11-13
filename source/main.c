@@ -19,8 +19,10 @@
 #include "downloads.h"
 
 typedef enum { CATALOG, DETAILS, PROVIDERS, SOURCES, PLAYER, SETTINGS,
-               SEASONS, EPISODES, TRACK_PICKER, VIDEO_SETTINGS, DOWNLOADS } Page;
+               SEASONS, EPISODES, TRACK_PICKER, VIDEO_SETTINGS, DOWNLOADS,
+               PROVIDER_SETTINGS } Page;
 static int selected_provider=0;
+static int provider_settings_selected=0;
 static int download_selected=0;
 static unsigned download_confirm=0;
 /* Read the real battery percentage at most once every 15 seconds. */
@@ -40,6 +42,17 @@ static void battery_status_poll(void){
 static int download_season=0, download_episode=0;
 static const char *provider_names[]={"UAFlix","UASerials","Eneyida",
     "UAFilm","UAKino","Mikai (аніме)","AnimeON (аніме)"};
+enum { PROVIDER_COUNT=sizeof(provider_names)/sizeof(provider_names[0]),
+       ALL_PROVIDERS=(1u<<PROVIDER_COUNT)-1u };
+/* Bit positions follow the provider IDs in uakino_search_provider (index + 1). */
+static unsigned enabled_providers=ALL_PROVIDERS;
+
+static int provider_for_row(int row){
+    if(row<0)return -1;
+    for(int i=0;i<PROVIDER_COUNT;i++)
+        if((enabled_providers & (1u<<i)) && row--==0)return i;
+    return -1;
+}
 
 static Episode episodes[EPISODES_MAX];
 static int episode_count,season_ids[64],season_count,selected_season,selected_episode;
@@ -160,30 +173,59 @@ static int sort_button_for_mode(int mode){
 }
 /* 0: Watch, 1: Add to favorites (details buttons). */
 static int details_button_focus=0;
+enum { SETTING_THEME, SETTING_INTERFACE, SETTING_PLAYER, SETTING_AUTOPLAY,
+       SETTING_PROVIDERS, SETTING_COUNT };
+enum { SETTINGS_Y=136, SETTINGS_ROW_STEP=88, SETTINGS_ROW_HEIGHT=72 };
 static int settings_selected=0,ui_accent_alt=0,source_mode=0;
 static int autoplay_episodes=1;
 #define NEXT_EPISODE_DELAY_MS 3000u
 static int ui_light_theme=0,ui_theme_enabled=1,ui_gradient_pass=0;
 #define THEME_PATH "sdmc:/switch/uaplay/theme.txt"
+#define THEME_TMP THEME_PATH ".tmp"
+#define THEME_BACKUP THEME_PATH ".bak"
 static void theme_load(void){
     FILE *f=fopen(THEME_PATH,"r");
+    if(!f)f=fopen(THEME_BACKUP,"r");
     if(f){
         ui_light_theme=fgetc(f)=='1';
-        /* Older installations have a one-character theme file. For those,
-           autoplay remains enabled by default. */
-        if(fgetc(f)=='0')autoplay_episodes=0;
+        int autoplay=fgetc(f);
+        if(autoplay=='0')autoplay_episodes=0;
+        /* Legacy files only store the theme and optionally autoplay. */
+        if(autoplay=='0' || autoplay=='1'){
+            unsigned mask;
+            if(fscanf(f," %u",&mask)==1 && mask<=ALL_PROVIDERS)
+                enabled_providers=mask;
+        }
         fclose(f);
     }
 }
-static void theme_save(void){
+static int theme_save(void){
+    mkdir("sdmc:/switch",0777);
     mkdir("sdmc:/switch/uaplay",0777);
-    FILE *f=fopen(THEME_PATH,"w");
-    if(f){
-        fputc(ui_light_theme?'1':'0',f);
-        fputc(autoplay_episodes?'1':'0',f);
-        fputc('\n',f);
-        fclose(f);
+    FILE *f=fopen(THEME_TMP,"w");
+    if(!f)return 0;
+    int written=fprintf(f,"%d%d\n%u\n",ui_light_theme,autoplay_episodes,enabled_providers);
+    if(fclose(f)!=0 || written<0){
+        remove(THEME_TMP);
+        return 0;
     }
+    /* FAT may reject replacing an existing file with rename(). */
+    struct stat previous;
+    int had_previous=stat(THEME_PATH,&previous)==0;
+    if(had_previous){
+        remove(THEME_BACKUP);
+        if(rename(THEME_PATH,THEME_BACKUP)!=0){
+            remove(THEME_TMP);
+            return 0;
+        }
+    }
+    if(rename(THEME_TMP,THEME_PATH)!=0){
+        if(had_previous)rename(THEME_BACKUP,THEME_PATH);
+        remove(THEME_TMP);
+        return 0;
+    }
+    remove(THEME_BACKUP);
+    return 1;
 }
 static int video_settings_from_menu=0;
 static int ui_category=0;
@@ -1255,6 +1297,8 @@ static void footer(Paint *p,const char *message) {
         HINT("A","Натиснути");HINT("B","Назад");
     }else if(footer_page==SETTINGS){
         HINT("↑↓","Пункт");HINT("A","Змінити");HINT("B","Закрити");
+    }else if(footer_page==PROVIDER_SETTINGS){
+        HINT("↑↓","Джерело");HINT("A","Перемкнути");HINT("B","Назад");
     }else if(footer_page==TRACK_PICKER){
         HINT("↑↓","Доріжка");HINT("A","Застосувати");HINT("B","Назад");
     }else if(footer_page==VIDEO_SETTINGS){
@@ -1621,9 +1665,9 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         footer(p,status);
     } else if(page==SETTINGS){
         screen_header(p,"Налаштування","UAPlay");
-        const char *items[]={"Тема","Інтерфейс","Плеєр","Автовідтворення"};
-        for(int i=0;i<4;i++){
-            int y=136+i*88;
+        const char *items[]={"Тема","Інтерфейс","Плеєр","Автовідтворення","Джерела"};
+        for(int i=0;i<SETTING_COUNT;i++){
+            int y=SETTINGS_Y+i*SETTINGS_ROW_STEP;
             box_alpha(p,32,y,417,72,i==settings_selected?.20f:.09f,
                       i==settings_selected?.29f:.11f,
                       i==settings_selected?.37f:.14f,1.f,16);
@@ -1640,20 +1684,24 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         box_alpha(p,475,136,773,480,.10f,.12f,.15f,1.f,20);
         headline(p,items[settings_selected],513,174,685);
         char description[240];
-        if(settings_selected==0)snprintf(description,sizeof(description),"Оформлення: %s",ui_light_theme?"Світла тема":"Темна тема");
-        else if(settings_selected==1){
+        if(settings_selected==SETTING_THEME)snprintf(description,sizeof(description),"Оформлення: %s",ui_light_theme?"Світла тема":"Темна тема");
+        else if(settings_selected==SETTING_INTERFACE){
             if(ui_light_theme)snprintf(description,sizeof(description),"Акцент світлої теми: синій Nintendo Switch");
             else snprintf(description,sizeof(description),"Акцент: %s",ui_accent_alt?"Блакитний":"Бірюзовий");
         }
-        else if(settings_selected==2)snprintf(description,sizeof(description),"Швидкість: %.2f · гучність: %.0f",video_options[0],video_options[1]);
-        else snprintf(description,sizeof(description),"Наступна серія: %s",autoplay_episodes?"Автоматично":"Вручну");
+        else if(settings_selected==SETTING_PLAYER)snprintf(description,sizeof(description),"Швидкість: %.2f · гучність: %.0f",video_options[0],video_options[1]);
+        else if(settings_selected==SETTING_AUTOPLAY)
+            snprintf(description,sizeof(description),"Наступна серія: %s",autoplay_episodes?"Автоматично":"Вручну");
+        else description[0]=0;
         text(p,description,516,255,682);
         const char *help[]={"Перемикає темну та світлу теми. Вибір зберігається на SD-карті.",
             "Змінює колір виділення на всіх екранах.",
             "Налаштуйте відео, гучність та субтитри.",
-            "Після завершення серії пропонує наступну через 3 секунди. Кнопка B скасовує перехід. Вибір зберігається."};
+            "Після завершення серії пропонує наступну через 3 секунди. Кнопка B скасовує перехід. Вибір зберігається.",
+            "Виберіть джерела, у яких UAPlay може шукати відео. Вибір зберігається на SD-карті."};
         wrapped(p,help[settings_selected],517,315,675,3,29,p->font_small,.73f,.78f,.84f);
-        button(p,settings_selected==2?"Відкрити параметри":"Змінити",515,537,258,55,1);
+        button(p,settings_selected==SETTING_PLAYER?"Відкрити параметри":
+               settings_selected==SETTING_PROVIDERS?"Відкрити джерела":"Змінити",515,537,258,55,1);
         footer(p,status);
     } else if (page==DETAILS) {
         screen_header(p,movies[chosen].series?"Про серіал":"Про фільм","UAPlay");
@@ -1692,11 +1740,21 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         button(p,library_favorite(&movies[chosen])?"✓  У вибраному":"+  У вибране",
                320,526,255,58,0);
         footer(p,status);
-    } else if (page==PROVIDERS) {
-        screen_header(p,"Оберіть джерело","Пошук почнеться після вибору");
-        for(int i=0;i<7;i++)
-            list_row(p,provider_names[i],UI_ROW_Y+i*UI_ROW_STEP,
-                     i==selected_provider,NULL);
+    } else if (page==PROVIDERS || page==PROVIDER_SETTINGS) {
+        int configuring=page==PROVIDER_SETTINGS;
+        screen_header(p,configuring?"Джерела":"Оберіть джерело",NULL);
+        if(!configuring && !enabled_providers)
+            text_center_button(p,"Увімкніть джерело в Налаштуваннях → Джерела",
+                               UI_EDGE,305,1216,110,p->font_small,.73f,.77f,.82f);
+        int row=0;
+        for(int i=0;i<PROVIDER_COUNT;i++){
+            int enabled=(enabled_providers & (1u<<i))!=0;
+            if(!configuring && !enabled)continue;
+            int selected=configuring?i==provider_settings_selected:row==selected_provider;
+            list_row(p,provider_names[i],UI_ROW_Y+row*UI_ROW_STEP,selected,
+                     configuring?(enabled?"Увімкнено":"Вимкнено"):NULL);
+            row++;
+        }
         footer(p,status);
     } else if (page==SOURCES) {
         screen_header(p,"Джерела відео",NULL);
@@ -2290,12 +2348,14 @@ int main(void) {
                             }
                         }
                     }
-                }else if(page==PROVIDERS){
+                }else if(page==PROVIDERS || page==PROVIDER_SETTINGS){
                     int slot=(ty-UI_ROW_Y)/UI_ROW_STEP;
                     if(tx>=UI_EDGE && tx<1280-UI_EDGE && ty>=UI_ROW_Y &&
                        (ty-UI_ROW_Y)%UI_ROW_STEP<UI_ROW_HEIGHT &&
-                       slot>=0 && slot<7){
-                        selected_provider=slot;
+                       slot<PROVIDER_COUNT &&
+                       (page==PROVIDER_SETTINGS || provider_for_row(slot)>=0)){
+                        if(page==PROVIDER_SETTINGS)provider_settings_selected=slot;
+                        else selected_provider=slot;
                         key=SDL_CONTROLLER_BUTTON_A;
                     }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==DOWNLOADS){
@@ -2342,9 +2402,10 @@ int main(void) {
                         key=tx<640?SDL_CONTROLLER_BUTTON_DPAD_LEFT:SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
                     }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==SETTINGS){
-                    if(tx>=32 && tx<449 && ty>=136 && ty<472 && (ty-136)%88<72){
-                        settings_selected=(ty-136)/88;
-                        if(settings_selected>=4)settings_selected=3;
+                    int row=ty-SETTINGS_Y;
+                    if(tx>=32 && tx<449 && row>=0 && row<SETTING_COUNT*SETTINGS_ROW_STEP &&
+                       row%SETTINGS_ROW_STEP<SETTINGS_ROW_HEIGHT){
+                        settings_selected=row/SETTINGS_ROW_STEP;
                         key=SDL_CONTROLLER_BUTTON_A;
                     }else if(ty>=537 && ty<592 && tx>=515 && tx<773)key=SDL_CONTROLLER_BUTTON_A;
                     else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
@@ -2691,15 +2752,39 @@ int main(void) {
             if(page==SETTINGS){
                 if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){page=CATALOG;continue;}
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && settings_selected>0)settings_selected--;
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && settings_selected<3)settings_selected++;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && settings_selected<SETTING_COUNT-1)
+                    settings_selected++;
                 if(key==SDL_CONTROLLER_BUTTON_A){
-                    if(settings_selected==0){ui_light_theme=!ui_light_theme;theme_save();}
-                    else if(settings_selected==1)ui_accent_alt=!ui_accent_alt;
-                    else if(settings_selected==2){
+                    if(settings_selected==SETTING_THEME){ui_light_theme=!ui_light_theme;theme_save();}
+                    else if(settings_selected==SETTING_INTERFACE)ui_accent_alt=!ui_accent_alt;
+                    else if(settings_selected==SETTING_PLAYER){
                         selected_video_option=0;
                         video_settings_from_menu=1;
                         page=VIDEO_SETTINGS;
-                    }else if(settings_selected==3){autoplay_episodes=!autoplay_episodes;theme_save();}
+                    }else if(settings_selected==SETTING_AUTOPLAY){
+                        autoplay_episodes=!autoplay_episodes;theme_save();
+                    }else if(settings_selected==SETTING_PROVIDERS){
+                        provider_settings_selected=0;
+                        message[0]=0;
+                        page=PROVIDER_SETTINGS;
+                    }
+                }
+                continue;
+            }
+            if(page==PROVIDER_SETTINGS){
+                if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){
+                    message[0]=0;
+                    page=SETTINGS;
+                }
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && provider_settings_selected>0)
+                    provider_settings_selected--;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && provider_settings_selected<PROVIDER_COUNT-1)
+                    provider_settings_selected++;
+                if(key==SDL_CONTROLLER_BUTTON_A){
+                    enabled_providers^=1u<<provider_settings_selected;
+                    message[0]=0;
+                    if(!theme_save())
+                        snprintf(message,sizeof(message),"Не вдалося зберегти джерела на SD-карті");
                 }
                 continue;
             }
@@ -2992,12 +3077,14 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_B){page=DETAILS;message[0]=0;}
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && selected_provider>0)
                     selected_provider--;
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && selected_provider<6)
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && provider_for_row(selected_provider+1)>=0)
                     selected_provider++;
                 if(key==SDL_CONTROLLER_BUTTON_A){
+                    int provider=provider_for_row(selected_provider);
+                    if(provider<0)continue;
                     message[0]=0;
                     sn=uakino_search_provider(&movies[chosen],sources,UAKINO_MAX,
-                                              selected_provider+1,message,sizeof(message));
+                                              provider+1,message,sizeof(message));
                     sn=catalog_rank_sources(&movies[chosen],sources,sn,source_mode);
                     if(!sn)snprintf(message,sizeof(message),"Нічого не знайдено");
                     source=0;page=SOURCES;

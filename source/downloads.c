@@ -74,6 +74,7 @@ const char *stream_referer(const char *url) {
     if (strstr(url, "zetvideo.net")) return "https://zetvideo.net/";
     if (strstr(url, "ashdi.vip")) return "https://ashdi.vip/";
     if (strstr(url, "hdvbua.pro")) return "https://hdvbua.pro/";
+    if (movy_stream_url(url)) return MOVY_ORIGIN "/";
     if (!strncmp(url, "https://hls.shegu.net/", sizeof("https://hls.shegu.net/")-1))
         return "https://1src.org/";
     return "";
@@ -612,7 +613,8 @@ static int download_one(CURL *curl, const Download *job, char *file, size_t file
     }
     static char buffer[256 * 1024];
     setvbuf(out, buffer, _IOFBF, sizeof(buffer));
-    int ok = 0, fragmented = 0, hls = strstr(url, "m3u8") || strstr(url, ".m3u");
+    int ok = 0, fragmented = 0;
+    int hls = movy_stream_url(url) || strstr(url, "m3u8") || strstr(url, ".m3u");
     unsigned long long written = 0;
     char *playlist = NULL;
     if (!hls) {

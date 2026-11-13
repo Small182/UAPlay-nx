@@ -5,6 +5,7 @@
 
 #include <curl/curl.h>
 #include <ctype.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +31,7 @@
 #endif
 #define UAFRESH_WORKER "https://uakino.ofreshofresh.workers.dev"
 #define HYDRAHD_HOST "https://hydrahd.gd"
+#define MOVY_API "https://api.wecollege.net"
 
 typedef struct { char *data; size_t length, capacity; } Response;
 static void json_field(const char *object,const char *end,const char *key,
@@ -174,6 +176,8 @@ static char *request_form(const char *url, const char *post_data,
     int ajax=strstr(url,"/engine/ajax/")!=NULL ||
              strstr(url,"/engine/lazydev/")!=NULL;
     if(ajax)headers=curl_slist_append(headers,"X-Requested-With: XMLHttpRequest");
+    if(!strncmp(url,MOVY_API "/",sizeof(MOVY_API "/")-1))
+        headers=curl_slist_append(headers,"Origin: " MOVY_ORIGIN);
     if(post_data)headers=curl_slist_append(headers,
                               "Content-Type: application/x-www-form-urlencoded; charset=UTF-8");
     request_options(curl, url, &r, post_data?4L:6L, post_data?8L:14L);
@@ -308,7 +312,7 @@ static int subdl_resource(char *value) {
     return 1;
 }
 
-static const char *subdl_array(const char *start,const char *end,const char *key) {
+static const char *json_array_start(const char *start,const char *end,const char *key) {
     char needle[48];
     snprintf(needle,sizeof(needle),"\"%s\"",key);
     const char *p=strstr(start,needle);
@@ -324,7 +328,7 @@ static int subdl_parse(const char *json,int season,int episode,
                        const char *language,SubdlSubtitle *out,int max) {
     int count=0;
     const char *end=json+strlen(json);
-    const char *row=subdl_array(json,end,"subtitles");
+    const char *row=json_array_start(json,end,"subtitles");
     while(row && row<end && count<max){
         if(isspace((unsigned char)*row) || *row==','){row++;continue;}
         if(*row!='{')break;
@@ -334,7 +338,7 @@ static int subdl_parse(const char *json,int season,int episode,
         json_field(row,row_end,"release_name",release,sizeof(release));
         json_field(row,row_end,"season",number,sizeof(number));
         int parent_season=atoi(number);
-        const char *file=subdl_array(row,row_end,"unpack_files");
+        const char *file=json_array_start(row,row_end,"unpack_files");
         while(file && file<row_end && count<max){
             if(isspace((unsigned char)*file) || *file==','){file++;continue;}
             if(*file!='{')break;
@@ -1573,6 +1577,153 @@ static void search_animeon(const char *query,Source *items,int *count,int max){
     free(json);
 }
 
+int movy_stream_url(const char *url){
+    const char prefix[]="https://moon.goldenkite.top/";
+    return !strncmp(url,prefix,sizeof(prefix)-1);
+}
+
+/* Movy publishes the per-title seed and client decoder with its web player. */
+static uint32_t movy_mix(uint32_t value){
+    value=(value^(value>>16))*UINT32_C(0x85ebca6b);
+    value=(value^(value>>13))*UINT32_C(0xc2b2ae35);
+    return value^(value>>16);
+}
+
+static uint32_t movy_rotate(uint32_t value,unsigned bits){
+    bits&=31;
+    return (value<<bits)|(value>>((32-bits)&31));
+}
+
+static char *movy_decode(char *data,const char *seed,int id){
+    static const char alphabet[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    uint32_t buffer=0;
+    unsigned bits=0;
+    size_t length=0;
+    for(const char *p=data;*p;p++){
+        unsigned char c=(unsigned char)*p;
+        if(isspace(c) || c=='=')continue;
+        if(c=='-')c='+';
+        if(c=='_')c='/';
+        const char *letter=strchr(alphabet,c);
+        if(!letter)return NULL;
+        buffer=(buffer<<6)|(uint32_t)(letter-alphabet);
+        bits+=6;
+        if(bits>=8){
+            bits-=8;
+            data[length++]=(char)(buffer>>bits);
+        }
+    }
+    const uint32_t step=UINT32_C(0x9e3779b9);
+    uint32_t hash=UINT32_C(0x811c9dc5),slots[61]={0};
+    unsigned char used[61]={0};
+    for(const unsigned char *p=(const unsigned char *)seed;*p;p++)
+        hash=(hash^*p)*UINT32_C(0x01000193);
+    uint32_t state=movy_mix(movy_mix(hash)^movy_mix((uint32_t)id^step));
+    for(unsigned round=0;round<8;round++){
+        unsigned slot=state%61;
+        state=movy_rotate(state+step,7+round);
+        slots[slot]=state^movy_mix(state);
+        used[slot]=1;
+        state=movy_mix(state+slot);
+    }
+    uint32_t accumulator=movy_mix(UINT32_C(0xa5a5a5a5)^state);
+    for(size_t offset=0,counter=1;offset<length;counter++){
+        unsigned slot=accumulator%61;
+        uint32_t salt=slots[slot]^(step*(uint32_t)counter);
+        uint32_t combined=accumulator^salt;
+        if(used[slot])combined|=accumulator&salt;
+        accumulator=movy_mix((movy_rotate(combined+accumulator,slot)^
+                              movy_rotate(accumulator,slot*7))+step);
+        slots[slot]=accumulator;
+        used[slot]=1;
+        for(unsigned shift=0;shift<32 && offset<length;shift+=8,offset++)
+            data[offset]=(char)((unsigned char)data[offset]^(accumulator>>shift));
+    }
+    data[length]=0;
+    return length>4 && !memcmp(data,"mvm1",4)?data+4:NULL;
+}
+
+static const char *movy_details(const char *page,int id,int series,const char **end){
+    const char *script=strstr(page,"id=\"__NEXT_DATA__\"");
+    if(!script || !(script=strchr(script,'>')))return NULL;
+    const char *script_end=strstr(script,"</script>");
+    if(!script_end)return NULL;
+    const char *details=strstr(script,"\"details\":");
+    if(!details || details>=script_end)return NULL;
+    details+=sizeof("\"details\":")-1;
+    while(details<script_end && isspace((unsigned char)*details))details++;
+    if(details>=script_end || *details!='{')return NULL;
+    *end=object_end(details);
+    if(!*end || *end>script_end)return NULL;
+    char value[32],expected[24];
+    snprintf(expected,sizeof(expected),"%d",id);
+    json_field(details,*end,"tmdbId",value,sizeof(value));
+    if(strcmp(value,expected))return NULL;
+    json_field(details,*end,"mediaType",value,sizeof(value));
+    return !strcmp(value,series?"tv":"movie")?details:NULL;
+}
+
+static int movy_resolve(int id,int season,int episode,char *stream,int size,
+                        char *error,int error_size){
+    int series=season>0;
+    const char *type=series?"tv":"movie";
+    char url[2304];
+    snprintf(url,sizeof(url),MOVY_ORIGIN "/%s/%d",type,id);
+    char *page=request(url,error,error_size);
+    if(!page)return 0;
+    const char *end;
+    const char *details=movy_details(page,id,series,&end);
+    char title[192]="",year[12]="",imdb[32]="";
+    if(details){
+        json_field(details,end,"titleEnglish",title,sizeof(title));
+        if(!title[0] || !strcmp(title,"null"))
+            json_field(details,end,"title",title,sizeof(title));
+        json_field(details,end,"year",year,sizeof(year));
+        json_field(details,end,"imdbId",imdb,sizeof(imdb));
+    }
+    free(page);
+    if(!title[0] || !strcmp(title,"null") || strlen(year)!=4 ||
+       strspn(year,"0123456789")!=4 || strncmp(imdb,"tt",2) || !imdb[2] ||
+       strspn(imdb+2,"0123456789")!=strlen(imdb+2))goto unavailable;
+
+    snprintf(url,sizeof(url),MOVY_API "/seed?mediaId=%d",id);
+    char *response=request_form(url,NULL,MOVY_ORIGIN "/",error,error_size);
+    if(!response)return 0;
+    char seed[256];
+    json_field(response,response+strlen(response),"seed",seed,sizeof(seed));
+    free(response);
+    if(!seed[0] || !strcmp(seed,"null") || strlen(seed)==sizeof(seed)-1)goto unavailable;
+    char *escaped_title=encode(title);
+    char *query_title=escaped_title?encode(escaped_title):NULL;
+    free(escaped_title);
+    char *query_seed=encode(seed);
+    if(!query_title || !query_seed){
+        free(query_title);
+        free(query_seed);
+        goto unavailable;
+    }
+    int length=snprintf(url,sizeof(url),MOVY_API "/miami/sources?title=%s&mediaType=%s"
+                        "&year=%s&episodeId=%d&seasonId=%d&tmdbId=%d&imdbId=%s&enc=2&seed=%s",
+                        query_title,type,year,series?episode:1,series?season:1,id,imdb,query_seed);
+    free(query_title);
+    free(query_seed);
+    if(length<0 || length>=(int)sizeof(url))goto unavailable;
+    response=request_form(url,NULL,MOVY_ORIGIN "/",error,error_size);
+    if(!response)return 0;
+    char *json=movy_decode(response,seed,id);
+    char playlist[2048]="";
+    if(json)json_field(json,json+strlen(json),"playlist",playlist,sizeof(playlist));
+    free(response);
+    if(!movy_stream_url(playlist) || playlist[strcspn(playlist," \t\r\n")] ||
+       strlen(playlist)==sizeof(playlist)-1 || strlen(playlist)>=(size_t)size)
+        goto unavailable;
+    snprintf(stream,(size_t)size,"%s",playlist);
+    return 1;
+unavailable:
+    snprintf(error,error_size,"%s",TR("Movy: відеопотік недоступний","Movy: video stream unavailable"));
+    return 0;
+}
+
 static int hydrahd_resolve(const char *player,char *stream,int size,
                            char *error,int error_size){
     const char *params=strchr(player,'?');
@@ -1671,6 +1822,15 @@ int uakino_search_provider(const Movie *movie, Source *items, int max,
     error[0]=0;
     if(selected==UAKINO_PROVIDER_HYDRAHD)
         return max>0?search_hydrahd(movie,items,error,error_size):0;
+    if(selected==UAKINO_PROVIDER_MOVY){
+        if(max<1 || movie->id<=0)return 0;
+        if(movie->series)
+            snprintf(items->url,sizeof(items->url),MOVY_SERIES_URL "%d",movie->id);
+        else if(!movy_resolve(movie->id,0,0,items->url,sizeof(items->url),error,error_size))
+            return 0;
+        snprintf(items->title,sizeof(items->title),"Movy: %.184s",localized);
+        return 1;
+    }
     int provider_limit=selected? (max>=4?max/4:max) : (max>=7?max/7:max);
     if(selected==0 || selected==1){
     search_provider("https://uafix.net", "UAFlix", 0, localized,movie->series,
@@ -2082,6 +2242,21 @@ int uakino_resolve(const Source *source, char *stream, int size,
                    char *error, int error_size) {
     resolved_subtitle_count=0;
     resolved_audio_count=0;
+    if(movy_stream_url(source->url)){
+        if(strlen(source->url)>=(size_t)size)return 0;
+        snprintf(stream,(size_t)size,"%s",source->url);
+        error[0]=0;
+        return 1;
+    }
+    if(!strncmp(source->url,MOVY_SERIES_URL,sizeof(MOVY_SERIES_URL)-1)){
+        int id,season,episode;
+        char extra;
+        if(sscanf(source->url+sizeof(MOVY_SERIES_URL)-1,"%d/%d/%d%c",
+                  &id,&season,&episode,&extra)==3 && id>0 && season>0 && episode>0)
+            return movy_resolve(id,season,episode,stream,size,error,error_size);
+        snprintf(error,error_size,"%s",TR("Movy: серію не вибрано","Movy: no episode selected"));
+        return 0;
+    }
     if(!strncmp(source->url,HYDRAHD_PLAYER_URL "tvplayer.php?",sizeof(HYDRAHD_PLAYER_URL "tvplayer.php?")-1) ||
        !strncmp(source->url,HYDRAHD_PLAYER_URL "movieplayer.php?",sizeof(HYDRAHD_PLAYER_URL "movieplayer.php?")-1))
         return hydrahd_resolve(source->url,stream,size,error,error_size);
@@ -2430,8 +2605,47 @@ static int hydrahd_episodes(const char *url,Episode *items,int max,char *error,i
     return count;
 }
 
+static int movy_episodes(const char *url,Episode *items,int max,char *error,int error_size){
+    int id=atoi(url+sizeof(MOVY_SERIES_URL)-1);
+    if(id<=0)return 0;
+    char *page=request(url,error,error_size);
+    if(!page)return 0;
+    const char *details_end;
+    const char *details=movy_details(page,id,1,&details_end);
+    const char *row=details?json_array_start(details,details_end,"seasons"):NULL;
+    int count=0;
+    while(row && count<max){
+        row+=strspn(row," \t\r\n,");
+        if(*row!='{')break;
+        const char *end=object_end(row);
+        if(!end || end>details_end)break;
+        char season[16],episodes[16];
+        json_field(row,end,"season_number",season,sizeof(season));
+        json_field(row,end,"episode_count",episodes,sizeof(episodes));
+        int s=atoi(season),total=atoi(episodes);
+        row=end;
+        if(s<1 || s>999 || total<1 || total>9999)continue;
+        for(int e=1;e<=total && count<max;e++){
+            Episode *item=&items[count++];
+            memset(item,0,sizeof(*item));
+            item->season=s;
+            item->number=e;
+            snprintf(item->title,sizeof(item->title),
+                     TR("Сезон %d · Серія %d","Season %d · Episode %d"),s,e);
+            snprintf(item->url,sizeof(item->url),MOVY_SERIES_URL "%d/%d/%d",id,s,e);
+        }
+    }
+    free(page);
+    if(count)qsort(items,(size_t)count,sizeof(*items),episode_order);
+    else snprintf(error,error_size,"%s",TR("Movy: перелік серій недоступний",
+                                          "Movy: episode list unavailable"));
+    return count;
+}
+
 int uakino_episodes(const Source *source, Episode *items, int max,
                     char *error, int error_size) {
+    if(!strncmp(source->url,MOVY_SERIES_URL,sizeof(MOVY_SERIES_URL)-1))
+        return movy_episodes(source->url,items,max,error,error_size);
     if(!strncmp(source->url,HYDRAHD_SERIES_URL,sizeof(HYDRAHD_SERIES_URL)-1))
         return hydrahd_episodes(source->url,items,max,error,error_size);
     if(strstr(source->url,"animeon.club/api/player/")){

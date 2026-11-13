@@ -43,11 +43,14 @@ static void battery_status_poll(void){
 }
 static int download_season=0, download_episode=0;
 static const UiText provider_names[]={{"UAFlix","UAFlix"},{"UASerials","UASerials"},{"Eneyida","Eneyida"},
-    {"UAFilm","UAFilm"},{"UAKino","UAKino"},{"Mikai (аніме)","Mikai (anime)"},{"AnimeON (аніме)","AnimeON (anime)"},{"HydraHD (тестове)","HydraHD (experimental)"}};
+    {"UAFilm","UAFilm"},{"UAKino","UAKino"},{"Mikai (аніме)","Mikai (anime)"},{"AnimeON (аніме)","AnimeON (anime)"},{"HydraHD (тестове)","HydraHD (experimental)"},
+    {"Movy (тестове)","Movy (experimental)"}};
 enum { PROVIDER_COUNT=sizeof(provider_names)/sizeof(provider_names[0]),
-       ALL_PROVIDERS=(1u<<PROVIDER_COUNT)-1u };
+       ALL_PROVIDERS=(1u<<PROVIDER_COUNT)-1u,
+       MOVY_PROVIDER_BIT=1u<<(UAKINO_PROVIDER_MOVY-1) };
 /* Bit positions follow the provider IDs in uakino_search_provider (index + 1). */
-static unsigned enabled_providers=ALL_PROVIDERS & ~(1u<<(UAKINO_PROVIDER_HYDRAHD-1));
+static unsigned enabled_providers=ALL_PROVIDERS &
+    ~((1u<<(UAKINO_PROVIDER_HYDRAHD-1)) | MOVY_PROVIDER_BIT);
 
 static int provider_for_row(int row){
     if(row<0)return -1;
@@ -228,12 +231,15 @@ static void theme_load(void){
         /* Legacy files only store the theme and optionally autoplay. */
         if(autoplay=='0' || autoplay=='1'){
             unsigned mask;
-            /* Older builds may have saved a ninth provider bit. */
-            if(fscanf(f," %u",&mask)==1 && mask<=((1u<<9)-1u)){
-                enabled_providers=mask & ALL_PROVIDERS;
+            if(fscanf(f," %u",&mask)==1 && mask<=ALL_PROVIDERS){
+                enabled_providers=mask;
                 char language[8];
                 if(fscanf(f," %7s",language)==1 && !strcmp(language,"en"))
                     ui_set_language(UI_ENGLISH);
+                /* Aether used the same bit before the Movy setting existed. */
+                char provider_version[8];
+                if(fscanf(f," %7s",provider_version)!=1 || strcmp(provider_version,"movy"))
+                    enabled_providers&=~MOVY_PROVIDER_BIT;
             }
         }
         fclose(f);
@@ -244,7 +250,7 @@ static int theme_save(void){
     mkdir("sdmc:/switch/uaplay",0777);
     FILE *f=fopen(THEME_TMP,"w");
     if(!f)return 0;
-    int written=fprintf(f,"%d%d\n%u\n%s\n",ui_light_theme,autoplay_episodes,
+    int written=fprintf(f,"%d%d\n%u\n%s\nmovy\n",ui_light_theme,autoplay_episodes,
                         enabled_providers,TR("uk","en"));
     if(fclose(f)!=0 || written<0){
         remove(THEME_TMP);
@@ -3247,12 +3253,14 @@ int main(void) {
                     if(provider<0)continue;
                     message[0]=0;
                     Movie lookup=movies[chosen];
-                    if(provider+1!=UAKINO_PROVIDER_HYDRAHD || lookup.series)
+                    if(provider+1!=UAKINO_PROVIDER_MOVY &&
+                       (provider+1!=UAKINO_PROVIDER_HYDRAHD || lookup.series))
                         catalog_use_ukrainian_search_title(&lookup);
                     sn=uakino_search_provider(&lookup,sources,UAKINO_MAX,
                                               provider+1,message,sizeof(message));
                     sn=catalog_rank_sources(&lookup,sources,sn,source_mode);
-                    if(!sn && (provider+1!=UAKINO_PROVIDER_HYDRAHD || !message[0]))
+                    if(!sn && (!message[0] || (provider+1!=UAKINO_PROVIDER_HYDRAHD &&
+                                               provider+1!=UAKINO_PROVIDER_MOVY)))
                         snprintf(message,sizeof(message),TR("Нічого не знайдено","No results found"));
                     source=0;page=SOURCES;
                 }
@@ -3292,7 +3300,8 @@ int main(void) {
                                     }
                             page=SEASONS;continue;
                         }
-                        if(!strncmp(sources[source].url,HYDRAHD_SERIES_URL,sizeof(HYDRAHD_SERIES_URL)-1))
+                        if(!strncmp(sources[source].url,HYDRAHD_SERIES_URL,sizeof(HYDRAHD_SERIES_URL)-1) ||
+                           !strncmp(sources[source].url,MOVY_SERIES_URL,sizeof(MOVY_SERIES_URL)-1))
                             continue;
                     }
                     char url[2048]={0};

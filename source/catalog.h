@@ -9,6 +9,9 @@
 #define UAKINO_MAX 40
 #define EPISODES_MAX 2048
 #define UAKINO_PROVIDER_HYDRAHD 8
+#define UAKINO_PROVIDER_MOVY 9
+#define MOVY_ORIGIN "https://www.movy.sx"
+#define MOVY_SERIES_URL MOVY_ORIGIN "/tv/"
 #define HYDRAHD_SERIES_URL "https://hydrahd.gd/watchseries/"
 #define HYDRAHD_PLAYER_URL "https://1src.org/players/"
 
@@ -68,8 +71,8 @@ void catalog_use_ukrainian_search_title(Movie *movie);
 int uakino_search(const Movie *movie, Source *items, int max,
                   char *error, int error_size);
 /* Search a single provider (0=all, 1=UAFlix, 2=UASerials,
-   3=Eneyida, 4=UAFilm, 5=UAKino, 6=Mikai, 7=AnimeON, 8=HydraHD).
-   The experimental HydraHD source is selected explicitly. */
+   3=Eneyida, 4=UAFilm, 5=UAKino, 6=Mikai, 7=AnimeON, 8=HydraHD, 9=Movy).
+   HydraHD and Movy are selected explicitly. */
 int uakino_search_provider(const Movie *movie, Source *items, int max,
                            int provider, char *error, int error_size);
 /* Rank candidates by title match (Ukrainian and original titles), not by
@@ -77,6 +80,7 @@ int uakino_search_provider(const Movie *movie, Source *items, int max,
    1=UAFlix, 2=UASerials. Returns the count after removing clear mismatches. */
 int catalog_rank_sources(const Movie *movie, Source *items, int count,
                          int preferred_provider);
+int movy_stream_url(const char *url);
 int uakino_resolve(const Source *source, char *stream, int size,
                    char *error, int error_size);
 /* Subtitle and alternate-dub links announced by the last resolved player.

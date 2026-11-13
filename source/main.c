@@ -19,6 +19,7 @@
 #include "playback.h"
 #include "downloads.h"
 #include "subdl.h"
+#include "movy_stream.h"
 
 typedef enum { CATALOG, DETAILS, PROVIDERS, SOURCES, PLAYER, SETTINGS,
                SEASONS, EPISODES, TRACK_PICKER, VIDEO_SETTINGS, DOWNLOADS,
@@ -319,7 +320,7 @@ typedef struct {
     int ready,ready_generation,ready_count,ready_page,ready_has_more;
     int details_requested,details_ready,locale_generation;
     Movie details_request,details_result;
-    char category[48],query[192];
+    char category[48],query[192],ready_error[192];
     Movie ready_items[CATALOG_PAGE_SIZE];
 } CatalogLoader;
 static CatalogLoader catalog_loader;
@@ -354,7 +355,7 @@ static int catalog_worker(void *opaque){
               !loader->details_requested && !home_work_queued())
             SDL_CondWait(loader->cond,loader->mutex);
         if(loader->quit){SDL_UnlockMutex(loader->mutex);break;}
-        if(loader->details_requested){
+        if(loader->details_requested && !(loader->requested && loader->request_page==1)){
             Movie target=loader->details_request;
             int locale_generation=loader->locale_generation;
             loader->details_requested=0;
@@ -409,6 +410,7 @@ static int catalog_worker(void *opaque){
             loader->ready_page=page;
             loader->ready_count=count;
             loader->ready_has_more=more;
+            snprintf(loader->ready_error,sizeof(loader->ready_error),"%s",error);
             if(count>0)memcpy(loader->ready_items,batch,count*sizeof(Movie));
         }
         SDL_UnlockMutex(loader->mutex);
@@ -425,7 +427,7 @@ static void catalog_loader_init(void){
 }
 static void catalog_loader_request(int page,int category,const char *query){
     CatalogLoader *loader=&catalog_loader;
-    if(!loader->thread || page<2 || page>500)return;
+    if(!loader->thread || page<1 || page>500)return;
     SDL_LockMutex(loader->mutex);
     loader->requested=1;
     loader->request_generation=loader->generation;
@@ -519,7 +521,7 @@ static void catalog_details_poll(Movie *movies,int count){
         movies[i]=result;
 }
 static void catalog_loader_poll(Movie **movies,int *count,int *capacity,int chosen,
-                                int category,const char *query){
+                                int category,const char *query,char *message,size_t message_size){
     CatalogLoader *loader=&catalog_loader;
     if(!loader->mutex)return;
     int batch_count=0,ready=0,more=0;
@@ -529,6 +531,10 @@ static void catalog_loader_poll(Movie **movies,int *count,int *capacity,int chos
     if(loader->ready && loader->ready_generation==loader->generation){
         ready=1;batch_count=loader->ready_count;
         more=loader->ready_has_more;
+        if(loader->ready_page==1){
+            *count=0;
+            snprintf(message,message_size,"%s",loader->ready_error);
+        }
         if(*count+batch_count>*capacity && *capacity<limit){
             int next=*capacity+CATALOG_MAX;
             if(next>limit)next=limit;
@@ -570,7 +576,8 @@ static void catalog_loader_shutdown(void){
     if(loader->mutex)SDL_DestroyMutex(loader->mutex);
 }
 
-static int load_category(int category,const char *query,Movie *movies,char *message,int size) {
+static int load_category_mode(int category,const char *query,Movie *movies,char *message,int size,
+                              int cached_count) {
     static int previous_category=-1;
     static char previous_query[192];
     int data_category=category==0 && !query[0]?home_categories[home_shelf]:category;
@@ -586,6 +593,17 @@ static int load_category(int category,const char *query,Movie *movies,char *mess
         }else message[0]=0;
         catalog_loader_reset(data_category,query,cached,0);
         return cached;
+    }
+    if(cached_count>0){
+        message[0]=0;
+        catalog_loader_reset(data_category,query,cached_count,1);
+        return cached_count;
+    }
+    if(cached_count==0 && catalog_loader.thread){
+        catalog_loader_reset(data_category,query,0,0);
+        catalog_loader_request(1,data_category,query);
+        snprintf(message,(size_t)size,"%s",TR("Завантаження каталогу…","Loading catalog…"));
+        return 0;
     }
     int count=0;
     if (!strcmp(categories[category],"favorites")) {
@@ -605,6 +623,9 @@ static int load_category(int category,const char *query,Movie *movies,char *mess
         qsort(movies,(size_t)count,sizeof(Movie),compare_movie_sort);
     catalog_loader_reset(data_category,query,count,category!=0 && !message[0]);
     return count;
+}
+static int load_category(int category,const char *query,Movie *movies,char *message,int size){
+    return load_category_mode(category,query,movies,message,size,-1);
 }
 typedef struct {
     GLuint program, vbo, tex, solid_tex;
@@ -2099,6 +2120,19 @@ static void configure_stream(mpv_handle *player,const char *url) {
     mpv_set_property_string(player,"user-agent","Mozilla/5.0 (Nintendo Switch; UAPlay/1.0)");
     mpv_set_property_string(player,"referrer",stream_referer(url));
 }
+static void play_stream(mpv_handle *player,const char *url){
+    if(!player)return;
+    char local[96];
+    if(movy_stream_url(url)){
+        if(movy_stream_open(url,local,sizeof(local)))url=local;
+    }else movy_stream_close();
+    configure_stream(player,url);
+    if(url==local){
+        const char *args[]={"loadfile",url,"replace",
+            "demuxer-lavf-o=%33%http_persistent=0,http_multiple=0",NULL};
+        mpv_command_async(player,0,args);
+    }else command(player,"loadfile",url);
+}
 static int keyboard(char *value,size_t size) {
     SwkbdConfig cfg;
     if(R_FAILED(swkbdCreate(&cfg,0))) return 0;
@@ -2711,8 +2745,7 @@ int main(void) {
                             snprintf(pending_subtitle,sizeof(pending_subtitle),"%s",
                                      uakino_resolved_subtitle());
                             apply_hls_quality(player);
-                            configure_stream(player,url);
-                            command(player,"loadfile",url);
+                            play_stream(player,url);
                             video_started_at=SDL_GetTicks();video_loaded=0;
                             controls_until=SDL_GetTicks()+3000;
                         }
@@ -2731,9 +2764,8 @@ int main(void) {
                             snprintf(pending_subtitle,sizeof(pending_subtitle),"%s",uakino_resolved_subtitle());
                             active_episode_variant=variant;
                             apply_hls_quality(player);
-                            configure_stream(player,url);
                             mpv_set_property_string(player,"pause","no");
-                            command(player,"loadfile",url);
+                            play_stream(player,url);
                             video_started_at=SDL_GetTicks();video_loaded=0;
                             controls_until=SDL_GetTicks()+3000;
                             page=PLAYER;
@@ -2780,7 +2812,7 @@ int main(void) {
                                 resume_at=pos;
                             snprintf(pending_subtitle,sizeof(pending_subtitle),"%s",
                                      uakino_resolved_subtitle());
-                            command(player,"loadfile",playing_url);
+                            play_stream(player,playing_url);
                         }
                     } else playback_set_value(player,video_props[i],video_options[i]);
                 }
@@ -2838,8 +2870,7 @@ int main(void) {
                                        saved_episode==episode->number)?saved_seconds:0;
                             snprintf(playing_url,sizeof(playing_url),"%s",url);
                             apply_hls_quality(player);
-                            configure_stream(player,url);
-                            command(player,"loadfile",url);
+                            play_stream(player,url);
                             video_started_at=SDL_GetTicks();video_loaded=0;
                             controls_until=SDL_GetTicks()+3000;
                             player_return_page=EPISODES;page=PLAYER;
@@ -2892,8 +2923,7 @@ int main(void) {
                              && last_season==item.season && last_episode==item.episode)?pos:0;
                         pending_subtitle[0]=0;message[0]=0;
                         snprintf(playing_url,sizeof(playing_url),"%s",file_path);
-                        configure_stream(player,file_path);
-                        command(player,"loadfile",file_path);
+                        play_stream(player,file_path);
                         video_started_at=SDL_GetTicks();video_loaded=0;
                         controls_until=SDL_GetTicks()+3000;
                         player_return_page=DOWNLOADS;page=PLAYER;
@@ -3159,13 +3189,14 @@ int main(void) {
                         n=load_category(category,query,movies,message,sizeof(message));
                         chosen=0;
                     }else if(!expanded_catalog && catalog_hero_focus==3){
+                        message[0]=0;
                         if(category==0 && !query[0]){
                             category=home_shelf==0?2:home_categories[home_shelf];
-                            expanded_catalog=1;
-                            query[0]=message[0]=0;
-                            n=load_category(category,query,movies,message,sizeof(message));
-                        }else expanded_catalog=1;
-                        chosen=0;catalog_hero_focus=0;message[0]=0;
+                            n=load_category_mode(category,query,movies,message,
+                                                 sizeof(message),home_shelf==0?0:n);
+                        }
+                        expanded_catalog=1;
+                        chosen=0;catalog_hero_focus=0;
                     }else if(!expanded_catalog && catalog_hero_focus==2){
                         library_toggle_favorite(&movies[chosen]);
                         snprintf(message,sizeof(message),"%s",library_favorite(&movies[chosen])?
@@ -3314,8 +3345,7 @@ int main(void) {
                         resume_at=library_progress(&playing_movie);
                         snprintf(playing_url,sizeof(playing_url),"%s",url);
                         apply_hls_quality(player);
-                        configure_stream(player,url);
-                        command(player,"loadfile",url);
+                        play_stream(player,url);
                         video_started_at=SDL_GetTicks();video_loaded=0;
                         controls_until=SDL_GetTicks()+3000;
                         player_return_page=SOURCES;page=PLAYER;
@@ -3442,14 +3472,13 @@ int main(void) {
                          uakino_resolved_subtitle());
                 snprintf(playing_url,sizeof(playing_url),"%s",url);
                 apply_hls_quality(player);
-                configure_stream(player,url);
                 mpv_set_property_string(player,"pause","no");
-                command(player,"loadfile",url);
+                play_stream(player,url);
                 video_started_at=SDL_GetTicks();video_loaded=0;
                 controls_until=SDL_GetTicks()+3000;
             }else page=EPISODES;
         }
-        catalog_loader_poll(&movies,&n,&movie_capacity,chosen,category,query);
+        catalog_loader_poll(&movies,&n,&movie_capacity,chosen,category,query,message,sizeof(message));
         catalog_details_poll(movies,n);
         if(page==CATALOG && category==0 && !expanded_catalog && !query[0] &&
            !home_current_loaded){
@@ -3568,6 +3597,7 @@ int main(void) {
     free(movies);
     if(render)mpv_render_context_free(render);
     if(player)mpv_terminate_destroy(player);
+    movy_stream_close();
     if(pad)SDL_GameControllerClose(pad);
     posters_destroy();
     catalog_http_cleanup();

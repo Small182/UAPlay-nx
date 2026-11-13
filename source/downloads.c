@@ -73,6 +73,8 @@ const char *stream_referer(const char *url) {
     if (strstr(url, "zetvideo.net")) return "https://zetvideo.net/";
     if (strstr(url, "ashdi.vip")) return "https://ashdi.vip/";
     if (strstr(url, "hdvbua.pro")) return "https://hdvbua.pro/";
+    if (!strncmp(url, "https://hls.shegu.net/", sizeof("https://hls.shegu.net/")-1))
+        return "https://1src.org/";
     return "";
 }
 

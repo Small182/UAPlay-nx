@@ -25,6 +25,7 @@
 #define UAPLAY_TMDB_BUILD_KEY ""
 #endif
 #define UAFRESH_WORKER "https://uakino.ofreshofresh.workers.dev"
+#define HYDRAHD_HOST "https://hydrahd.gd"
 
 typedef struct { char *data; size_t length, capacity; } Response;
 static void json_field(const char *object,const char *end,const char *key,
@@ -169,13 +170,13 @@ static char *request_form(const char *url, const char *post_data,
     if(post_data)headers=curl_slist_append(headers,
                               "Content-Type: application/x-www-form-urlencoded; charset=UTF-8");
     request_options(curl, url, &r, post_data?4L:6L, post_data?8L:14L);
+    if(referer)curl_easy_setopt(curl,CURLOPT_REFERER,referer);
     if(headers)curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
     if (post_data) {
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data);
         curl_easy_setopt(curl, CURLOPT_USERAGENT,
                          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36");
         curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
-        if(referer)curl_easy_setopt(curl,CURLOPT_REFERER,referer);
     }
     CURLcode result = curl_easy_perform(curl);
     if (transient_network_error(result)) {
@@ -190,13 +191,13 @@ static char *request_form(const char *url, const char *post_data,
 #endif
         if (curl) {
             request_options(curl, url, &r, post_data?3L:4L, post_data?5L:8L);
+            if(referer)curl_easy_setopt(curl,CURLOPT_REFERER,referer);
             if(headers)curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
             if (post_data) {
                 curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data);
                 curl_easy_setopt(curl, CURLOPT_USERAGENT,
                                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36");
                 curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
-                if(referer)curl_easy_setopt(curl,CURLOPT_REFERER,referer);
             }
             result = curl_easy_perform(curl);
         } else result = CURLE_FAILED_INIT;
@@ -1290,6 +1291,94 @@ static void search_animeon(const char *query,Source *items,int *count,int max){
     free(json);
 }
 
+static int hydrahd_resolve(const char *player,char *stream,int size,
+                           char *error,int error_size){
+    const char *params=strchr(player,'?');
+    if(!params)return 0;
+    char request_url[256];
+    int length=snprintf(request_url,sizeof(request_url),
+                        "%.*s?action=sources&provider=febbox&%s",
+                        (int)(params-player),player,params+1);
+    if(length<0 || length>=(int)sizeof(request_url))return 0;
+    char *json=request_form(request_url,NULL,player,error,error_size);
+    if(!json)return 0;
+    char candidate[1024]="";
+    const char *p=strstr(json,"\"sources\"");
+    if(p && (p=strchr(p,'['))){
+        for(p++;*p;p++){
+            if(isspace((unsigned char)*p) || *p==',')continue;
+            if(*p!='{')break;
+            const char *end=object_end(p);
+            if(!end)break;
+            char url[1024],label[24];
+            json_field(p,end,"file",url,sizeof(url));
+            if(!strncmp(url,"https://hls.shegu.net/",sizeof("https://hls.shegu.net/")-1) &&
+               strstr(url,".m3u8") && strlen(url)<sizeof(url)-1){
+                json_field(p,end,"label",label,sizeof(label));
+                if(!candidate[0] || !strcmp(label,"720p") || !strcmp(label,"AUTO"))
+                    snprintf(candidate,sizeof(candidate),"%s",url);
+                if(!strcmp(label,"AUTO"))break;
+            }
+            p=end-1;
+        }
+    }
+    free(json);
+    if(!candidate[0] || strlen(candidate)>=(size_t)size){
+        snprintf(error,error_size,"HydraHD: відеопотік недоступний");
+        return 0;
+    }
+    snprintf(stream,(size_t)size,"%s",candidate);
+    return 1;
+}
+
+static int search_hydrahd(const Movie *movie,Source *item,char *error,int error_size){
+    if(movie->id<=0)return 0;
+    if(!movie->series){
+        snprintf(item->url,sizeof(item->url),HYDRAHD_PLAYER_URL "movieplayer.php?tmdb=%d",movie->id);
+    }else{
+        const char *query=movie->original[0]?movie->original:movie->title;
+        char *encoded=encode(query);
+        if(!encoded)return 0;
+        char url[720];
+        snprintf(url,sizeof(url),HYDRAHD_HOST "/index.php?menu=search&query=%s",encoded);
+        free(encoded);
+        char *html=request(url,error,error_size);
+        if(!html)return 0;
+        char original[384],localized[384];
+        normalize_title(query,strlen(query),original,sizeof(original));
+        normalize_title(movie->title,strlen(movie->title),localized,sizeof(localized));
+        const char *card=html;
+        item->url[0]=0;
+        while((card=strstr(card,"<figure"))){
+            const char *end=strstr(card,"</figure>");
+            if(!end)break;
+            char href[800],label[192],normalized[384];
+            int found=html_attr(card,end,"href",href,sizeof(href)) &&
+                      !strncmp(href,"/watchseries/",13) &&
+                      card_label(card,end,"class=\"title detz\"",label,sizeof(label));
+            if(found){
+                normalize_title(label,strlen(label),normalized,sizeof(normalized));
+                const char *poster=movie->poster[0]?strstr(card,movie->poster):NULL;
+                int same_poster=poster && poster<end;
+                if(same_poster || (!item->url[0] && normalized[0] &&
+                   (!strcmp(normalized,original) || !strcmp(normalized,localized)))){
+                    snprintf(item->url,sizeof(item->url),HYDRAHD_HOST "%s#tmdb=%d",href,movie->id);
+                    if(same_poster)break;
+                }
+            }
+            card=end+9;
+        }
+        free(html);
+        if(!item->url[0]){
+            snprintf(error,error_size,"HydraHD: серіал не знайдено");
+            return 0;
+        }
+    }
+    snprintf(item->title,sizeof(item->title),"HydraHD: %.182s",
+             movie->original[0]?movie->original:movie->title);
+    return 1;
+}
+
 int uakino_search_provider(const Movie *movie, Source *items, int max,
                            int selected, char *error, int error_size) {
     int count=0;
@@ -1298,6 +1387,8 @@ int uakino_search_provider(const Movie *movie, Source *items, int max,
     const char *localized=movie->title;
     const char *original=movie->original;
     error[0]=0;
+    if(selected==UAKINO_PROVIDER_HYDRAHD)
+        return max>0?search_hydrahd(movie,items,error,error_size):0;
     int provider_limit=selected? (max>=4?max/4:max) : (max>=7?max/7:max);
     if(selected==0 || selected==1){
     search_provider("https://uafix.net", "UAFlix", 0, localized,movie->series,
@@ -1706,6 +1797,9 @@ int uakino_resolve(const Source *source, char *stream, int size,
                    char *error, int error_size) {
     resolved_subtitle_count=0;
     resolved_audio_count=0;
+    if(!strncmp(source->url,HYDRAHD_PLAYER_URL "tvplayer.php?",sizeof(HYDRAHD_PLAYER_URL "tvplayer.php?")-1) ||
+       !strncmp(source->url,HYDRAHD_PLAYER_URL "movieplayer.php?",sizeof(HYDRAHD_PLAYER_URL "movieplayer.php?")-1))
+        return hydrahd_resolve(source->url,stream,size,error,error_size);
     /* A Playerjs playlist leaf already contains the actual media URL. */
     if((strstr(source->url,".m3u8") || strstr(source->url,".mp4") ||
         strstr(source->url,".mpd")) &&
@@ -2012,8 +2106,49 @@ static void parse_uaflix_episodes(const char *html,const char *root,
     }
 }
 
+static int hydrahd_episodes(const char *url,Episode *items,int max,char *error,int error_size){
+    const char *id=strstr(url,"#tmdb=");
+    if(!id)return 0;
+    int tmdb=atoi(id+6);
+    if(tmdb<=0)return 0;
+    char page_url[1024];
+    snprintf(page_url,sizeof(page_url),"%.*s",(int)(id-url),url);
+    char *html=request(page_url,error,error_size);
+    if(!html)return 0;
+    int count=0;
+    const char *p=html;
+    while(count<max && (p=strstr(p,"<a "))){
+        const char *end=strchr(p,'>');
+        if(!end)break;
+        char season[12],number[12];
+        int found=html_attr(p,end,"data-season",season,sizeof(season)) &&
+                  html_attr(p,end,"data-episode",number,sizeof(number));
+        p=end+1;
+        if(!found)continue;
+        int s=atoi(season),e=atoi(number);
+        if(s<1 || s>999 || e<1 || e>9999)continue;
+        int duplicate=0;
+        for(int i=0;i<count;i++)
+            if(items[i].season==s && items[i].number==e){duplicate=1;break;}
+        if(duplicate)continue;
+        Episode *item=&items[count++];
+        memset(item,0,sizeof(*item));
+        item->season=s;
+        item->number=e;
+        snprintf(item->title,sizeof(item->title),"Сезон %d · Серія %d",s,e);
+        snprintf(item->url,sizeof(item->url),HYDRAHD_PLAYER_URL "tvplayer.php?tmdb=%d&s=%d&e=%d",
+                 tmdb,s,e);
+    }
+    free(html);
+    if(count)qsort(items,(size_t)count,sizeof(*items),episode_order);
+    else snprintf(error,error_size,"HydraHD: перелік серій недоступний");
+    return count;
+}
+
 int uakino_episodes(const Source *source, Episode *items, int max,
                     char *error, int error_size) {
+    if(!strncmp(source->url,HYDRAHD_SERIES_URL,sizeof(HYDRAHD_SERIES_URL)-1))
+        return hydrahd_episodes(source->url,items,max,error,error_size);
     if(strstr(source->url,"animeon.club/api/player/")){
         char *response=request(source->url,error,error_size);
         if(!response)return 0;

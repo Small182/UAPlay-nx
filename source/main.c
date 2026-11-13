@@ -41,11 +41,11 @@ static void battery_status_poll(void){
 }
 static int download_season=0, download_episode=0;
 static const char *provider_names[]={"UAFlix","UASerials","Eneyida",
-    "UAFilm","UAKino","Mikai (аніме)","AnimeON (аніме)"};
+    "UAFilm","UAKino","Mikai (аніме)","AnimeON (аніме)","HydraHD (тестове)"};
 enum { PROVIDER_COUNT=sizeof(provider_names)/sizeof(provider_names[0]),
        ALL_PROVIDERS=(1u<<PROVIDER_COUNT)-1u };
 /* Bit positions follow the provider IDs in uakino_search_provider (index + 1). */
-static unsigned enabled_providers=ALL_PROVIDERS;
+static unsigned enabled_providers=ALL_PROVIDERS & ~(1u<<(UAKINO_PROVIDER_HYDRAHD-1));
 
 static int provider_for_row(int row){
     if(row<0)return -1;
@@ -1996,13 +1996,7 @@ static void stick_arrow(SDL_GameController *pad,Uint32 *last_time,int *last_key)
 static void configure_stream(mpv_handle *player,const char *url) {
     if(!player)return;
     mpv_set_property_string(player,"user-agent","Mozilla/5.0 (Nintendo Switch; UAPlay/1.0)");
-    if(strstr(url,"zetvideo.net"))
-        mpv_set_property_string(player,"referrer","https://zetvideo.net/");
-    else if(strstr(url,"ashdi.vip"))
-        mpv_set_property_string(player,"referrer","https://ashdi.vip/");
-    else if(strstr(url,"hdvbua.pro"))
-        mpv_set_property_string(player,"referrer","https://hdvbua.pro/");
-    else mpv_set_property_string(player,"referrer","");
+    mpv_set_property_string(player,"referrer",stream_referer(url));
 }
 static int keyboard(char *value,size_t size) {
     SwkbdConfig cfg;
@@ -2652,6 +2646,10 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_Y){
                     Episode *ep=selected_episode_item();
                     if(ep){
+                        if(!strncmp(ep->url,HYDRAHD_PLAYER_URL,sizeof(HYDRAHD_PLAYER_URL)-1)){
+                            snprintf(message,sizeof(message),"HydraHD: доступний перегляд онлайн");
+                            continue;
+                        }
                         Source episode_source={0};
                         snprintf(episode_source.url,sizeof(episode_source.url),"%s",ep->url);
                         char url[2048]={0};
@@ -3086,13 +3084,16 @@ int main(void) {
                     sn=uakino_search_provider(&movies[chosen],sources,UAKINO_MAX,
                                               provider+1,message,sizeof(message));
                     sn=catalog_rank_sources(&movies[chosen],sources,sn,source_mode);
-                    if(!sn)snprintf(message,sizeof(message),"Нічого не знайдено");
+                    if(!sn && (provider+1!=UAKINO_PROVIDER_HYDRAHD || !message[0]))
+                        snprintf(message,sizeof(message),"Нічого не знайдено");
                     source=0;page=SOURCES;
                 }
             }else if(page==SOURCES){
                 if(key==SDL_CONTROLLER_BUTTON_B){page=PROVIDERS;message[0]=0;}
                 if(key==SDL_CONTROLLER_BUTTON_Y && sn){
-                    if(movies[chosen].series)
+                    if(provider_for_row(selected_provider)+1==UAKINO_PROVIDER_HYDRAHD)
+                        snprintf(message,sizeof(message),"HydraHD: доступний перегляд онлайн");
+                    else if(movies[chosen].series)
                         snprintf(message,sizeof(message),"Відкрийте серіал і виберіть серію для завантаження");
                     else {
                         char url[2048]={0};
@@ -3123,6 +3124,8 @@ int main(void) {
                                     }
                             page=SEASONS;continue;
                         }
+                        if(!strncmp(sources[source].url,HYDRAHD_SERIES_URL,sizeof(HYDRAHD_SERIES_URL)-1))
+                            continue;
                     }
                     char url[2048]={0};
                     message[0]=0;

@@ -8,6 +8,9 @@
 #define CATALOG_SEARCH_MAX (500 * CATALOG_PAGE_SIZE)
 #define UAKINO_MAX 40
 #define EPISODES_MAX 2048
+#define UAKINO_PROVIDER_HYDRAHD 8
+#define HYDRAHD_SERIES_URL "https://hydrahd.gd/watchseries/"
+#define HYDRAHD_PLAYER_URL "https://1src.org/players/"
 
 typedef struct {
     int id;
@@ -63,7 +66,8 @@ int catalog_fetch_details(Movie *movie);
 int uakino_search(const Movie *movie, Source *items, int max,
                   char *error, int error_size);
 /* Search a single provider (0=all, 1=UAFlix, 2=UASerials,
-   3=Eneyida, 4=UAFilm, 5=UAKino, 6=Mikai, 7=AnimeON). */
+   3=Eneyida, 4=UAFilm, 5=UAKino, 6=Mikai, 7=AnimeON, 8=HydraHD).
+   The experimental HydraHD source is selected explicitly. */
 int uakino_search_provider(const Movie *movie, Source *items, int max,
                            int provider, char *error, int error_size);
 /* Rank candidates by title match (Ukrainian and original titles), not by

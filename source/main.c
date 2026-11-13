@@ -3254,7 +3254,8 @@ int main(void) {
                     sn=uakino_search_provider(&lookup,sources,UAKINO_MAX,
                                               provider+1,message,sizeof(message));
                     sn=catalog_rank_sources(&lookup,sources,sn,source_mode);
-                    if(!sn && (provider+1!=UAKINO_PROVIDER_HYDRAHD || !message[0]))
+                    if(!sn && (!message[0] || (provider+1!=UAKINO_PROVIDER_HYDRAHD &&
+                                               provider+1!=UAKINO_PROVIDER_AETHER)))
                         snprintf(message,sizeof(message),TR("Нічого не знайдено","No results found"));
                     source=0;page=SOURCES;
                 }
@@ -3493,16 +3494,18 @@ int main(void) {
                 box(&paint,0,0,1280,720,.035f,.044f,.059f);
                 box_alpha(&paint,35,33,168,53,.10f,.15f,.22f,.95f,14);
                 text(&paint,TR("‹  Назад","‹  Back"),54,44,141);
+                const int loading_center_x=640;
                 Uint32 tick=SDL_GetTicks()/90;
                 for(int i=0;i<12;i++){
                     const float sx[]={0,.5f,.866f,1,.866f,.5f,0,-.5f,-.866f,-1,-.866f,-.5f};
                     const float sy[]={-1,-.866f,-.5f,0,.5f,.866f,1,.866f,.5f,0,-.5f,-.866f};
                     int age=(i+12-(tick%12))%12;
                     float bright=.22f+(12-age)*.047f;
-                    box_alpha(&paint,640+(int)(sx[i]*42)-6,340+(int)(sy[i]*42)-6,
+                    box_alpha(&paint,loading_center_x+(int)(sx[i]*42)-6,340+(int)(sy[i]*42)-6,
                               13,13,bright,bright,bright,1.f,6);
                 }
-                text_color(&paint,TR("Завантаження відео","Loading video"),507,426,310,.76f,.78f,.82f);
+                text_center(&paint,TR("Завантаження відео","Loading video"),
+                            loading_center_x-310,426,620,paint.font,.76f,.78f,.82f);
                 if(video_started_at && SDL_GetTicks()-video_started_at>30000){
                     snprintf(message,sizeof(message),TR("Час очікування відео вичерпано (30 с)","Video timed out (30 s)"));
                     command(player,"stop",NULL);page=player_return_page;

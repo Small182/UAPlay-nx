@@ -159,7 +159,8 @@ static int transient_network_error(CURLcode result) {
 /* Search forms on DLE-powered sites require POST. Keep the same connection,
    timeout, and retry behaviour as GET, including on Switch. */
 static char *request_form(const char *url, const char *post_data,
-                          const char *referer, char *error, int error_size) {
+                          const char *referer, char *error, int error_size,
+                          long *http_status) {
 #ifdef __SWITCH__
     CURL **slot = catalog_connection_slot();
     if (!*slot) *slot = curl_easy_init();
@@ -168,6 +169,7 @@ static char *request_form(const char *url, const char *post_data,
     CURL *curl = curl_easy_init();
 #endif
     Response r = {0};
+    if (http_status) *http_status = 0;
     if (!curl) {
         snprintf(error, error_size, "%s", TR("Не вдалося запустити curl","Could not initialize curl"));
         return NULL;
@@ -217,6 +219,7 @@ static char *request_form(const char *url, const char *post_data,
     }
     long status = 0;
     if (curl) curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    if (http_status && result == CURLE_OK) *http_status = status;
 #ifdef __SWITCH__
     if (result != CURLE_OK && curl) {
         curl_easy_cleanup(curl);
@@ -238,7 +241,7 @@ static char *request_form(const char *url, const char *post_data,
 }
 
 static char *request(const char *url, char *error, int error_size) {
-    return request_form(url,NULL,NULL,error,error_size);
+    return request_form(url,NULL,NULL,error,error_size,NULL);
 }
 
 static char *encode(const char *value) {
@@ -1356,7 +1359,7 @@ static void search_new_provider(const char *host,const char *name,int provider,
     }
     free(encoded);
     if(!body)return;
-    char *html=request_form(url,body,referer,error,error_size);
+    char *html=request_form(url,body,referer,error,error_size,NULL);
     free(body);
     if(!html)return;
     if(provider==4){
@@ -1581,8 +1584,14 @@ static void search_animeon(const char *query,Source *items,int *count,int max){
 
 static int aether_resolve(const char *url,char *stream,int size,
                           char *error,int error_size){
-    char *json=request_form(url,NULL,AETHER_ORIGIN "/",error,error_size);
-    if(!json)return 0;
+    long status;
+    char *json=request_form(url,NULL,AETHER_ORIGIN "/",error,error_size,&status);
+    if(!json){
+        if(status==404)
+            snprintf(error,error_size,"%s",TR("Aether (Lul): відео для цієї назви недоступне",
+                                             "Aether (Lul): no video available for this title"));
+        return 0;
+    }
     char candidate[2048];
     const char *end=json+strlen(json);
     json_field(json,end,"stream_url",candidate,sizeof(candidate));
@@ -1609,7 +1618,7 @@ static int hydrahd_resolve(const char *player,char *stream,int size,
                         "%.*s?action=sources&provider=febbox&%s",
                         (int)(params-player),player,params+1);
     if(length<0 || length>=(int)sizeof(request_url))return 0;
-    char *json=request_form(request_url,NULL,player,error,error_size);
+    char *json=request_form(request_url,NULL,player,error,error_size,NULL);
     if(!json)return 0;
     char candidate[1024]="";
     const char *p=strstr(json,"\"sources\"");
@@ -1700,9 +1709,13 @@ int uakino_search_provider(const Movie *movie, Source *items, int max,
         return max>0?search_hydrahd(movie,items,error,error_size):0;
     if(selected==UAKINO_PROVIDER_AETHER){
         if(max<1 || movie->id<=0)return 0;
-        snprintf(items->title,sizeof(items->title),"Aether (Lul): %.176s",localized);
         snprintf(items->url,sizeof(items->url),"%s%d",
                  movie->series?AETHER_SERIES_URL:AETHER_LUL_URL "movie/",movie->id);
+        if(!movie->series){
+            char stream[2048];
+            if(!aether_resolve(items->url,stream,sizeof(stream),error,error_size))return 0;
+        }
+        snprintf(items->title,sizeof(items->title),"Aether (Lul): %.176s",localized);
         return 1;
     }
     int provider_limit=selected? (max>=4?max/4:max) : (max>=7?max/7:max);

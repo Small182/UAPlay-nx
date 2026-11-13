@@ -20,10 +20,10 @@ LIBS := $(shell pkg-config --libs mpv sdl2 SDL2_ttf SDL2_image libcurl) -lGLESv2
 .PHONY: all clean
 all: $(TARGET).nro
 
-main.o: source/main.c source/catalog.h source/posters.h source/library.h source/playback.h source/downloads.h source/platform.h
+main.o: source/main.c source/catalog.h source/posters.h source/library.h source/playback.h source/downloads.h source/platform.h source/i18n.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-catalog.o: source/catalog.c source/catalog.h
+catalog.o: source/catalog.c source/catalog.h source/i18n.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 posters.o: source/posters.c source/posters.h source/catalog.h
@@ -32,13 +32,16 @@ posters.o: source/posters.c source/posters.h source/catalog.h
 library.o: source/library.c source/library.h source/catalog.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-playback.o: source/playback.c source/playback.h
+playback.o: source/playback.c source/playback.h source/i18n.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-downloads.o: source/downloads.c source/downloads.h source/catalog.h source/platform.h
+downloads.o: source/downloads.c source/downloads.h source/catalog.h source/platform.h source/i18n.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(TARGET).elf: main.o catalog.o posters.o library.o playback.o downloads.o
+i18n.o: source/i18n.c source/i18n.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TARGET).elf: main.o catalog.o posters.o library.o playback.o downloads.o i18n.o
 	$(CC) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(TARGET).nacp:
@@ -48,4 +51,4 @@ $(TARGET).nro: $(TARGET).elf $(TARGET).nacp
 	elf2nro $< $@ --nacp=$(TARGET).nacp --icon=icon.jpg --romfsdir=romfs
 
 clean:
-	rm -f main.o catalog.o posters.o library.o playback.o downloads.o $(TARGET).elf $(TARGET).nacp $(TARGET).nro
+	rm -f main.o catalog.o posters.o library.o playback.o downloads.o i18n.o $(TARGET).elf $(TARGET).nacp $(TARGET).nro

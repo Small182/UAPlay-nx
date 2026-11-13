@@ -3,7 +3,7 @@
 #include "../source/catalog.c"
 
 /* Host smoke test; no TMDB key or network connection required.
-   gcc -O2 tests/details_metadata_smoke.c -lcurl -o /tmp/uaplay-details-smoke */
+   gcc -O2 tests/details_metadata_smoke.c source/i18n.c -lcurl -o /tmp/uaplay-details-smoke */
 int main(void){
     Movie movie={0};
     movie.id=42;

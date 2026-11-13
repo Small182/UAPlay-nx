@@ -12,6 +12,7 @@
 #include <mpv/client.h>
 #include <mpv/render_gl.h>
 #include <curl/curl.h>
+#include "i18n.h"
 #include "catalog.h"
 #include "posters.h"
 #include "library.h"
@@ -40,8 +41,8 @@ static void battery_status_poll(void){
     else battery_percentage=-1;
 }
 static int download_season=0, download_episode=0;
-static const char *provider_names[]={"UAFlix","UASerials","Eneyida",
-    "UAFilm","UAKino","Mikai (аніме)","AnimeON (аніме)","HydraHD (тестове)"};
+static const UiText provider_names[]={{"UAFlix","UAFlix"},{"UASerials","UASerials"},{"Eneyida","Eneyida"},
+    {"UAFilm","UAFilm"},{"UAKino","UAKino"},{"Mikai (аніме)","Mikai (anime)"},{"AnimeON (аніме)","AnimeON (anime)"},{"HydraHD (тестове)","HydraHD (experimental)"}};
 enum { PROVIDER_COUNT=sizeof(provider_names)/sizeof(provider_names[0]),
        ALL_PROVIDERS=(1u<<PROVIDER_COUNT)-1u };
 /* Bit positions follow the provider IDs in uakino_search_provider (index + 1). */
@@ -69,15 +70,15 @@ static const int visible_video_options[]={0,1,4,6};
 static double video_options[]={1.0,100.0,0.0,0.0,48.0,0.0,0.0};
 static const char *video_props[]={"speed","volume","brightness","contrast",
                                   "sub-font-size","sub-delay","hls-bitrate"};
-static const char *video_titles[]={"Швидкість","Гучність","Яскравість","Контраст",
-                                   "Розмір субтитрів","Затримка субтитрів","Якість HLS"};
+static const UiText video_titles[]={{"Швидкість","Speed"},{"Гучність","Volume"},{"Яскравість","Brightness"},{"Контраст","Contrast"},
+                                   {"Розмір субтитрів","Subtitle size"},{"Затримка субтитрів","Subtitle delay"},{"Якість HLS","HLS quality"}};
 static const double video_steps[]={0.25,5,5,5,4,0.25,1};
 static const double video_min[]={0.5,0,-100,-100,20,-10,0};
 static const double video_max[]={2.0,130,100,100,100,10,4};
 /* HLS bitrate ceilings approximate the requested picture height. Exact
    360/480/720/1080p depends on variant resolutions offered by the source. */
 static const char *hls_presets[]={"max","800000","1500000","3000000","6000000"};
-static const char *hls_labels[]={"Авто","360p","480p","720p","1080p"};
+static const char *hls_labels[]={"","360p","480p","720p","1080p"};
 
 static void rebuild_seasons(void) {
     season_count=0;
@@ -125,16 +126,16 @@ static void focus_episode_index(int index){
 static const char *categories[]={"movies","series","films","genre_28","genre_35",
     "genre_18","genre_27","genre_878","genre_16","genre_10749","genre_99",
     "favorites","history","cartoons","cartoon_series","anime"};
-static const char *headings[]={"Популярні фільми","Популярні серіали","Усі фільми",
-    "Бойовики","Комедії","Драми","Жахи","Фантастика","Мультфільми",
-    "Романтика","Документальні","На майбутнє","Історія",
-    "Мультфільми","Мультсеріали","Аніме"};
+static const UiText headings[]={{"Популярні фільми","Popular movies"},{"Популярні серіали","Popular TV shows"},{"Усі фільми","All movies"},
+    {"Бойовики","Action"},{"Комедії","Comedy"},{"Драми","Drama"},{"Жахи","Horror"},{"Фантастика","Sci-fi"},{"Мультфільми","Animation"},
+    {"Романтика","Romance"},{"Документальні","Documentaries"},{"На майбутнє","Watchlist"},{"Історія","History"},
+    {"Мультфільми","Animation"},{"Мультсеріали","Animated series"},{"Аніме","Anime"}};
 #define CATEGORY_COUNT ((int)(sizeof(categories)/sizeof(categories[0])))
 #define ANIMATION_FIRST 13
 #define ANIMATION_LAST 15
 static const int home_categories[]={0,1,13,14};
-static const char *home_headings[]={"Популярні фільми","Популярні серіали",
-                                    "Популярні мультфільми","Популярні мультсеріали"};
+static const UiText home_headings[]={{"Популярні фільми","Popular movies"},{"Популярні серіали","Popular TV shows"},
+                                    {"Популярні мультфільми","Popular animated movies"},{"Популярні мультсеріали","Popular animated series"}};
 #define HOME_SHELF_COUNT ((int)(sizeof(home_categories)/sizeof(home_categories[0])))
 typedef struct {
     Movie items[CATALOG_PAGE_SIZE];
@@ -174,8 +175,8 @@ static int sort_button_for_mode(int mode){
 /* 0: Watch, 1: Add to favorites (details buttons). */
 static int details_button_focus=0;
 enum { SETTING_THEME, SETTING_INTERFACE, SETTING_PLAYER, SETTING_AUTOPLAY,
-       SETTING_PROVIDERS, SETTING_COUNT };
-enum { SETTINGS_Y=136, SETTINGS_ROW_STEP=88, SETTINGS_ROW_HEIGHT=72 };
+       SETTING_PROVIDERS, SETTING_LANGUAGE, SETTING_COUNT };
+enum { SETTINGS_Y=136, SETTINGS_ROW_STEP=80, SETTINGS_ROW_HEIGHT=64 };
 static int settings_selected=0,ui_accent_alt=0,source_mode=0;
 static int autoplay_episodes=1;
 #define NEXT_EPISODE_DELAY_MS 3000u
@@ -193,8 +194,12 @@ static void theme_load(void){
         /* Legacy files only store the theme and optionally autoplay. */
         if(autoplay=='0' || autoplay=='1'){
             unsigned mask;
-            if(fscanf(f," %u",&mask)==1 && mask<=ALL_PROVIDERS)
+            if(fscanf(f," %u",&mask)==1 && mask<=ALL_PROVIDERS){
                 enabled_providers=mask;
+                char language[8];
+                if(fscanf(f," %7s",language)==1 && !strcmp(language,"en"))
+                    ui_set_language(UI_ENGLISH);
+            }
         }
         fclose(f);
     }
@@ -204,7 +209,8 @@ static int theme_save(void){
     mkdir("sdmc:/switch/uaplay",0777);
     FILE *f=fopen(THEME_TMP,"w");
     if(!f)return 0;
-    int written=fprintf(f,"%d%d\n%u\n",ui_light_theme,autoplay_episodes,enabled_providers);
+    int written=fprintf(f,"%d%d\n%u\n%s\n",ui_light_theme,autoplay_episodes,
+                        enabled_providers,TR("uk","en"));
     if(fclose(f)!=0 || written<0){
         remove(THEME_TMP);
         return 0;
@@ -241,7 +247,7 @@ static int category_for_tab(int tab){
     return tab>=0 && tab<5?destinations[tab]:0;
 }
 static const int film_categories[]={2,3,5,4,10};
-static const char *film_labels[]={"Усі фільми","Бойовики","Драми","Комедії","Документальні"};
+static const UiText film_labels[]={{"Усі фільми","All movies"},{"Бойовики","Action"},{"Драми","Drama"},{"Комедії","Comedy"},{"Документальні","Documentaries"}};
 #define FILM_TAB_COUNT ((int)(sizeof(film_categories)/sizeof(film_categories[0])))
 static int film_tab(int category){
     for(int i=0;i<FILM_TAB_COUNT;i++)if(film_categories[i]==category)return i;
@@ -520,7 +526,7 @@ static int load_category(int category,const char *query,Movie *movies,char *mess
         int cached=catalog_home_copy(home_shelf,movies,0,CATALOG_PAGE_SIZE);
         home_current_loaded=cached>=0;
         if(cached<0){
-            snprintf(message,(size_t)size,"Завантаження добірки...");
+            snprintf(message,(size_t)size,TR("Завантаження добірки...","Loading collection..."));
             cached=0;
         }else message[0]=0;
         catalog_loader_reset(data_category,query,cached,0);
@@ -1275,6 +1281,13 @@ static void list_row(Paint *p,const char *title,int y,int selected,
 }
 static int footer_position,footer_total;
 static Page footer_page;
+static int offline_catalog_status(const char *message){
+    if(!message)return 0;
+    const char *uk="Офлайн-пошук",*en="Offline search";
+    return !strncmp(message,"Offline catalog",15) ||
+           !strncmp(message,uk,strlen(uk)) || !strncmp(message,en,strlen(en));
+}
+
 static void footer(Paint *p,const char *message) {
     box_alpha(p,0,UI_FOOTER_TOP,1280,720-UI_FOOTER_TOP,.047f,.057f,.070f,1.f,0);
     /* Monochrome Switch-style controller legend, independent of UI accent. */
@@ -1287,32 +1300,32 @@ static void footer(Paint *p,const char *message) {
     const char *keys[6],*labels[6];int count=0;
 #define HINT(k,l) do{keys[count]=k;labels[count]=l;count++;}while(0)
     if(footer_page==CATALOG){
-        HINT("L","Розділ");HINT("R","Розділ");
-        HINT("X","Пошук");HINT("−","Меню");HINT("A","Відкрити");
-        if(ui_category==0 && !expanded_catalog)HINT("↑↓","Добірка");
-        if(expanded_catalog)HINT("B","Згорнути");
-        else if(ui_category!=0)HINT("B","Головна");
+        HINT("L",TR("Розділ","Section"));HINT("R",TR("Розділ","Section"));
+        HINT("X",TR("Пошук","Search"));HINT("−",TR("Меню","Menu"));HINT("A",TR("Відкрити","Open"));
+        if(ui_category==0 && !expanded_catalog)HINT("↑↓",TR("Добірка","Collection"));
+        if(expanded_catalog)HINT("B",TR("Згорнути","Collapse"));
+        else if(ui_category!=0)HINT("B",TR("Головна","Home"));
     }else if(footer_page==DETAILS){
-        HINT("X","Вибране");HINT("Y","Переглянуто");
-        HINT("A","Натиснути");HINT("B","Назад");
+        HINT("X",TR("Вибране","Favorites"));HINT("Y",TR("Переглянуто","Watched"));
+        HINT("A",TR("Натиснути","Select"));HINT("B",TR("Назад","Back"));
     }else if(footer_page==SETTINGS){
-        HINT("↑↓","Пункт");HINT("A","Змінити");HINT("B","Закрити");
+        HINT("↑↓",TR("Пункт","Item"));HINT("A",TR("Змінити","Change"));HINT("B",TR("Закрити","Close"));
     }else if(footer_page==PROVIDER_SETTINGS){
-        HINT("↑↓","Джерело");HINT("A","Перемкнути");HINT("B","Назад");
+        HINT("↑↓",TR("Джерело","Provider"));HINT("A",TR("Перемкнути","Toggle"));HINT("B",TR("Назад","Back"));
     }else if(footer_page==TRACK_PICKER){
-        HINT("↑↓","Доріжка");HINT("A","Застосувати");HINT("B","Назад");
+        HINT("↑↓",TR("Доріжка","Track"));HINT("A",TR("Застосувати","Apply"));HINT("B",TR("Назад","Back"));
     }else if(footer_page==VIDEO_SETTINGS){
-        HINT("↑↓","Параметр");HINT("←→","Змінити");HINT("B","Назад");
+        HINT("↑↓",TR("Параметр","Option"));HINT("←→",TR("Змінити","Change"));HINT("B",TR("Назад","Back"));
     }else if(footer_page==SEASONS){
-        HINT("↑↓","Сезон");HINT("A","Серії");HINT("B","Назад");
+        HINT("↑↓",TR("Сезон","Season"));HINT("A",TR("Серії","Episodes"));HINT("B",TR("Назад","Back"));
     }else if(footer_page==EPISODES){
-        HINT("↑↓","Серія");HINT("A","Дивитися");HINT("Y","Завантажити");HINT("B","Назад");
+        HINT("↑↓",TR("Серія","Episode"));HINT("A",TR("Дивитися","Watch"));HINT("Y",TR("Завантажити","Download"));HINT("B",TR("Назад","Back"));
     }else if(footer_page==SOURCES){
-        HINT("↑↓","Вибір");HINT("A","Відкрити");HINT("Y","Завантажити");HINT("B","Назад");
+        HINT("↑↓",TR("Вибір","Select"));HINT("A",TR("Відкрити","Open"));HINT("Y",TR("Завантажити","Download"));HINT("B",TR("Назад","Back"));
     }else if(footer_page==DOWNLOADS){
-        HINT("↑↓","Файл");HINT("A","Відкрити");HINT("X","Видалити");HINT("B","Назад");
+        HINT("↑↓",TR("Файл","File"));HINT("A",TR("Відкрити","Open"));HINT("X",TR("Видалити","Delete"));HINT("B",TR("Назад","Back"));
     }else{
-        HINT("↑↓","Вибір");HINT("A","Відкрити");HINT("B","Назад");
+        HINT("↑↓",TR("Вибір","Select"));HINT("A",TR("Відкрити","Open"));HINT("B",TR("Назад","Back"));
     }
 #undef HINT
     int widths[6]={0},total=0;
@@ -1343,14 +1356,12 @@ static void footer(Paint *p,const char *message) {
         char progress_label[80];
         if(download_percent>=0)
             snprintf(progress_label,sizeof(progress_label),"↓ %d%% · %d",download_percent/10,pending_downloads);
-        else snprintf(progress_label,sizeof(progress_label),"↓ %u МБ · %d",(unsigned)(downloaded_bytes>>20),pending_downloads);
+        else snprintf(progress_label,sizeof(progress_label),TR("↓ %u МБ · %d","↓ %u MB · %d"),(unsigned)(downloaded_bytes>>20),pending_downloads);
         text_font(p,progress_label,250,682,175,p->font_small,ar,ag,ab);
     }
     /* Notification occupies its own safe zone, never the last selectable row. */
-    if(message && *message && strncmp(message,"Offline catalog",15) &&
-       strncmp(message,"Офлайн-пошук",strlen("Офлайн-пошук")) &&
-       strncmp(message,"A:",2) &&
-       strncmp(message,"B:",2) && strncmp(message,"Вліво",10)){
+    if(message && *message && !offline_catalog_status(message) &&
+       strncmp(message,"A:",2) && strncmp(message,"B:",2)){
         box_alpha(p,UI_EDGE,617,1216,43,.11f,.16f,.19f,.98f,11);
         text_small(p,message,50,626,1170);
     }
@@ -1483,7 +1494,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
     if (page==CATALOG) {
         box_alpha(p,0,0,1280,80,.059f,.070f,.081f,1.f,0);
         headline(p,"UAPlay",25,18,166);
-        const char *tabs[]={"Головна","Серіали","Фільми","Мультфільми","Вибране"};
+        const char *tabs[]={TR("Головна","Home"),TR("Серіали","TV Shows"),TR("Фільми","Movies"),TR("Мультфільми","Animation"),TR("Вибране","Favorites")};
         const int tab_x[]={205,307,410,502,650};
         const int tab_w[]={96,95,89,144,106};
         for(int i=0;i<5;i++){
@@ -1503,7 +1514,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         box_alpha(p,767,17,277,47,.13f,.16f,.19f,1.f,15);
         if(catalog_hero_focus==5)selection_frame(p,767,17,277,47);
         search_icon(p,800,38,.13f,.16f,.19f);
-        text_font(p,"Пошук",831,17+(47-text_height(p,"Пошук",p->font_small))/2,
+        text_font(p,TR("Пошук","Search"),831,17+(47-text_height(p,TR("Пошук","Search"),p->font_small))/2,
                   177,p->font_small,1.f,1.f,1.f);
         press_preview(p,767,17,277,47,15);
         box_alpha(p,1058,17,53,47,.13f,.16f,.19f,1.f,15);
@@ -1519,7 +1530,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         if(ui_category==11 || ui_category==12){
             /* Favorites uses a poster-only library layout, without the hero.
                Both tabs stay reachable even when their list is empty. */
-            const char *names[]={"На майбутнє","Історія","Завантажені"};
+            const char *names[]={TR("На майбутнє","Watchlist"),TR("Історія","History"),TR("Завантажені","Downloads")};
             const int tab_x[]={32,244,417},tab_w[]={196,158,208};
             for(int i=0;i<3;i++){
                 int selected=i<2 && ui_category==11+i;
@@ -1535,17 +1546,17 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             if(ui_category==12){
                 if(catalog_hero_focus==19)
                     selection_frame(p,982,101,266,47);
-                button(p,clear_history_confirm?"Підтвердити очищення":
-                       "Очистити історію",982,101,266,47,0);
+                button(p,clear_history_confirm?TR("Підтвердити очищення","Confirm clearing"):
+                       TR("Очистити історію","Clear history"),982,101,266,47,0);
             }
             if(!n){
-                text_center_button(p,"Тут нічого немає",UI_EDGE,305,1216,110,
+                text_center_button(p,TR("Тут нічого немає","Nothing here yet"),UI_EDGE,305,1216,110,
                                    p->font_big,.73f,.77f,.82f);
             }
             draw_poster_grid(p,movies,n,chosen,1,&poster_budget);
         }else if(expanded_catalog){
             headline(p,heading,UI_EDGE,97,960);
-            const char *sort_labels[]={"Рейтинг","Популярність"};
+            const char *sort_labels[]={TR("Рейтинг","Rating"),TR("Популярність","Popularity")};
             const int sort_x[]={785,928},sort_w[]={132,159};
             for(int i=0;i<2;i++){
                 int active=catalog_sort_mode==sort_mode_for_button(i);
@@ -1560,7 +1571,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                 press_preview(p,sort_x[i],98,sort_w[i],44,12);
             }
             if(catalog_hero_focus==14)selection_frame(p,1106,98,142,44);
-            button(p,"‹  Назад",1106,98,142,44,0);
+            button(p,TR("‹  Назад","‹  Back"),1106,98,142,44,0);
             draw_poster_grid(p,movies,n,chosen,0,&poster_budget);
             if(n)text_muted(p,movies[chosen].title,54,635,1150);
         }else{
@@ -1582,17 +1593,16 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                 headline(p,movies[active].title,hero_left,hero_top,967);
                 char tag[110];
                 snprintf(tag,sizeof(tag),"%s  ·  %s",movies[active].year,
-                         movies[active].series?"Серіал":"Фільм");
+                         movies[active].series?TR("Серіал","TV Show"):TR("Фільм","Movie"));
                 text_muted(p,tag,hero_left,hero_top+50,890);
                 wrapped(p,movies[active].overview,hero_left,hero_top+90,949,2,27,
                         p->font_small,.74f,.79f,.84f);
             }else{
-                int loading=ui_category==0 && status &&
-                            !strncmp(status,"Завантаження добірки",strlen("Завантаження добірки"));
-                headline(p,loading?"Завантаження добірки...":"Не знайдено матеріалів",
+                int loading=ui_category==0 && home_cache_initialized && !home_current_loaded;
+                headline(p,loading?TR("Завантаження добірки...","Loading collection..."):TR("Не знайдено матеріалів","No titles found"),
                          hero_left,hero_top+14,900);
-                text_muted(p,loading?"Зачекайте, отримуємо матеріали":
-                           "Спробуйте інший розділ або пошуковий запит",
+                text_muted(p,loading?TR("Зачекайте, отримуємо матеріали","Fetching titles…"):
+                           TR("Спробуйте інший розділ або пошуковий запит","Try another section or search term"),
                            hero_left,hero_top+78,920);
             }
             if(n && catalog_hero_focus==1)
@@ -1600,14 +1610,14 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             if(n){
                 if(catalog_hero_focus==2)
                     selection_frame(p,hero_favorite_x,hero_button_y,218,HERO_BUTTON_H);
-                button(p,"▶  Дивитися",hero_left,hero_button_y,205,HERO_BUTTON_H,1);
+                button(p,TR("▶  Дивитися","▶  Watch"),hero_left,hero_button_y,205,HERO_BUTTON_H,1);
                 button(p,library_favorite(&movies[active])?
-                       "✓  У вибраному":"+  У вибране",hero_favorite_x,hero_button_y,
+                       TR("✓  У вибраному","✓  In favorites"):TR("+  У вибране","+  Add to favorites"),hero_favorite_x,hero_button_y,
                        218,HERO_BUTTON_H,0);
             }
             int section_tabs=subsection_count(ui_category);
             if(section_tabs){
-                const char *animation_tabs[]={"Мультфільми","Мультсеріали","Аніме"};
+                const char *animation_tabs[]={TR("Мультфільми","Animation"),TR("Мультсеріали","Animated series"),TR("Аніме","Anime")};
                 const int anim_x[]={32,240,465},anim_w[]={191,208,134};
                 const int film_x[]={32,197,373,513,672},film_w[]={157,168,132,151,225};
                 int films=tab_for_category(ui_category)==2;
@@ -1619,17 +1629,16 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                               selected?.35f:.19f,1.f,13);
                     if(catalog_hero_focus==i+16)
                         selection_frame(p,x,328,w,43);
-                    text_center_button(p,films?film_labels[i]:animation_tabs[i],x,328,
+                    text_center_button(p,films?ui_text(film_labels[i]):animation_tabs[i],x,328,
                                        w,43,p->font_small,
                                        .96f,.97f,.99f);
                     press_preview(p,x,328,w,43,13);
                 }
             }else text(p,heading,UI_EDGE,336,930);
-            if(status && (!strncmp(status,"Offline catalog",15) ||
-                          !strncmp(status,"Офлайн-пошук",strlen("Офлайн-пошук"))))
-                text_tiny(p,"Офлайн",1026,340,77);
+            if(offline_catalog_status(status))
+                text_tiny(p,TR("Офлайн","Offline"),1026,340,77);
             if(n && catalog_hero_focus==3)selection_frame(p,1110,329,138,42);
-            button(p,ui_category==0?"Більше  ›":"Усі  ›",1110,329,138,42,0);
+            button(p,ui_category==0?TR("Більше  ›","More  ›"):TR("Усі  ›","All  ›"),1110,329,138,42,0);
             int home=ui_category==0;
             int target=poster_row_start(chosen,home)*POSTER_STEP;
             int max_start=home?(n>POSTER_COLUMNS?n-POSTER_COLUMNS:0):
@@ -1664,47 +1673,54 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         }
         footer(p,status);
     } else if(page==SETTINGS){
-        screen_header(p,"Налаштування","UAPlay");
-        const char *items[]={"Тема","Інтерфейс","Плеєр","Автовідтворення","Джерела"};
+        screen_header(p,TR("Налаштування","Settings"),"UAPlay");
+        const char *items[]={TR("Тема","Theme"),TR("Інтерфейс","Appearance"),
+            TR("Плеєр","Player"),TR("Автовідтворення","Autoplay"),TR("Джерела","Providers"),
+            TR("Мова / Language","Language / Мова")};
         for(int i=0;i<SETTING_COUNT;i++){
             int y=SETTINGS_Y+i*SETTINGS_ROW_STEP;
-            box_alpha(p,32,y,417,72,i==settings_selected?.20f:.09f,
+            box_alpha(p,32,y,417,SETTINGS_ROW_HEIGHT,i==settings_selected?.20f:.09f,
                       i==settings_selected?.29f:.11f,
                       i==settings_selected?.37f:.14f,1.f,16);
             if(i==settings_selected){float r,g,b;accent(&r,&g,&b);
-                box_alpha(p,32,y+15,5,42,r,g,b,1.f,2);}
+                box_alpha(p,32,y+11,5,42,r,g,b,1.f,2);}
+            int label_y=y+(SETTINGS_ROW_HEIGHT-text_height(p,items[i],p->font))/2;
             if(i==settings_selected){
                 float r,g,b;accent(&r,&g,&b);
-                text_font(p,items[i],55,y+(72-text_height(p,items[i],p->font))/2,
-                          372,p->font,r,g,b);
-                selection_frame(p,32,y,417,72);
-            }else text(p,items[i],55,y+(72-text_height(p,items[i],p->font))/2,372);
-            press_preview(p,32,y,417,72,16);
+                text_font(p,items[i],55,label_y,372,p->font,r,g,b);
+                selection_frame(p,32,y,417,SETTINGS_ROW_HEIGHT);
+            }else text(p,items[i],55,label_y,372);
+            press_preview(p,32,y,417,SETTINGS_ROW_HEIGHT,16);
         }
         box_alpha(p,475,136,773,480,.10f,.12f,.15f,1.f,20);
         headline(p,items[settings_selected],513,174,685);
         char description[240];
-        if(settings_selected==SETTING_THEME)snprintf(description,sizeof(description),"Оформлення: %s",ui_light_theme?"Світла тема":"Темна тема");
+        if(settings_selected==SETTING_THEME)snprintf(description,sizeof(description),TR("Оформлення: %s","Theme: %s"),ui_light_theme?TR("Світла тема","Light"):TR("Темна тема","Dark"));
         else if(settings_selected==SETTING_INTERFACE){
-            if(ui_light_theme)snprintf(description,sizeof(description),"Акцент світлої теми: синій Nintendo Switch");
-            else snprintf(description,sizeof(description),"Акцент: %s",ui_accent_alt?"Блакитний":"Бірюзовий");
+            if(ui_light_theme)snprintf(description,sizeof(description),TR("Акцент світлої теми: синій Nintendo Switch","Light theme accent: Nintendo Switch blue"));
+            else snprintf(description,sizeof(description),TR("Акцент: %s","Accent: %s"),ui_accent_alt?TR("Блакитний","Light blue"):TR("Бірюзовий","Turquoise"));
         }
-        else if(settings_selected==SETTING_PLAYER)snprintf(description,sizeof(description),"Швидкість: %.2f · гучність: %.0f",video_options[0],video_options[1]);
+        else if(settings_selected==SETTING_PLAYER)snprintf(description,sizeof(description),TR("Швидкість: %.2f · гучність: %.0f","Speed: %.2f · Volume: %.0f"),video_options[0],video_options[1]);
         else if(settings_selected==SETTING_AUTOPLAY)
-            snprintf(description,sizeof(description),"Наступна серія: %s",autoplay_episodes?"Автоматично":"Вручну");
+            snprintf(description,sizeof(description),TR("Наступна серія: %s","Next episode: %s"),autoplay_episodes?TR("Автоматично","Automatic"):TR("Вручну","Manual"));
+        else if(settings_selected==SETTING_LANGUAGE)
+            snprintf(description,sizeof(description),"%s",TR("Українська","English"));
         else description[0]=0;
         text(p,description,516,255,682);
-        const char *help[]={"Перемикає темну та світлу теми. Вибір зберігається на SD-карті.",
-            "Змінює колір виділення на всіх екранах.",
-            "Налаштуйте відео, гучність та субтитри.",
-            "Після завершення серії пропонує наступну через 3 секунди. Кнопка B скасовує перехід. Вибір зберігається.",
-            "Виберіть джерела, у яких UAPlay може шукати відео. Вибір зберігається на SD-карті."};
+        const char *help[]={TR("Перемикає темну та світлу теми. Вибір зберігається на SD-карті.","Switch between dark and light themes. Your choice is saved to the SD card."),
+            TR("Змінює колір виділення на всіх екранах.","Change the highlight color across the app."),
+            TR("Налаштуйте відео, гучність та субтитри.","Adjust playback, volume, and subtitles."),
+            TR("Після завершення серії пропонує наступну через 3 секунди. Кнопка B скасовує перехід. Вибір зберігається.","Start the next episode after 3 seconds. Press B to cancel. Your choice is saved."),
+            TR("Виберіть джерела, у яких UAPlay може шукати відео. Вибір зберігається на SD-карті.","Choose which providers UAPlay can search. Your choices are saved to the SD card."),
+            TR("Змінює мову меню та повідомлень.","Changes the language of menus and messages.")};
         wrapped(p,help[settings_selected],517,315,675,3,29,p->font_small,.73f,.78f,.84f);
-        button(p,settings_selected==SETTING_PLAYER?"Відкрити параметри":
-               settings_selected==SETTING_PROVIDERS?"Відкрити джерела":"Змінити",515,537,258,55,1);
+        button(p,settings_selected==SETTING_PLAYER?TR("Відкрити параметри","Open player settings"):
+               settings_selected==SETTING_PROVIDERS?TR("Відкрити джерела","Manage providers"):
+               settings_selected==SETTING_LANGUAGE?TR("English","Українська"):TR("Змінити","Change"),
+               515,537,258,55,1);
         footer(p,status);
     } else if (page==DETAILS) {
-        screen_header(p,movies[chosen].series?"Про серіал":"Про фільм","UAPlay");
+        screen_header(p,movies[chosen].series?TR("Про серіал","About the show"):TR("Про фільм","About the movie"),"UAPlay");
         enum { DETAILS_X=32, DETAILS_Y=109, DETAILS_W=1216, DETAILS_H=507,
                DETAILS_PAD=14, DETAILS_POSTER_H=DETAILS_H-2*DETAILS_PAD,
                DETAILS_POSTER_W=DETAILS_POSTER_H*2/3,
@@ -1720,46 +1736,46 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         const Movie *selected=&movies[chosen];
         if(selected->series && selected->details_state>0 &&
            selected->season_count>0 && selected->episode_count>0)
-            snprintf(tag,sizeof(tag),"%s  ·  Серіал  ·  Сезонів: %d  ·  Серій: %d",
+            snprintf(tag,sizeof(tag),TR("%s  ·  Серіал  ·  Сезонів: %d  ·  Серій: %d","%s  ·  TV Show  ·  Seasons: %d  ·  Episodes: %d"),
                      selected->year,selected->season_count,selected->episode_count);
         else if(!selected->series && selected->details_state>0 &&
                 selected->runtime_minutes>0){
             if(selected->runtime_minutes<60)
-                snprintf(tag,sizeof(tag),"%s  ·  Фільм  ·  %d хв",
+                snprintf(tag,sizeof(tag),TR("%s  ·  Фільм  ·  %d хв","%s  ·  Movie  ·  %d min"),
                          selected->year,selected->runtime_minutes);
-            else snprintf(tag,sizeof(tag),"%s  ·  Фільм  ·  %d год %02d хв",
+            else snprintf(tag,sizeof(tag),TR("%s  ·  Фільм  ·  %d год %02d хв","%s  ·  Movie  ·  %d h %02d min"),
                           selected->year,selected->runtime_minutes/60,
                           selected->runtime_minutes%60);
         }else snprintf(tag,sizeof(tag),"%s  ·  %s",selected->year,
-                       selected->series?"Серіал":"Фільм");
+                       selected->series?TR("Серіал","TV Show"):TR("Фільм","Movie"));
         text(p,tag,66,259,815);
         summary(p,movies[chosen].overview,66,313,815);
         if(!details_button_focus)selection_frame(p,65,526,238,58);
         else selection_frame(p,320,526,255,58);
-        button(p,"▶  Дивитися",65,526,238,58,1);
-        button(p,library_favorite(&movies[chosen])?"✓  У вибраному":"+  У вибране",
+        button(p,TR("▶  Дивитися","▶  Watch"),65,526,238,58,1);
+        button(p,library_favorite(&movies[chosen])?TR("✓  У вибраному","✓  In favorites"):TR("+  У вибране","+  Add to favorites"),
                320,526,255,58,0);
         footer(p,status);
     } else if (page==PROVIDERS || page==PROVIDER_SETTINGS) {
         int configuring=page==PROVIDER_SETTINGS;
-        screen_header(p,configuring?"Джерела":"Оберіть джерело",NULL);
+        screen_header(p,configuring?TR("Джерела","Providers"):TR("Оберіть джерело","Choose a provider"),NULL);
         if(!configuring && !enabled_providers)
-            text_center_button(p,"Увімкніть джерело в Налаштуваннях → Джерела",
+            text_center_button(p,TR("Увімкніть джерело в Налаштуваннях → Джерела","Enable a provider in Settings → Providers"),
                                UI_EDGE,305,1216,110,p->font_small,.73f,.77f,.82f);
         int row=0;
         for(int i=0;i<PROVIDER_COUNT;i++){
             int enabled=(enabled_providers & (1u<<i))!=0;
             if(!configuring && !enabled)continue;
             int selected=configuring?i==provider_settings_selected:row==selected_provider;
-            list_row(p,provider_names[i],UI_ROW_Y+row*UI_ROW_STEP,selected,
-                     configuring?(enabled?"Увімкнено":"Вимкнено"):NULL);
+            list_row(p,ui_text(provider_names[i]),UI_ROW_Y+row*UI_ROW_STEP,selected,
+                     configuring?(enabled?TR("Увімкнено","Enabled"):TR("Вимкнено","Disabled")):NULL);
             row++;
         }
         footer(p,status);
     } else if (page==SOURCES) {
-        screen_header(p,"Джерела відео",NULL);
+        screen_header(p,TR("Джерела відео","Video sources"),NULL);
         if(!sn)
-            text_center_button(p,"Нічого не знайдено",UI_EDGE,305,1216,110,
+            text_center_button(p,TR("Нічого не знайдено","No results found"),UI_EDGE,305,1216,110,
                                p->font_big,.73f,.77f,.82f);
         int offset=list_offset(p,page,source,sn),first=first_visible_row(offset);
         for(int i=first;i<sn && i<first+UI_ROWS+2;i++){
@@ -1772,23 +1788,27 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         int count=downloads_list(records,DOWNLOADS_MAX);
         footer_position=count?download_selected+1:0;
         footer_total=count;
-        screen_header(p,"Завантажені","Збережені фільми та серії");
-        if(!count)text_center_button(p,"Список порожній. Натисніть Y на джерелі або серії",
+        screen_header(p,TR("Завантажені","Downloads"),TR("Збережені фільми та серії","Saved movies and episodes"));
+        if(!count)text_center_button(p,TR("Список порожній. Натисніть Y на джерелі або серії","No downloads yet. Press Y on a source or an episode."),
                                       UI_EDGE,305,1216,110,p->font_small,.73f,.77f,.82f);
         int offset=list_offset(p,page,download_selected,count),first=first_visible_row(offset);
         for(int i=first;i<count && i<first+UI_ROWS+2;i++){
             const DownloadInfo *d=&records[i];
             char name[300],detail[80];
-            if(d->label[0])snprintf(name,sizeof(name),"%.150s · %.95s",d->title,d->label);
+            if(d->season>0 && d->episode>0)
+                snprintf(name,sizeof(name),TR("%.150s · Сезон %d · Серія %d",
+                                              "%.150s · Season %d · Episode %d"),
+                         d->title,d->season,d->episode);
+            else if(d->label[0])snprintf(name,sizeof(name),"%.150s · %.95s",d->title,d->label);
             else snprintf(name,sizeof(name),"%.190s",d->title);
             unsigned mb=(unsigned)(d->bytes>>20);
-            if(d->state==DOWNLOAD_QUEUED)snprintf(detail,sizeof(detail),"У черзі");
+            if(d->state==DOWNLOAD_QUEUED)snprintf(detail,sizeof(detail),TR("У черзі","Queued"));
             else if(d->state==DOWNLOAD_ACTIVE && d->permille<0)
-                snprintf(detail,sizeof(detail),"%u МБ",mb);
+                snprintf(detail,sizeof(detail),TR("%u МБ","%u MB"),mb);
             else if(d->state==DOWNLOAD_ACTIVE)
-                snprintf(detail,sizeof(detail),"%d%% · %u МБ",d->permille/10,mb);
-            else if(d->state==DOWNLOAD_DONE)snprintf(detail,sizeof(detail),"Готово · %u МБ",mb);
-            else snprintf(detail,sizeof(detail),"Помилка");
+                snprintf(detail,sizeof(detail),TR("%d%% · %u МБ","%d%% · %u MB"),d->permille/10,mb);
+            else if(d->state==DOWNLOAD_DONE)snprintf(detail,sizeof(detail),TR("Готово · %u МБ","Done · %u MB"),mb);
+            else snprintf(detail,sizeof(detail),TR("Помилка","Failed"));
             int y=UI_ROW_Y+i*UI_ROW_STEP-offset;
             list_row(p,name,y,i==download_selected,detail);
             if(d->state==DOWNLOAD_ACTIVE && d->permille>=0)
@@ -1798,20 +1818,20 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         paint_clip(p,0,0,0,0);
         footer(p,status);
     } else if (page==SEASONS) {
-        screen_header(p,"Вибір сезону","Оберіть сезон");
+        screen_header(p,TR("Вибір сезону","Seasons"),TR("Оберіть сезон","Choose a season"));
         int offset=list_offset(p,page,selected_season,season_count),first=first_visible_row(offset);
         for(int i=first;i<season_count && i<first+UI_ROWS+2;i++){
             char title[96],detail[48];
-            snprintf(title,sizeof(title),"Сезон %d",season_ids[i]);
-            snprintf(detail,sizeof(detail),"%d серій",episodes_in_season(season_ids[i]));
+            snprintf(title,sizeof(title),TR("Сезон %d","Season %d"),season_ids[i]);
+            snprintf(detail,sizeof(detail),TR("%d серій","Episodes: %d"),episodes_in_season(season_ids[i]));
             list_row(p,title,UI_ROW_Y+i*UI_ROW_STEP-offset,i==selected_season,detail);
         }
         paint_clip(p,0,0,0,0);
         footer(p,status);
     } else if (page==EPISODES) {
         char header[96];
-        snprintf(header,sizeof(header),"Сезон %d · Серії",season_ids[selected_season]);
-        screen_header(p,header,"Оберіть серію");
+        snprintf(header,sizeof(header),TR("Сезон %d · Серії","Season %d · Episodes"),season_ids[selected_season]);
+        screen_header(p,header,TR("Оберіть серію","Choose an episode"));
         int count=episodes_in_season(season_ids[selected_season]);
         int offset=list_offset(p,page,selected_episode,count),first=first_visible_row(offset);
         int idx=0;
@@ -1828,28 +1848,31 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         paint_clip(p,0,0,0,0);
         footer(p,status);
     } else if (page==TRACK_PICKER) {
-        screen_header(p,subtitle_picker?"Субтитри":"Аудіодоріжки","Оберіть доріжку");
+        screen_header(p,subtitle_picker?TR("Субтитри","Subtitles"):TR("Аудіодоріжки","Audio tracks"),TR("Оберіть доріжку","Choose a track"));
         int offset=list_offset(p,page,selected_track,track_count),first=first_visible_row(offset);
         for(int i=first;i<track_count && i<first+UI_ROWS+2;i++) {
             list_row(p,tracks[i].label,UI_ROW_Y+i*UI_ROW_STEP-offset,
-                     i==selected_track,tracks[i].selected?"Активна":NULL);
+                     i==selected_track,tracks[i].selected?TR("Активна","Active"):NULL);
         }
         paint_clip(p,0,0,0,0);
-        if (!track_count) text_muted(p,"У цьому відео немає доступних доріжок",60,200,1100);
+        if (!track_count) text_muted(p,TR("У цьому відео немає доступних доріжок","No tracks are available for this video"),60,200,1100);
         footer(p,status);
     } else if (page==VIDEO_SETTINGS) {
-        screen_header(p,"Налаштування відео","Плеєр");
+        screen_header(p,TR("Налаштування відео","Video settings"),TR("Плеєр","Player"));
         for(int i=0;i<VIDEO_OPTION_COUNT;i++) {
             int option=visible_video_options[i];
             int y=132+i*68;
             box_alpha(p,UI_EDGE,y,1216,60,i==selected_video_option?.20f:.09f,
                       i==selected_video_option?.30f:.11f,
                       i==selected_video_option?.38f:.14f,1.f,13);
-            text_font(p,video_titles[option],55,
-                      y+(60-text_height(p,video_titles[option],p->font))/2,
+            text_font(p,ui_text(video_titles[option]),55,
+                      y+(60-text_height(p,ui_text(video_titles[option]),p->font))/2,
                       830,p->font,.96f,.97f,.98f);
             char value[48];
-            if(option==6)snprintf(value,sizeof(value),"%s",hls_labels[(int)video_options[option]]);
+            if(option==6){
+                int quality=(int)video_options[option];
+                snprintf(value,sizeof(value),"%s",quality?hls_labels[quality]:TR("Авто","Auto"));
+            }
             else if(option==0)snprintf(value,sizeof(value),"%.2f",video_options[option]);
             else snprintf(value,sizeof(value),"%.0f",video_options[option]);
             text_center_button(p,value,963,y,240,60,p->font,.95f,.96f,.98f);
@@ -1857,7 +1880,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                 box_alpha(p,UI_EDGE,y+12,4,36,r,g,b,1.f,2);}
             press_preview(p,UI_EDGE,y,1216,60,13);
         }
-        text_tiny(p,"Якість HLS визначається потоками, які надає джерело.",50,626,1150);
+        text_tiny(p,TR("Якість HLS визначається потоками, які надає джерело.","HLS quality depends on the streams offered by the provider."),50,626,1150);
         footer(p,NULL);
     }
     /* Short ease-out fade after a screen/section transition; fully drawn
@@ -1906,18 +1929,18 @@ static void draw_player_controls(Paint *p,mpv_handle *player) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
     box_alpha(p,32,27,141,49,.045f,.063f,.079f,.92f,14);
-    text_center(p,"‹  Назад",32,37,141,p->font_small,.96f,.97f,.99f);
+    text_center(p,TR("‹  Назад","‹  Back"),32,37,141,p->font_small,.96f,.97f,.99f);
     if(active_episode_variant>=0 &&
        catalog_next_episode(episodes,episode_count,active_episode_variant)>=0){
         box_alpha(p,869,27,241,49,.045f,.063f,.079f,.92f,14);
-        text_center(p,"»  Наступна серія",869,37,241,
+        text_center(p,TR("»  Наступна серія","»  Next episode"),869,37,241,
                     p->font_small,.96f,.97f,.99f);
     }
     box_alpha(p,0,507,1280,213,.027f,.034f,.044f,.93f,0);
-    text_tiny(p,"UAPlay  ·  Відтворення",35,519,430);
+    text_tiny(p,TR("UAPlay  ·  Відтворення","UAPlay  ·  Playback"),35,519,430);
     if(active_episode_variant>=0 &&
        catalog_next_episode(episodes,episode_count,active_episode_variant)>=0)
-        text_tiny(p,"L — Наступна серія",790,519,310);
+        text_tiny(p,TR("L — Наступна серія","L — Next episode"),790,519,310);
     box_alpha(p,126,566,1028,6,.34f,.39f,.44f,1.f,3);
     int filled=duration>0?(int)(1028.0*pos/duration):0;
     if(filled<0)filled=0;if(filled>1028)filled=1028;
@@ -1928,7 +1951,7 @@ static void draw_player_controls(Paint *p,mpv_handle *player) {
     snprintf(right,sizeof(right),"%02d:%02d",(int)duration/60,(int)duration%60);
     text_small(p,left,35,552,85);
     text_small(p,right,1167,552,88);
-    text_tiny(p,"↑↓ Гучність",67,606,190);
+    text_tiny(p,TR("↑↓ Гучність","↑↓ Volume"),67,606,190);
     box_alpha(p,70,649,178,5,.35f,.42f,.52f,1.f,3);
     int volume=(int)video_options[1];
     if(volume<0)volume=0;if(volume>130)volume=130;
@@ -1937,8 +1960,8 @@ static void draw_player_controls(Paint *p,mpv_handle *player) {
     char volume_label[24];snprintf(volume_label,sizeof(volume_label),"%d%%",volume);
     text_tiny(p,volume_label,122,672,100);
     const char *icons[]={"−10",paused?"▶":"Ⅱ","+10","","♪","CC"};
-    const char *labels[]={"10 с назад","Пауза / пуск","10 с вперед",
-                          "Параметри","Аудіо","Субтитри"};
+    const char *labels[]={TR("10 с назад","Back 10 s"),TR("Пауза / пуск","Play / pause"),TR("10 с вперед","Forward 10 s"),
+                          TR("Параметри","Settings"),TR("Аудіо","Audio"),TR("Субтитри","Subtitles")};
     for(int i=0;i<6;i++){
         const int w=76;
         int center=player_button_centers[i];
@@ -1954,15 +1977,15 @@ static void draw_next_episode_prompt(Paint *p,const Episode *next,int seconds){
     ui_theme_enabled=0;
     box_alpha(p,0,0,1280,720,.012f,.018f,.027f,.88f,0);
     box_alpha(p,242,190,796,341,.105f,.144f,.194f,.98f,24);
-    headline(p,"Наступна серія",282,223,700);
+    headline(p,TR("Наступна серія","Next episode"),282,223,700);
     char episode_name[120];
-    snprintf(episode_name,sizeof(episode_name),"Сезон %d · Серія %d",
+    snprintf(episode_name,sizeof(episode_name),TR("Сезон %d · Серія %d","Season %d · Episode %d"),
              next->season,next->number);
     text(p,episode_name,286,302,697);
     char timer[128];
-    snprintf(timer,sizeof(timer),"Автозапуск через %d с",seconds);
+    snprintf(timer,sizeof(timer),TR("Автозапуск через %d с","Starting in %d s"),seconds);
     text_small(p,timer,286,376,681);
-    text_small(p,"A — дивитися зараз     B — скасувати",286,448,690);
+    text_small(p,TR("A — дивитися зараз     B — скасувати","A — Watch now     B — Cancel"),286,448,690);
 }
 static int native_button(int button) {
     /* SDL uses Xbox-style face button names; Switch prints the opposite labels. */
@@ -2438,8 +2461,7 @@ int main(void) {
             if(clear_history_confirm && !(page==CATALOG && category==12 &&
                catalog_hero_focus==19 && key==SDL_CONTROLLER_BUTTON_A)){
                 clear_history_confirm=0;
-                if(!strncmp(message,"Натисніть A ще раз",strlen("Натисніть A ще раз")))
-                    message[0]=0;
+                message[0]=0;
             }
             if(page==PLAYER && pending_next_episode>=0){
                 if(key==SDL_CONTROLLER_BUTTON_A){
@@ -2496,7 +2518,7 @@ int main(void) {
                             choice->id=-(SOURCE_SUBTITLE_TRACK_BASE+i+1);
                             choice->selected=0;
                             snprintf(choice->label,sizeof(choice->label),
-                                     "Зовнішні: %.165s",
+                                     TR("Зовнішні: %.165s","External: %.165s"),
                                      uakino_resolved_subtitle_label(i));
                         }
                     /* PlayerJS can offer separately encoded dubbed versions
@@ -2509,7 +2531,7 @@ int main(void) {
                             choice->selected=!strcmp(playing_url,
                                                       uakino_resolved_audio_url(i));
                             snprintf(choice->label,sizeof(choice->label),
-                                     "Озвучка: %.165s",
+                                     TR("Озвучка: %.165s","Dub: %.165s"),
                                      uakino_resolved_audio_label(i));
                         }
                     /* In Playerjs playlists, a different dub is often a
@@ -2527,8 +2549,8 @@ int main(void) {
                             MediaTrack *choice=&tracks[track_count++];
                             choice->id=-(i+1);
                             choice->selected=i==active_episode_variant;
-                            snprintf(choice->label,sizeof(choice->label),"Озвучка: %.165s",
-                                     episodes[i].voice[0]?episodes[i].voice:"Основна");
+                            snprintf(choice->label,sizeof(choice->label),TR("Озвучка: %.165s","Dub: %.165s"),
+                                     episodes[i].voice[0]?episodes[i].voice:TR("Основна","Main"));
                         }
                     }
                     selected_track=0;
@@ -2597,11 +2619,11 @@ int main(void) {
                             page=PLAYER;
                         }
                     }else if(playback_select_track(player,subtitle_picker,id)){
-                        snprintf(message,sizeof(message),"%s: вибрано %s",
-                                 subtitle_picker?"Субтитри":"Аудіо",
+                        snprintf(message,sizeof(message),TR("%s: вибрано %s","%s: selected %s"),
+                                 subtitle_picker?TR("Субтитри","Subtitles"):TR("Аудіо","Audio"),
                                  tracks[selected_track].label);
                         page=PLAYER;
-                    }else snprintf(message,sizeof(message),"Не вдалося перемкнути доріжку");
+                    }else snprintf(message,sizeof(message),TR("Не вдалося перемкнути доріжку","Could not switch tracks"));
                 }
                 continue;
             }
@@ -2647,7 +2669,7 @@ int main(void) {
                     Episode *ep=selected_episode_item();
                     if(ep){
                         if(!strncmp(ep->url,HYDRAHD_PLAYER_URL,sizeof(HYDRAHD_PLAYER_URL)-1)){
-                            snprintf(message,sizeof(message),"HydraHD: доступний перегляд онлайн");
+                            snprintf(message,sizeof(message),TR("HydraHD: доступний перегляд онлайн","HydraHD: streaming only"));
                             continue;
                         }
                         Source episode_source={0};
@@ -2655,10 +2677,10 @@ int main(void) {
                         char url[2048]={0};
                         if(uakino_resolve(&episode_source,url,sizeof(url),message,sizeof(message))){
                             char label[96];
-                            snprintf(label,sizeof(label),"Сезон %d · Серія %d",ep->season,ep->number);
+                            snprintf(label,sizeof(label),TR("Сезон %d · Серія %d","Season %d · Episode %d"),ep->season,ep->number);
                             int added=downloads_add(&movies[chosen],ep->season,ep->number,label,url);
-                            snprintf(message,sizeof(message),"%s",added>0?"Додано до завантажень":
-                                     added==0?"Уже в завантаженнях":"Черга завантажень заповнена");
+                            snprintf(message,sizeof(message),"%s",added>0?TR("Додано до завантажень","Added to downloads"):
+                                     added==0?TR("Уже в завантаженнях","Already in downloads"):TR("Черга завантажень заповнена","Download queue is full"));
                         }
                     }
                     continue;
@@ -2690,7 +2712,7 @@ int main(void) {
                             controls_until=SDL_GetTicks()+3000;
                             player_return_page=EPISODES;page=PLAYER;
                         }
-                    } else if(!render) snprintf(message,sizeof(message),"Плеєр mpv не ініціалізовано");
+                    } else if(!render) snprintf(message,sizeof(message),TR("Плеєр mpv не ініціалізовано","The mpv player could not start"));
                 }
                 continue;
             }
@@ -2711,10 +2733,10 @@ int main(void) {
                     unsigned id=download_rows[download_selected].id;
                     if(download_confirm!=id){
                         download_confirm=id;
-                        snprintf(message,sizeof(message),"Натисніть X ще раз для видалення");
+                        snprintf(message,sizeof(message),TR("Натисніть X ще раз для видалення","Press X again to delete"));
                     }else{
                         downloads_remove(id);download_confirm=0;
-                        snprintf(message,sizeof(message),"Видалено");
+                        snprintf(message,sizeof(message),TR("Видалено","Deleted"));
                     }
                 }
                 if(key==SDL_CONTROLLER_BUTTON_A && count){
@@ -2722,10 +2744,10 @@ int main(void) {
                     static Download item;
                     if(info->state==DOWNLOAD_FAILED){
                         downloads_retry(info->id);
-                        snprintf(message,sizeof(message),"Завантаження повторюється");
+                        snprintf(message,sizeof(message),TR("Завантаження повторюється","Retrying download"));
                     }else if(info->state!=DOWNLOAD_DONE)
-                        snprintf(message,sizeof(message),"Файл ще завантажується");
-                    else if(!render)snprintf(message,sizeof(message),"Плеєр mpv не ініціалізовано");
+                        snprintf(message,sizeof(message),TR("Файл ще завантажується","The file is still downloading"));
+                    else if(!render)snprintf(message,sizeof(message),TR("Плеєр mpv не ініціалізовано","The mpv player could not start"));
                     else if(downloads_get(info->id,&item)){
                         char file_path[256];
                         downloads_play_path(&item,file_path,sizeof(file_path));
@@ -2765,6 +2787,13 @@ int main(void) {
                         provider_settings_selected=0;
                         message[0]=0;
                         page=PROVIDER_SETTINGS;
+                    }else if(settings_selected==SETTING_LANGUAGE){
+                        ui_set_language(ui_language()==UI_ENGLISH?UI_UKRAINIAN:UI_ENGLISH);
+                        if(!offline_catalog_status(message))message[0]=0;
+                        if(!theme_save())
+                            snprintf(message,sizeof(message),"%s",
+                                     TR("Не вдалося зберегти мову на SD-карті",
+                                        "Could not save the language to the SD card"));
                     }
                 }
                 continue;
@@ -2782,7 +2811,7 @@ int main(void) {
                     enabled_providers^=1u<<provider_settings_selected;
                     message[0]=0;
                     if(!theme_save())
-                        snprintf(message,sizeof(message),"Не вдалося зберегти джерела на SD-карті");
+                        snprintf(message,sizeof(message),TR("Не вдалося зберегти джерела на SD-карті","Could not save providers to the SD card"));
                 }
                 continue;
             }
@@ -2964,17 +2993,17 @@ int main(void) {
                     }else if(!expanded_catalog && category==12 && catalog_hero_focus==19){
                         if(!n){
                             clear_history_confirm=0;
-                            snprintf(message,sizeof(message),"Історія вже порожня");
+                            snprintf(message,sizeof(message),TR("Історія вже порожня","History is already empty"));
                         }else if(!clear_history_confirm){
                             clear_history_confirm=1;
                             snprintf(message,sizeof(message),
-                                     "Натисніть A ще раз, щоб очистити всю історію");
+                                     TR("Натисніть A ще раз, щоб очистити всю історію","Press A again to clear all history"));
                         }else{
                             int removed=library_clear_history();
                             n=load_category(category,query,movies,message,sizeof(message));
                             chosen=0;catalog_hero_focus=17;clear_history_confirm=0;
                             snprintf(message,sizeof(message),
-                                     "Історію очищено (%d записів)",removed);
+                                     TR("Історію очищено (%d записів)","History cleared (%d removed)"),removed);
                         }
                     }else if(catalog_hero_focus>=7 && catalog_hero_focus<=11){
                         category=category_for_tab(catalog_hero_focus-7);
@@ -2998,7 +3027,7 @@ int main(void) {
                     }else if(!expanded_catalog && catalog_hero_focus==2){
                         library_toggle_favorite(&movies[chosen]);
                         snprintf(message,sizeof(message),"%s",library_favorite(&movies[chosen])?
-                                 "Додано у вибране":"Видалено з вибраного");
+                                 TR("Додано у вибране","Added to favorites"):TR("Видалено з вибраного","Removed from favorites"));
                         if(category==11){
                             n=load_category(category,query,movies,message,sizeof(message));
                             if(chosen>=n)chosen=n?n-1:0;
@@ -3055,17 +3084,17 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_X){
                     library_toggle_favorite(&movies[chosen]);
                     snprintf(message,sizeof(message),"%s",library_favorite(&movies[chosen])?
-                             "Додано у вибране (B — назад)":"Видалено з вибраного (B — назад)");
+                             TR("Додано у вибране (B — назад)","Added to favorites (B — Back)"):TR("Видалено з вибраного (B — назад)","Removed from favorites (B — Back)"));
                 }
                 if(key==SDL_CONTROLLER_BUTTON_Y){
                     library_mark_watched(&movies[chosen]);
-                    snprintf(message,sizeof(message),"Додано в історію переглядів (B — назад)");
+                    snprintf(message,sizeof(message),TR("Додано в історію переглядів (B — назад)","Added to watch history (B — Back)"));
                 }
                 if(key==SDL_CONTROLLER_BUTTON_A){
                     if(details_button_focus){
                         library_toggle_favorite(&movies[chosen]);
                         snprintf(message,sizeof(message),"%s",library_favorite(&movies[chosen])?
-                                 "Додано у вибране":"Видалено з вибраного");
+                                 TR("Додано у вибране","Added to favorites"):TR("Видалено з вибраного","Removed from favorites"));
                     }else{
                         message[0]=0;
                         selected_provider=0;page=PROVIDERS;
@@ -3085,22 +3114,22 @@ int main(void) {
                                               provider+1,message,sizeof(message));
                     sn=catalog_rank_sources(&movies[chosen],sources,sn,source_mode);
                     if(!sn && (provider+1!=UAKINO_PROVIDER_HYDRAHD || !message[0]))
-                        snprintf(message,sizeof(message),"Нічого не знайдено");
+                        snprintf(message,sizeof(message),TR("Нічого не знайдено","No results found"));
                     source=0;page=SOURCES;
                 }
             }else if(page==SOURCES){
                 if(key==SDL_CONTROLLER_BUTTON_B){page=PROVIDERS;message[0]=0;}
                 if(key==SDL_CONTROLLER_BUTTON_Y && sn){
                     if(provider_for_row(selected_provider)+1==UAKINO_PROVIDER_HYDRAHD)
-                        snprintf(message,sizeof(message),"HydraHD: доступний перегляд онлайн");
+                        snprintf(message,sizeof(message),TR("HydraHD: доступний перегляд онлайн","HydraHD: streaming only"));
                     else if(movies[chosen].series)
-                        snprintf(message,sizeof(message),"Відкрийте серіал і виберіть серію для завантаження");
+                        snprintf(message,sizeof(message),TR("Відкрийте серіал і виберіть серію для завантаження","Open the show and choose an episode to download"));
                     else {
                         char url[2048]={0};
                         if(uakino_resolve(&sources[source],url,sizeof(url),message,sizeof(message))){
                             int added=downloads_add(&movies[chosen],0,0,"",url);
-                            snprintf(message,sizeof(message),"%s",added>0?"Додано до завантажень":
-                                     added==0?"Уже в завантаженнях":"Черга завантажень заповнена");
+                            snprintf(message,sizeof(message),"%s",added>0?TR("Додано до завантажень","Added to downloads"):
+                                     added==0?TR("Уже в завантаженнях","Already in downloads"):TR("Черга завантажень заповнена","Download queue is full"));
                         }
                     }
                 }
@@ -3130,7 +3159,7 @@ int main(void) {
                     char url[2048]={0};
                     message[0]=0;
                     if(!render){
-                        snprintf(message,sizeof(message),"Плеєр mpv не ініціалізовано");
+                        snprintf(message,sizeof(message),TR("Плеєр mpv не ініціалізовано","The mpv player could not start"));
                     }else if(uakino_resolve(&sources[source],url,sizeof(url),message,sizeof(message))){
                         snprintf(pending_subtitle,sizeof(pending_subtitle),"%s",uakino_resolved_subtitle());
                         playing_movie=movies[chosen];
@@ -3182,7 +3211,7 @@ int main(void) {
                 if(event->event_id==MPV_EVENT_END_FILE && page==PLAYER){
                     mpv_event_end_file *end=(mpv_event_end_file*)event->data;
                     if(end && end->reason==MPV_END_FILE_REASON_ERROR){
-                        snprintf(message,sizeof(message),"Помилка відео: %s (%d)",
+                        snprintf(message,sizeof(message),TR("Помилка відео: %s (%d)","Video error: %s (%d)"),
                                  mpv_error_string(end->error),end->error);
                         page=player_return_page;
                     }else if(end && end->reason==MPV_END_FILE_REASON_EOF){
@@ -3303,7 +3332,7 @@ int main(void) {
             if(!video_loaded){
                 box(&paint,0,0,1280,720,.035f,.044f,.059f);
                 box_alpha(&paint,35,33,168,53,.10f,.15f,.22f,.95f,14);
-                text(&paint,"‹  Назад",54,44,141);
+                text(&paint,TR("‹  Назад","‹  Back"),54,44,141);
                 Uint32 tick=SDL_GetTicks()/90;
                 for(int i=0;i<12;i++){
                     const float sx[]={0,.5f,.866f,1,.866f,.5f,0,-.5f,-.866f,-1,-.866f,-.5f};
@@ -3313,13 +3342,13 @@ int main(void) {
                     box_alpha(&paint,640+(int)(sx[i]*42)-6,340+(int)(sy[i]*42)-6,
                               13,13,bright,bright,bright,1.f,6);
                 }
-                text_color(&paint,"Завантаження відео",507,426,310,.76f,.78f,.82f);
+                text_color(&paint,TR("Завантаження відео","Loading video"),507,426,310,.76f,.78f,.82f);
                 if(video_started_at && SDL_GetTicks()-video_started_at>30000){
-                    snprintf(message,sizeof(message),"Час очікування відео вичерпано (30 с)");
+                    snprintf(message,sizeof(message),TR("Час очікування відео вичерпано (30 с)","Video timed out (30 s)"));
                     command(player,"stop",NULL);page=player_return_page;
                 }
             }else if(render_result<0){
-                snprintf(message,sizeof(message),"Помилка відеорендерера mpv: %s",mpv_error_string(render_result));
+                snprintf(message,sizeof(message),TR("Помилка відеорендерера mpv: %s","mpv video renderer error: %s"),mpv_error_string(render_result));
                 command(player,"stop",NULL);page=player_return_page;
             }
             /* The battery meter belongs to the player controls overlay:
@@ -3341,13 +3370,13 @@ int main(void) {
                prefetch the visible row and a part of the next row. */
             if(page==CATALOG && n>0)
                 posters_prefetch(movies,n,chosen,1);
-            const char *heading=query[0]?"Результати пошуку":headings[category];
+            const char *heading=query[0]?TR("Результати пошуку","Search results"):ui_text(headings[category]);
             if(category==0 && !query[0] && !expanded_catalog)
-                heading=home_headings[home_shelf];
+                heading=ui_text(home_headings[home_shelf]);
             else if(expanded_catalog && !query[0]){
-                if(category==1)heading="Усі серіали";
-                else if(category==13)heading="Усі мультфільми";
-                else if(category==14)heading="Усі мультсеріали";
+                if(category==1)heading=TR("Усі серіали","All TV shows");
+                else if(category==13)heading=TR("Усі мультфільми","All animated movies");
+                else if(category==14)heading=TR("Усі мультсеріали","All animated series");
             }
             draw(&paint,page,movies,n,chosen,sources,sn,source,heading,message);
             if(page==CATALOG && n>0){

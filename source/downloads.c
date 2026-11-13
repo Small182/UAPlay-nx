@@ -1,3 +1,4 @@
+#include "i18n.h"
 #include "downloads.h"
 #include "platform.h"
 
@@ -121,7 +122,7 @@ static void load_index(void) {
         struct stat info;
         if (d->state == DOWNLOAD_DONE && stat(d->file, &info) != 0) {
             d->state = DOWNLOAD_FAILED;
-            snprintf(d->error, sizeof(d->error), "Файл не знайдено");
+            snprintf(d->error, sizeof(d->error), TR("Файл не знайдено","File not found"));
         }
     }
 }
@@ -270,12 +271,12 @@ static int fetch(CURL *curl, const char *url, curl_write_callback write, void *s
         snprintf(effective, effective_size, "%s", final_url ? final_url : url);
     }
     if (result != CURLE_OK) {
-        snprintf(error, error_size, "%s", SDL_AtomicGet(&abort_active) ? "Скасовано" :
+        snprintf(error, error_size, "%s", SDL_AtomicGet(&abort_active) ? TR("Скасовано","Canceled") :
                  curl_error[0] ? curl_error : curl_easy_strerror(result));
         return 0;
     }
     if (status >= 400) {
-        snprintf(error, error_size, "Сервер відповів HTTP %ld", status);
+        snprintf(error, error_size, TR("Сервер відповів HTTP %ld","Server returned HTTP %ld"), status);
         return 0;
     }
     return 1;
@@ -393,12 +394,12 @@ static int choose_variant(char *text, const char *base, char *out, size_t size,
     const char *chosen = best[0] ? best : lowest;
     const char *audio = best[0] ? best_audio : lowest_audio;
     if (!chosen[0]) {
-        snprintf(error, error_size, "Порожній список якостей HLS");
+        snprintf(error, error_size, TR("Порожній список якостей HLS","No HLS quality variants available"));
         return 0;
     }
     for (int i = 0; i < audio_group_count; i++)
         if (audio[0] && !strcmp(audio, audio_groups[i])) {
-            snprintf(error, error_size, "Окрема аудіодоріжка: завантаження не підтримується");
+            snprintf(error, error_size, TR("Окрема аудіодоріжка: завантаження не підтримується","Downloads with a separate audio stream are unsupported"));
             return 0;
         }
     snprintf(out, size, "%s", chosen);
@@ -462,22 +463,22 @@ static int download_hls(CURL *curl, unsigned id, char *playlist, const char *bas
     while ((line = next_line(&cursor))) {
         if (!strncmp(line, "#EXT-X-MEDIA-SEQUENCE:", 22)) sequence = atoll(line + 22);
         else if (!strncmp(line, "#EXT-X-BYTERANGE", 16)) {
-            snprintf(error, error_size, "HLS з BYTERANGE не підтримується");
+            snprintf(error, error_size, TR("HLS з BYTERANGE не підтримується","HLS byte ranges are unsupported"));
             goto done;
         } else if (!strncmp(line, "#EXT-X-KEY:", 11)) {
             char method[32], value[2048];
             attribute(line, "METHOD", method, sizeof(method));
             if (!strcmp(method, "NONE")) { current_key = -1; continue; }
             if (strcmp(method, "AES-128")) {
-                snprintf(error, error_size, "Шифрування %s не підтримується", method);
+                snprintf(error, error_size, TR("Шифрування %s не підтримується","Unsupported encryption: %s"), method);
                 goto done;
             }
 #ifndef __vita__
-            snprintf(error, error_size, "Зашифрований потік не підтримується");
+            snprintf(error, error_size, TR("Зашифрований потік не підтримується","Encrypted stream is unsupported"));
             goto done;
 #endif
             if (key_count == HLS_KEYS_MAX) {
-                snprintf(error, error_size, "Забагато ключів HLS");
+                snprintf(error, error_size, TR("Забагато ключів HLS","Too many HLS keys"));
                 goto done;
             }
             HlsKey *key = &keys[key_count];
@@ -499,13 +500,13 @@ static int download_hls(CURL *curl, unsigned id, char *playlist, const char *bas
             if (segment_count == capacity) {
                 capacity = capacity ? capacity * 2 : 256;
                 HlsSegment *grown = realloc(segments, sizeof(HlsSegment) * (size_t)capacity);
-                if (!grown) { snprintf(error, error_size, "Недостатньо пам'яті"); goto done; }
+                if (!grown) { snprintf(error, error_size, TR("Недостатньо пам'яті","Out of memory")); goto done; }
                 segments = grown;
             }
             resolve_url(base, value, url, sizeof(url));
             HlsSegment *s = &segments[segment_count];
             s->url = strdup(url);
-            if (!s->url) { snprintf(error, error_size, "Недостатньо пам'яті"); goto done; }
+            if (!s->url) { snprintf(error, error_size, TR("Недостатньо пам'яті","Out of memory")); goto done; }
             s->key = current_key;
             s->sequence = init ? sequence : sequence++;
             s->init = init;
@@ -513,7 +514,7 @@ static int download_hls(CURL *curl, unsigned id, char *playlist, const char *bas
         }
     }
     if (!segment_count) {
-        snprintf(error, error_size, "Порожній список сегментів HLS");
+        snprintf(error, error_size, TR("Порожній список сегментів HLS","No HLS segments available"));
         goto done;
     }
     Buffer data = { 0 };
@@ -527,7 +528,7 @@ static int download_hls(CURL *curl, unsigned id, char *playlist, const char *bas
             if (!fetch(curl, keys[s->key].url, to_buffer, &key_data, &t, NULL, 0, error,
                        error_size) || key_data.used != 16) {
                 if (!error[0] || key_data.used != 16)
-                    snprintf(error, error_size, "Не вдалося отримати ключ HLS");
+                    snprintf(error, error_size, TR("Не вдалося отримати ключ HLS","Could not fetch the HLS key"));
                 free(key_data.data);
                 free(data.data);
                 goto done;
@@ -546,7 +547,7 @@ static int download_hls(CURL *curl, unsigned id, char *playlist, const char *bas
             fetched = fetch(curl, s->url, to_buffer, &data, &t, NULL, 0, error, error_size);
         }
         if (!fetched) {
-            if (!error[0]) snprintf(error, error_size, "Скасовано");
+            if (!error[0]) snprintf(error, error_size, TR("Скасовано","Canceled"));
             free(data.data);
             goto done;
         }
@@ -560,20 +561,20 @@ static int download_hls(CURL *curl, unsigned id, char *playlist, const char *bas
                     iv[15 - b] = (unsigned char)((unsigned long long)s->sequence >> (8 * b));
             }
             if (!decrypt(&data, &keys[s->key], iv)) {
-                snprintf(error, error_size, "Не вдалося розшифрувати сегмент");
+                snprintf(error, error_size, TR("Не вдалося розшифрувати сегмент","Could not decrypt the segment"));
                 free(data.data);
                 goto done;
             }
         }
 #endif
         if (data.used && fwrite(data.data, 1, data.used, out) != data.used) {
-            snprintf(error, error_size, "Не вдалося записати файл (немає місця?)");
+            snprintf(error, error_size, TR("Не вдалося записати файл (немає місця?)","Could not write the file. Check available space."));
             free(data.data);
             goto done;
         }
         *written += data.used;
         if (!report(id, (i + 1) * 1000 / segment_count, *written)) {
-            snprintf(error, error_size, "Скасовано");
+            snprintf(error, error_size, TR("Скасовано","Canceled"));
             free(data.data);
             goto done;
         }
@@ -606,7 +607,7 @@ static int download_one(CURL *curl, const Download *job, char *file, size_t file
     snprintf(url, sizeof(url), "%s", job->url);
     FILE *out = fopen(part, "wb");
     if (!out) {
-        snprintf(error, error_size, "Не вдалося створити файл");
+        snprintf(error, error_size, TR("Не вдалося створити файл","Could not create the file"));
         return 0;
     }
     static char buffer[256 * 1024];
@@ -640,21 +641,21 @@ static int download_one(CURL *curl, const Download *job, char *file, size_t file
                 Transfer t = { job->id, 0, 0, 0, range, 0, 0, 0 };
                 fetched = fetch(curl, url, to_buffer, &chunk, &t, NULL, 0, error, error_size) &&
                           t.status == 206 && chunk.used;
-                if (!fetched && !error[0]) snprintf(error, error_size, "Сервер перервав передачу");
+                if (!fetched && !error[0]) snprintf(error, error_size, TR("Сервер перервав передачу","The server interrupted the transfer"));
             }
             if (!fetched) {
-                if (SDL_AtomicGet(&abort_active)) snprintf(error, error_size, "Скасовано");
+                if (SDL_AtomicGet(&abort_active)) snprintf(error, error_size, TR("Скасовано","Canceled"));
                 free(chunk.data);
                 goto done;
             }
             if (fwrite(chunk.data, 1, chunk.used, out) != chunk.used) {
-                snprintf(error, error_size, "Не вдалося записати файл (немає місця?)");
+                snprintf(error, error_size, TR("Не вдалося записати файл (немає місця?)","Could not write the file. Check available space."));
                 free(chunk.data);
                 goto done;
             }
             sink.written += chunk.used;
             if (!report(job->id, (int)(sink.written * 1000 / total), sink.written)) {
-                snprintf(error, error_size, "Скасовано");
+                snprintf(error, error_size, TR("Скасовано","Canceled"));
                 free(chunk.data);
                 goto done;
             }
@@ -669,7 +670,7 @@ static int download_one(CURL *curl, const Download *job, char *file, size_t file
                        error_size)) goto done;
         }
         if (sink.failed) {
-            snprintf(error, error_size, "Не вдалося записати файл (немає місця?)");
+            snprintf(error, error_size, TR("Не вдалося записати файл (немає місця?)","Could not write the file. Check available space."));
             goto done;
         }
         written = sink.written;
@@ -682,7 +683,7 @@ static int download_one(CURL *curl, const Download *job, char *file, size_t file
                 snprintf(url, sizeof(url), "%s", effective);
                 fclose(out);
                 out = fopen(part, "wb");
-                if (!out) { snprintf(error, error_size, "Не вдалося створити файл"); goto done; }
+                if (!out) { snprintf(error, error_size, TR("Не вдалося створити файл","Could not create the file")); goto done; }
                 setvbuf(out, buffer, _IOFBF, sizeof(buffer));
                 written = 0;
             } else {
@@ -704,7 +705,7 @@ static int download_one(CURL *curl, const Download *job, char *file, size_t file
                 snprintf(url, sizeof(url), "%s", effective);
             }
             if (!playlist || strncmp(playlist, "#EXTM3U", 7)) {
-                snprintf(error, error_size, "Відповідь не схожа на HLS");
+                snprintf(error, error_size, TR("Відповідь не схожа на HLS","The response is not an HLS playlist"));
                 goto done;
             }
             if (!strstr(playlist, "#EXT-X-STREAM-INF")) break;
@@ -716,7 +717,7 @@ static int download_one(CURL *curl, const Download *job, char *file, size_t file
             snprintf(url, sizeof(url), "%s", variant);
         }
         if (!playlist) {
-            snprintf(error, error_size, "Забагато рівнів HLS");
+            snprintf(error, error_size, TR("Забагато рівнів HLS","Too many nested HLS playlists"));
             goto done;
         }
         if (!download_hls(curl, job->id, playlist, url, out, &fragmented, &written, error,
@@ -726,7 +727,7 @@ static int download_one(CURL *curl, const Download *job, char *file, size_t file
 done:
     free(playlist);
     if (out && fclose(out) != 0 && ok) {
-        snprintf(error, error_size, "Не вдалося записати файл (немає місця?)");
+        snprintf(error, error_size, TR("Не вдалося записати файл (немає місця?)","Could not write the file. Check available space."));
         ok = 0;
     }
     if (!ok) { remove(part); return 0; }
@@ -734,7 +735,7 @@ done:
              hls && !fragmented ? "ts" : "mp4");
     remove(file);
     if (rename(part, file) != 0) {
-        snprintf(error, error_size, "Не вдалося зберегти файл");
+        snprintf(error, error_size, TR("Не вдалося зберегти файл","Could not save the file"));
         remove(part);
         return 0;
     }
@@ -768,7 +769,7 @@ static int download_worker(void *opaque) {
 
         char file[160] = "", error[96] = "";
         int ok = curl && download_one(curl, &job, file, sizeof(file), error, sizeof(error));
-        if (!curl) snprintf(error, sizeof(error), "curl недоступний");
+        if (!curl) snprintf(error, sizeof(error), TR("curl недоступний","curl is unavailable"));
 
         SDL_LockMutex(lock);
         active_id = 0;
@@ -864,6 +865,8 @@ int downloads_list(DownloadInfo *out, int max) {
         snprintf(info->error, sizeof(info->error), "%s", d->error);
         info->state = d->state;
         info->permille = d->permille;
+        info->season = d->season;
+        info->episode = d->episode;
         info->bytes = d->bytes;
     }
     SDL_UnlockMutex(lock);

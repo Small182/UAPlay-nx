@@ -64,6 +64,8 @@ The current beta includes:
 
 ## Controls
 
+To switch the interface language, open **Settings → Language / Мова** and press **A** or tap the button for the other language. Your choice is saved to the SD card.
+
 Button labels correspond to the **Nintendo Switch** layout, not the Xbox controller layout.
 
 | Screen | Controls |

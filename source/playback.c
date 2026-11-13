@@ -1,3 +1,4 @@
+#include "i18n.h"
 #include "playback.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -33,7 +34,7 @@ int playback_tracks(mpv_handle *player, int subtitles, MediaTrack *out, int maxi
     if (subtitles && maximum>0) {
         out[count].id=0;
         out[count].selected=0;
-        snprintf(out[count].label,sizeof(out[count].label),"Вимкнути субтитри");
+        snprintf(out[count].label,sizeof(out[count].label),TR("Вимкнути субтитри","Turn subtitles off"));
         count++;
     }
     if (!player || maximum<1) return count;
@@ -57,8 +58,8 @@ int playback_tracks(mpv_handle *player, int subtitles, MediaTrack *out, int maxi
             dst->id=int_field(track,"id");
             dst->selected=int_field(track,"selected");
             snprintf(dst->label,sizeof(dst->label),"%s #%d  %s  %s%s",
-                     subtitles?"Субтитри":"Аудіо",dst->id,lang,title,
-                     dst->selected?" [активна]":"");
+                     subtitles?TR("Субтитри","Subtitles"):TR("Аудіо","Audio"),dst->id,lang,title,
+                     dst->selected?TR(" [активна]"," [active]"):"");
         }
     }
     mpv_free_node_contents(&node);

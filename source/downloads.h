@@ -28,7 +28,7 @@ typedef struct {
 typedef struct {
     unsigned id;
     char title[192],label[96],error[96];
-    int state,permille;
+    int state,permille,season,episode;
     unsigned long long bytes;
 } DownloadInfo;
 

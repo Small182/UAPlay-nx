@@ -1,3 +1,4 @@
+#include "i18n.h"
 #include "catalog.h"
 
 #include <curl/curl.h>
@@ -162,7 +163,10 @@ static char *request_form(const char *url, const char *post_data,
     CURL *curl = curl_easy_init();
 #endif
     Response r = {0};
-    if (!curl) { snprintf(error, error_size, "curl init failed"); return NULL; }
+    if (!curl) {
+        snprintf(error, error_size, "%s", TR("Не вдалося запустити curl","Could not initialize curl"));
+        return NULL;
+    }
     struct curl_slist *headers=NULL;
     int ajax=strstr(url,"/engine/ajax/")!=NULL ||
              strstr(url,"/engine/lazydev/")!=NULL;
@@ -214,7 +218,8 @@ static char *request_form(const char *url, const char *post_data,
 #endif
     curl_slist_free_all(headers);
     if (result != CURLE_OK || status < 200 || status >= 300) {
-        if (result == CURLE_OK) snprintf(error, error_size, "Server returned HTTP %ld", status);
+        if (result == CURLE_OK)
+            snprintf(error, error_size, TR("Сервер відповів HTTP %ld","Server returned HTTP %ld"), status);
         else snprintf(error, error_size, "HTTP %ld: %s", status, curl_easy_strerror(result));
         free(r.data);
         return NULL;
@@ -471,7 +476,7 @@ int catalog_load_page_sorted(const char *category, const char *query, int page,
     char key[256];
     tmdb_key(key,sizeof(key));
     if (!key[0]) {
-        snprintf(error,error_size,"TMDB: додайте /switch/uaplay/tmdb.key на SD-карту");
+        snprintf(error,error_size,TR("TMDB: додайте /switch/uaplay/tmdb.key на SD-карту","TMDB: add /switch/uaplay/tmdb.key to the SD card"));
         return 0;
     }
 
@@ -540,11 +545,11 @@ int catalog_load_page_sorted(const char *category, const char *query, int page,
             offline_catalog=1;
             offline_search=searching;
             if(searching)snprintf(error,error_size,
-                                  "Офлайн-пошук: лише збережені назви (TMDB недоступний)");
+                                  TR("Офлайн-пошук: лише збережені назви (TMDB недоступний)","Offline search: saved titles only (TMDB unavailable)"));
             else snprintf(error,error_size,"Offline catalog (network unavailable): %s",category);
         }else if(searching){
             char reason[160];snprintf(reason,sizeof(reason),"%s",error);
-            snprintf(error,error_size,"Пошук TMDB недоступний: %.155s",reason);
+            snprintf(error,error_size,TR("Пошук TMDB недоступний: %.155s","TMDB search unavailable: %.155s"),reason);
             return 0;
         }else return 0;
     } else error[0] = 0;
@@ -552,7 +557,11 @@ int catalog_load_page_sorted(const char *category, const char *query, int page,
     json_field(json,json+strlen(json),"total_pages",total_pages,sizeof(total_pages));
     if(has_more && page<atoi(total_pages) && page<500)*has_more=1;
     const char *results = strstr(json, "\"results\"");
-    if (!results || !(results = strchr(results, '['))) { free(json); snprintf(error, error_size, "Bad TMDB response"); return 0; }
+    if (!results || !(results = strchr(results, '['))) {
+        free(json);
+        snprintf(error,error_size,"%s",TR("Некоректна відповідь TMDB","Invalid TMDB response"));
+        return 0;
+    }
     const char *p = results + 1;
     int count = 0;
     while (*p && count < max && count < CATALOG_MAX) {
@@ -595,7 +604,8 @@ int catalog_load_page_sorted(const char *category, const char *query, int page,
         p = end;
     }
     free(json);
-    if (!count && !offline_search) snprintf(error, error_size, "No titles found");
+    if (!count && !offline_search)
+        snprintf(error,error_size,"%s",TR("Не знайдено матеріалів","No titles found"));
     return count;
 }
 
@@ -635,7 +645,10 @@ static char *fetch_uafresh(const char *upstream, char *error, int error_size) {
         /* Existing public UAFresh worker remains a normal network fallback. */
     }
     char *encoded = encode(upstream);
-    if (!encoded) { snprintf(error, error_size, "URL encoding failed"); return NULL; }
+    if (!encoded) {
+        snprintf(error,error_size,"%s",TR("Не вдалося закодувати адресу","Could not encode URL"));
+        return NULL;
+    }
     /* Public proxy only: never read, store, or forward authentication data. */
     size_t length = strlen(encoded) + strlen(UAFRESH_WORKER) + 24;
     char *url = malloc(length);
@@ -1324,7 +1337,7 @@ static int hydrahd_resolve(const char *player,char *stream,int size,
     }
     free(json);
     if(!candidate[0] || strlen(candidate)>=(size_t)size){
-        snprintf(error,error_size,"HydraHD: відеопотік недоступний");
+        snprintf(error,error_size,TR("HydraHD: відеопотік недоступний","HydraHD: video stream unavailable"));
         return 0;
     }
     snprintf(stream,(size_t)size,"%s",candidate);
@@ -1370,7 +1383,7 @@ static int search_hydrahd(const Movie *movie,Source *item,char *error,int error_
         }
         free(html);
         if(!item->url[0]){
-            snprintf(error,error_size,"HydraHD: серіал не знайдено");
+            snprintf(error,error_size,TR("HydraHD: серіал не знайдено","HydraHD: show not found"));
             return 0;
         }
     }
@@ -1446,7 +1459,8 @@ int uakino_search_provider(const Movie *movie, Source *items, int max,
             search_animeon(original,items,&count,max);
     }
     if (count) error[0]=0;
-    else if (!error[0]) snprintf(error,error_size,"UAFresh: no matching pages");
+    else if (!error[0])
+        snprintf(error,error_size,"%s",TR("Нічого не знайдено","No results found"));
     return count;
 }
 
@@ -1530,7 +1544,7 @@ static void add_resolved_link(ResolvedPlayerLink *list,int *count,
         if(!strcmp(list[i].url,url))return;
     ResolvedPlayerLink *dst=&list[(*count)++];
     snprintf(dst->label,sizeof(dst->label),"%s",
-             label && label[0]?label:"Основна");
+             label && label[0]?label:TR("Основна","Main"));
     snprintf(dst->url,sizeof(dst->url),"%s",url);
 }
 static void extract_subtitle_links(const char *field) {
@@ -1538,7 +1552,8 @@ static void extract_subtitle_links(const char *field) {
     while(*p && resolved_subtitle_count<UAKINO_PLAYER_TRACK_MAX){
         while(*p==',' || *p==';' || *p==')' ||
               isspace((unsigned char)*p))p++;
-        char label[96]="Субтитри";
+        char label[96];
+        snprintf(label,sizeof(label),"%s",TR("Субтитри","Subtitles"));
         if(*p=='['){
             const char *end=strchr(++p,']');
             if(!end)break;
@@ -1584,7 +1599,8 @@ static int extract_playerjs_audio(const char *html,char *stream,int size) {
                 if(!end)break;
                 p=end+1; /* Quality tag, not an audio language. */
             }
-            char label[96]="Основна";
+            char label[96];
+            snprintf(label,sizeof(label),"%s",TR("Основна","Main"));
             if(*p=='{'){
                 const char *end=strchr(++p,'}');
                 if(!end)break;
@@ -1840,7 +1856,7 @@ int uakino_resolve(const Source *source, char *stream, int size,
     if(found)return 1;
     /* UAFlix episodes are publicly playable on the site. A missing stream
        means our extraction did not find the player, not an auth requirement. */
-    snprintf(error,error_size,"Не знайдено прямий потік цієї серії. Спробуйте інший плеєр або джерело.");
+    snprintf(error,error_size,TR("Не знайдено прямий потік цієї серії. Спробуйте інший плеєр або джерело.","No direct stream was found. Try another player or provider."));
     return 0;
 }
 
@@ -1953,8 +1969,8 @@ static void playlist_add(Episode *items,int *count,int max,int season,int episod
     memset(entry,0,sizeof(*entry));
     entry->season=season;entry->number=episode;
     memcpy(entry->url,direct,length);entry->url[length]=0;
-    snprintf(entry->voice,sizeof(entry->voice),"%s",voice && *voice?voice:"Основна");
-    snprintf(entry->title,sizeof(entry->title),"Сезон %d · Серія %d",season,episode);
+    snprintf(entry->voice,sizeof(entry->voice),"%s",voice && *voice?voice:TR("Основна","Main"));
+    snprintf(entry->title,sizeof(entry->title),TR("Сезон %d · Серія %d","Season %d · Episode %d"),season,episode);
 }
 static const char *playlist_walk(const char *p,int season,int episode,
                                  const char *voice,int ordinal,int depth,
@@ -2039,7 +2055,7 @@ static int playlist_from_html(const char *html,Episode *items,int max){
         if(decoded){
             const char *start=json_ws(decoded);
             if(*start=='[' || *start=='{')
-                playlist_walk(start,1,0,"Основна",0,0,items,&count,max);
+                playlist_walk(start,1,0,TR("Основна","Main"),0,0,items,&count,max);
             free(decoded);
         }
         p+=4;
@@ -2088,7 +2104,7 @@ static void parse_uaflix_episodes(const char *html,const char *root,
                     entry->season=season;entry->number=number;
                     snprintf(entry->url,sizeof(entry->url),"%s",url);
                     snprintf(entry->title,sizeof(entry->title),
-                             "Сезон %d · Серія %d",season,number);
+                             TR("Сезон %d · Серія %d","Season %d · Episode %d"),season,number);
                 }
             }else if(season_urls && seasons && *seasons<max_seasons){
                 const char *season_part=strstr(url+strlen(root),"sezon-");
@@ -2135,13 +2151,13 @@ static int hydrahd_episodes(const char *url,Episode *items,int max,char *error,i
         memset(item,0,sizeof(*item));
         item->season=s;
         item->number=e;
-        snprintf(item->title,sizeof(item->title),"Сезон %d · Серія %d",s,e);
+        snprintf(item->title,sizeof(item->title),TR("Сезон %d · Серія %d","Season %d · Episode %d"),s,e);
         snprintf(item->url,sizeof(item->url),HYDRAHD_PLAYER_URL "tvplayer.php?tmdb=%d&s=%d&e=%d",
                  tmdb,s,e);
     }
     free(html);
     if(count)qsort(items,(size_t)count,sizeof(*items),episode_order);
-    else snprintf(error,error_size,"HydraHD: перелік серій недоступний");
+    else snprintf(error,error_size,TR("HydraHD: перелік серій недоступний","HydraHD: episode list unavailable"));
     return count;
 }
 
@@ -2168,7 +2184,7 @@ int uakino_episodes(const Source *source, Episode *items, int max,
         }
         free(response);
         if(!episodes_json){
-            snprintf(error,error_size,"AnimeON: немає доступних серій");
+            snprintf(error,error_size,TR("AnimeON: немає доступних серій","AnimeON: no episodes available"));
             return 0;
         }
         const char *p=episodes_json;
@@ -2203,14 +2219,14 @@ int uakino_episodes(const Source *source, Episode *items, int max,
                 Episode *dst=&items[count++];
                 memset(dst,0,sizeof(*dst));
                 dst->season=season;dst->number=episode;
-                snprintf(dst->title,sizeof(dst->title),"Серія %d · AnimeON",episode);
+                snprintf(dst->title,sizeof(dst->title),TR("Серія %d · AnimeON","Episode %d · AnimeON"),episode);
                 snprintf(dst->url,sizeof(dst->url),"%s",stream);
             }
             p=file+6;
         }
         free(episodes_json);
         if(count)qsort(items,(size_t)count,sizeof(*items),episode_order);
-        else snprintf(error,error_size,"AnimeON: немає доступних відеоджерел");
+        else snprintf(error,error_size,TR("AnimeON: немає доступних відеоджерел","AnimeON: no video sources available"));
         return count;
     }
     if(strstr(source->url,"api.mikai.me/public/v1/anime/") &&
@@ -2235,14 +2251,14 @@ int uakino_episodes(const Source *source, Episode *items, int max,
                 Episode *dst=&items[count++];
                 memset(dst,0,sizeof(*dst));
                 dst->season=1;dst->number=episode;
-                snprintf(dst->title,sizeof(dst->title),"Серія %d · Mikai",episode);
+                snprintf(dst->title,sizeof(dst->title),TR("Серія %d · Mikai","Episode %d · Mikai"),episode);
                 snprintf(dst->url,sizeof(dst->url),"%s",stream);
             }
             p=end;
         }
         free(json);
         if(count)qsort(items,(size_t)count,sizeof(*items),episode_order);
-        else snprintf(error,error_size,"Mikai: немає доступних відеоджерел");
+        else snprintf(error,error_size,TR("Mikai: немає доступних відеоджерел","Mikai: no video sources available"));
         return count;
     }
     char *playlist=uakino_playlist_page(source->url,error,error_size);
@@ -2265,7 +2281,7 @@ int uakino_episodes(const Source *source, Episode *items, int max,
             Episode *dst=&items[count++];
             memset(dst,0,sizeof(*dst));
             dst->season=1;dst->number=episode;
-            snprintf(dst->title,sizeof(dst->title),"Сезон 1 · Серія %d",episode);
+            snprintf(dst->title,sizeof(dst->title),TR("Сезон 1 · Серія %d","Season 1 · Episode %d"),episode);
             snprintf(dst->url,sizeof(dst->url),"%s",file);
             if(voice[0])snprintf(dst->voice,sizeof(dst->voice),"%s",voice);
             serial=1;
@@ -2312,6 +2328,6 @@ int uakino_episodes(const Source *source, Episode *items, int max,
     if (count) {
         qsort(items,(size_t)count,sizeof(*items),episode_order);
         error[0]=0;
-    } else snprintf(error,error_size,"Плеєр не надав доступний перелік серій. Спробуйте інше джерело.");
+    } else snprintf(error,error_size,TR("Плеєр не надав доступний перелік серій. Спробуйте інше джерело.","The player did not provide an episode list. Try another provider."));
     return count;
 }

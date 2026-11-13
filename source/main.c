@@ -2147,20 +2147,53 @@ static void configure_stream(mpv_handle *player,const char *url) {
     mpv_set_property_string(player,"user-agent","Mozilla/5.0 (Nintendo Switch; UAPlay/1.0)");
     mpv_set_property_string(player,"referrer",stream_referer(url));
 }
-static void play_stream(mpv_handle *player,const char *url){
+typedef struct {
+    Uint32 seek_started;
+    double seek_target;
+    int retried;
+    int quality;
+} MovyPlayback;
+
+static void play_stream_at_quality(mpv_handle *player,const char *url,int quality){
     if(!player)return;
     char local[96];
     if(movy_stream_url(url)){
-        static const long movy_bitrates[]={1800000,1000000,1800000,3600000,6800000};
-        long bitrate=movy_bitrates[(int)video_options[6]];
+        static const long movy_bitrates[]={3600000,1000000,1800000,3600000,6800000};
+        long bitrate=movy_bitrates[quality];
         if(movy_stream_open(url,bitrate,local,sizeof(local)))url=local;
     }else movy_stream_close();
     configure_stream(player,url);
     if(url==local){
         const char *args[]={"loadfile",url,"replace",
-            "demuxer-lavf-o=%65%http_persistent=0,http_multiple=0,http_seekable=0,seg_max_retry=2",NULL};
+            "demuxer-lavf-o=%65%http_persistent=0,http_multiple=0,http_seekable=0,seg_max_retry=2,network-timeout=60",NULL};
         mpv_command_async(player,0,args);
     }else command(player,"loadfile",url);
+}
+static void play_stream(mpv_handle *player,const char *url,MovyPlayback *state){
+    *state=(MovyPlayback){.quality=(int)video_options[6]};
+    play_stream_at_quality(player,url,state->quality);
+}
+
+static void movy_seek_to(mpv_handle *player,MovyPlayback *state,double target){
+    char seconds[48];
+    snprintf(seconds,sizeof(seconds),"%.2f",target);
+    state->seek_started=SDL_GetTicks();
+    state->seek_target=target;
+    const char *args[]={"seek",seconds,"absolute+keyframes",NULL};
+    mpv_command_async(player,0,args);
+}
+static int retry_movy(mpv_handle *player,MovyPlayback *state,const char *url,
+                      int loaded,double *resume,Uint32 *started){
+    if(!movy_stream_url(url) || state->retried || (loaded && !state->seek_started))return 0;
+    state->retried=1;
+    if(state->seek_started)*resume=state->seek_target;
+    state->seek_started=0;
+    /* Fall back to 480p on automatic startup. A seek retry can reuse the
+       playlist and initialization segment for the current rendition. */
+    if(!loaded && state->quality==0)state->quality=2;
+    play_stream_at_quality(player,url,state->quality);
+    *started=SDL_GetTicks();
+    return 1;
 }
 static int keyboard(char *value,size_t size) {
     SwkbdConfig cfg;
@@ -2237,6 +2270,7 @@ int main(void) {
     Page player_return_page=SOURCES;
     Uint32 video_started_at=0;
     int video_loaded=0;
+    MovyPlayback movy={0};
     int history_playback_committed=0;
     Uint32 controls_until=0;
     int pending_next_episode=-1,next_episode_request=-1;
@@ -2393,13 +2427,19 @@ int main(void) {
                         key=SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
                     else if(ty>=547 && ty<=594 && tx>=118 && tx<=1161){
                         double duration=0;
-                        if(player && mpv_get_property(player,"duration",MPV_FORMAT_DOUBLE,&duration)>=0
-                           && duration>0){
+                        if(player && video_loaded &&
+                           mpv_get_property(player,"duration",MPV_FORMAT_DOUBLE,&duration)>=0 &&
+                           duration>0){
                             double to=duration*(tx-126)/1028.0;
                             if(to<0)to=0;if(to>duration)to=duration;
                             char at[48];snprintf(at,sizeof(at),"%.2f",to);
-                            const char *args[]={"seek",at,"absolute",NULL};
-                            mpv_command_async(player,0,args);
+                            if(movy_stream_url(playing_url)){
+                                movy.retried=0;
+                                movy_seek_to(player,&movy,fmin(to,fmax(0,duration-1)));
+                            }else{
+                                const char *args[]={"seek",at,"absolute",NULL};
+                                mpv_command_async(player,0,args);
+                            }
                         }
                         continue;
                     }else if(ty>=603 && ty<703){
@@ -2652,8 +2692,19 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_A)command(player,"cycle","pause");
                 int fast=pad && SDL_GameControllerGetAttached(pad) &&
                     SDL_GameControllerGetButton(pad,SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT)seek(player,fast?"-60":"-10");
-                if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT)seek(player,fast?"60":"10");
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT || key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT){
+                    int direction=key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT?1:-1;
+                    if(movy_stream_url(playing_url)){
+                        double position=0,duration=0;
+                        if(video_loaded && mpv_get_property(player,"time-pos",MPV_FORMAT_DOUBLE,&position)>=0 &&
+                           mpv_get_property(player,"duration",MPV_FORMAT_DOUBLE,&duration)>=0){
+                            if(movy.seek_started)position=movy.seek_target;
+                            double target=position+direction*(fast?60:10);
+                            movy.retried=0;
+                            movy_seek_to(player,&movy,fmax(0,fmin(target,duration-1)));
+                        }
+                    }else seek(player,direction>0?(fast?"60":"10"):(fast?"-60":"-10"));
+                }
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)change_volume(player,1);
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)change_volume(player,-1);
                 if(key==SDL_CONTROLLER_BUTTON_X || key==SDL_CONTROLLER_BUTTON_Y){
@@ -2774,7 +2825,7 @@ int main(void) {
                             snprintf(pending_subtitle,sizeof(pending_subtitle),"%s",
                                      uakino_resolved_subtitle());
                             apply_hls_quality(player);
-                            play_stream(player,url);
+                            play_stream(player,url,&movy);
                             video_started_at=SDL_GetTicks();video_loaded=0;
                             controls_until=SDL_GetTicks()+3000;
                         }
@@ -2794,7 +2845,7 @@ int main(void) {
                             active_episode_variant=variant;
                             apply_hls_quality(player);
                             mpv_set_property_string(player,"pause","no");
-                            play_stream(player,url);
+                            play_stream(player,url,&movy);
                             video_started_at=SDL_GetTicks();video_loaded=0;
                             controls_until=SDL_GetTicks()+3000;
                             page=PLAYER;
@@ -2841,7 +2892,8 @@ int main(void) {
                                 resume_at=pos;
                             snprintf(pending_subtitle,sizeof(pending_subtitle),"%s",
                                      uakino_resolved_subtitle());
-                            play_stream(player,playing_url);
+                            video_started_at=SDL_GetTicks();video_loaded=0;
+                            play_stream(player,playing_url,&movy);
                         }
                     } else playback_set_value(player,video_props[i],video_options[i]);
                 }
@@ -2899,7 +2951,7 @@ int main(void) {
                                        saved_episode==episode->number)?saved_seconds:0;
                             snprintf(playing_url,sizeof(playing_url),"%s",url);
                             apply_hls_quality(player);
-                            play_stream(player,url);
+                            play_stream(player,url,&movy);
                             video_started_at=SDL_GetTicks();video_loaded=0;
                             controls_until=SDL_GetTicks()+3000;
                             player_return_page=EPISODES;page=PLAYER;
@@ -2952,7 +3004,7 @@ int main(void) {
                              && last_season==item.season && last_episode==item.episode)?pos:0;
                         pending_subtitle[0]=0;message[0]=0;
                         snprintf(playing_url,sizeof(playing_url),"%s",file_path);
-                        play_stream(player,file_path);
+                        play_stream(player,file_path,&movy);
                         video_started_at=SDL_GetTicks();video_loaded=0;
                         controls_until=SDL_GetTicks()+3000;
                         player_return_page=DOWNLOADS;page=PLAYER;
@@ -3374,7 +3426,7 @@ int main(void) {
                         resume_at=library_progress(&playing_movie);
                         snprintf(playing_url,sizeof(playing_url),"%s",url);
                         apply_hls_quality(player);
-                        play_stream(player,url);
+                        play_stream(player,url,&movy);
                         video_started_at=SDL_GetTicks();video_loaded=0;
                         controls_until=SDL_GetTicks()+3000;
                         player_return_page=SOURCES;page=PLAYER;
@@ -3410,17 +3462,38 @@ int main(void) {
                 }
                 if(event->event_id==MPV_EVENT_FILE_LOADED)video_loaded=1;
                 if(event->event_id==MPV_EVENT_FILE_LOADED && resume_at>1){
-                    char seconds[40];snprintf(seconds,sizeof(seconds),"%.1f",resume_at);
-                    const char *args[]={"seek",seconds,"absolute",NULL};
-                    mpv_command_async(player,0,args);
+                    if(movy_stream_url(playing_url)){
+                        double duration=0;
+                        if(mpv_get_property(player,"duration",MPV_FORMAT_DOUBLE,&duration)>=0 && duration>0)
+                            resume_at=fmin(resume_at,fmax(0,duration-1));
+                        movy_seek_to(player,&movy,resume_at);
+                    }else{
+                        char seconds[40];snprintf(seconds,sizeof(seconds),"%.1f",resume_at);
+                        const char *args[]={"seek",seconds,"absolute",NULL};
+                        mpv_command_async(player,0,args);
+                    }
                     resume_at=0;
+                }
+                if(event->event_id==MPV_EVENT_PLAYBACK_RESTART && movy.seek_started){
+                    double position=0;
+                    if(mpv_get_property(player,"time-pos",MPV_FORMAT_DOUBLE,&position)>=0 &&
+                       fabs(position-movy.seek_target)<8)
+                        movy.seek_started=0;
                 }
                 if(event->event_id==MPV_EVENT_END_FILE &&
                    (page==PLAYER || page==SUBDL_PICKER || page==TRACK_PICKER)){
                     mpv_event_end_file *end=(mpv_event_end_file*)event->data;
-                    if(end && end->reason==MPV_END_FILE_REASON_ERROR){
+                    int interrupted_seek=end && end->reason==MPV_END_FILE_REASON_EOF && movy.seek_started;
+                    if(end && (end->reason==MPV_END_FILE_REASON_ERROR || interrupted_seek)){
+                        if(retry_movy(player,&movy,playing_url,video_loaded,&resume_at,&video_started_at)){
+                            page=PLAYER;
+                            video_loaded=0;
+                            continue;
+                        }
                         snprintf(message,sizeof(message),TR("Помилка відео: %s (%d)","Video error: %s (%d)"),
                                  mpv_error_string(end->error),end->error);
+                        if(interrupted_seek)
+                            snprintf(message,sizeof(message),"%s",TR("Movy: перемотування перервано","Movy: seek interrupted"));
                         page=player_return_page;
                     }else if(end && end->reason==MPV_END_FILE_REASON_EOF){
                         if(player_return_page==DOWNLOADS && download_episode)
@@ -3502,7 +3575,7 @@ int main(void) {
                 snprintf(playing_url,sizeof(playing_url),"%s",url);
                 apply_hls_quality(player);
                 mpv_set_property_string(player,"pause","no");
-                play_stream(player,url);
+                play_stream(player,url,&movy);
                 video_started_at=SDL_GetTicks();video_loaded=0;
                 controls_until=SDL_GetTicks()+3000;
             }else page=EPISODES;
@@ -3534,6 +3607,16 @@ int main(void) {
         ui_animating=0;
         ui_hold_scroll=pending_key>=0 ||
                        (touch.active && touch.page==page && !touch.moved);
+        if(page==PLAYER && movy.seek_started && SDL_GetTicks()-movy.seek_started>35000u){
+            if(retry_movy(player,&movy,playing_url,video_loaded,&resume_at,&video_started_at))
+                video_loaded=0;
+            else{
+                movy.seek_started=0;
+                snprintf(message,sizeof(message),"%s",TR("Movy: сервер не відповів під час перемотування","Movy: server timed out while seeking"));
+                command(player,"stop",NULL);
+                page=player_return_page;
+            }
+        }
         if(page==PLAYER && render){
             ui_theme_enabled=0;
             mpv_opengl_fbo fbo={.fbo=0,.w=1280,.h=720};int flip=1;
@@ -3570,7 +3653,8 @@ int main(void) {
                 text_center(&paint,TR("Завантаження відео","Loading video"),
                             loading_center_x-310,426,620,paint.font,.76f,.78f,.82f);
                 unsigned timeout=movy_stream_url(playing_url)?60000u:30000u;
-                if(video_started_at && SDL_GetTicks()-video_started_at>timeout){
+                if(video_started_at && SDL_GetTicks()-video_started_at>timeout &&
+                   !retry_movy(player,&movy,playing_url,0,&resume_at,&video_started_at)){
                     snprintf(message,sizeof(message),TR("Час очікування відео вичерпано (%u с)","Video timed out (%u s)"),timeout/1000);
                     command(player,"stop",NULL);page=player_return_page;
                 }
@@ -3580,6 +3664,9 @@ int main(void) {
             }
             /* The battery meter belongs to the player controls overlay:
                show and hide both at the same time while playing. */
+            if(video_loaded && movy.seek_started && SDL_GetTicks()-movy.seek_started>600u)
+                text_center(&paint,TR("Перемотування…","Seeking…"),
+                            330,342,620,paint.font,.92f,.94f,.98f);
             if(video_loaded && SDL_GetTicks()<controls_until){
                 draw_player_controls(&paint,player);
                 battery_status_horizontal(&paint,1187,28);

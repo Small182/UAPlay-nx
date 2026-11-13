@@ -3,6 +3,8 @@
 
 #include <arpa/inet.h>
 #include <curl/curl.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
@@ -18,8 +20,8 @@ enum { MAX_RESOURCES=24000, MAX_PLAYLIST=1024*1024, MAX_SEGMENT=16*1024*1024 };
 typedef struct {
     char *url;
     const char *suffix;
-    char *playlist;
-    size_t playlist_size;
+    char *cached;
+    size_t cached_size;
 } Resource;
 typedef struct {
     char *text;
@@ -35,13 +37,27 @@ static Resource resources[MAX_RESOURCES];
 static unsigned resource_count;
 
 static int send_all(int fd,const char *data,size_t size){
+    int idle_polls=0;
     while(size && !atomic_load(&stopping)){
+        /* Keep BSD service buffers small and give the player time to drain
+           its socket when the decoder temporarily pauses reading. */
+        size_t chunk=size<16384?size:16384;
 #ifdef MSG_NOSIGNAL
-        ssize_t n=send(fd,data,size,MSG_NOSIGNAL);
+        ssize_t n=send(fd,data,chunk,MSG_NOSIGNAL);
 #else
-        ssize_t n=send(fd,data,size,0);
+        ssize_t n=send(fd,data,chunk,0);
 #endif
+        if(n<0 && errno==EINTR)continue;
+        if(n<0 && (errno==EAGAIN || errno==EWOULDBLOCK)){
+            struct pollfd client={.fd=fd,.events=POLLOUT};
+            int ready=poll(&client,1,1000);
+            if(ready<0 && errno==EINTR)continue;
+            if(ready>0 && (client.revents&POLLOUT) &&
+               !(client.revents&(POLLERR|POLLHUP|POLLNVAL)))continue;
+            if(!ready && ++idle_polls<15)continue;
+        }
         if(n<=0)return 0;
+        idle_polls=0;
         data+=n;
         size-=(size_t)n;
     }
@@ -180,16 +196,24 @@ static int fetch(CURL *curl,const char *url,Buffer *out){
 
 static void serve(int fd,CURL *curl,Resource *resource){
     int playlist=!strcmp(resource->suffix,"playlist.m3u8");
-    if(resource->playlist){
-        response(fd,200,"application/vnd.apple.mpegurl",(long long)resource->playlist_size);
-        send_all(fd,resource->playlist,resource->playlist_size);
+    const char *type=playlist?"application/vnd.apple.mpegurl":"video/mp4";
+    if(resource->cached){
+        response(fd,200,type,(long long)resource->cached_size);
+        send_all(fd,resource->cached,resource->cached_size);
         return;
     }
     Buffer input={.limit=playlist?MAX_PLAYLIST:MAX_SEGMENT};
+    curl_easy_setopt(curl,CURLOPT_TIMEOUT,playlist?14L:24L);
     int ok=fetch(curl,resource->url,&input);
     if(ok && !playlist){
-        response(fd,200,"video/mp4",(long long)input.length);
+        response(fd,200,type,(long long)input.length);
         send_all(fd,input.text,input.length);
+        /* Seeking reopens the fMP4 initialization data. Reuse it locally. */
+        if(!strcmp(resource->suffix,"init.mp4") && input.length<=65536){
+            resource->cached=input.text;
+            resource->cached_size=input.length;
+            input.text=NULL;
+        }
     }else if(ok){
         Buffer out={.limit=MAX_PLAYLIST};
         char *effective=NULL;
@@ -204,8 +228,8 @@ static void serve(int fd,CURL *curl,Resource *resource){
         unsigned before=resource_count;
         if(ok && effective && strstr(input.text,"#EXTINF:") &&
            rewrite_playlist(&out,&input,effective)){
-            resource->playlist=out.text;
-            resource->playlist_size=out.length;
+            resource->cached=out.text;
+            resource->cached_size=out.length;
             response(fd,200,"application/vnd.apple.mpegurl",(long long)out.length);
             send_all(fd,out.text,out.length);
         }else{
@@ -243,7 +267,6 @@ static void *relay_worker(void *opaque){
 #endif
     curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);
     curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT,6L);
-    curl_easy_setopt(curl,CURLOPT_TIMEOUT,14L);
     curl_easy_setopt(curl,CURLOPT_FAILONERROR,1L);
     curl_easy_setopt(curl,CURLOPT_NOPROGRESS,0L);
     curl_easy_setopt(curl,CURLOPT_XFERINFOFUNCTION,cancelled);
@@ -265,6 +288,8 @@ static void *relay_worker(void *opaque){
             if(strstr(request,"\r\n\r\n"))break;
         }
         unsigned id;
+        int flags=fcntl(client,F_GETFL,0);
+        if(flags>=0)fcntl(client,F_SETFL,flags|O_NONBLOCK);
         if(size && sscanf(request,"GET /%u/%31s",&id,suffix)==2 && id<resource_count &&
            !strcmp(suffix,resources[id].suffix))
             serve(client,curl,&resources[id]);
@@ -285,7 +310,7 @@ void movy_stream_close(void){
     while(resource_count){
         Resource *resource=&resources[--resource_count];
         free(resource->url);
-        free(resource->playlist);
+        free(resource->cached);
         *resource=(Resource){0};
     }
 }

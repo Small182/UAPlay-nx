@@ -35,6 +35,12 @@ static pthread_t worker;
 static atomic_int stopping;
 static Resource resources[MAX_RESOURCES];
 static unsigned resource_count;
+typedef struct {
+    size_t line;
+    double time;
+} SegmentPosition;
+static SegmentPosition segment_positions[MAX_RESOURCES];
+static atomic_uint segment_count;
 
 static int send_all(int fd,const char *data,size_t size){
     int idle_polls=0;
@@ -138,7 +144,17 @@ static int append_resource(Buffer *out,const char *base,const char *ref,size_t l
 static int rewrite_playlist(Buffer *out,Buffer *input,const char *base){
     if(!input->text || strncmp(input->text,"#EXTM3U",7))return 0;
     char *save=NULL;
+    unsigned count=0, maps=0;
+    double elapsed=0;
+    int sliceable=1;
     for(char *line=strtok_r(input->text,"\r\n",&save);line;line=strtok_r(NULL,"\r\n",&save)){
+        if(!strncmp(line,"#EXTINF:",8) && count<MAX_RESOURCES){
+            segment_positions[count++]=(SegmentPosition){out->length,elapsed};
+            elapsed+=strtod(line+8,NULL);
+        }
+        if(!strncmp(line,"#EXT-X-MAP:",11))maps++;
+        if(!strcmp(line,"#EXT-X-DISCONTINUITY") || !strncmp(line,"#EXT-X-KEY:",11) ||
+           !strncmp(line,"#EXT-X-BYTERANGE:",17))sliceable=0;
         if(*line!='#'){
             if(!append_resource(out,base,line,strlen(line)))return 0;
         }else{
@@ -153,7 +169,22 @@ static int rewrite_playlist(Buffer *out,Buffer *input,const char *base){
         }
         if(write_buffer("\n",1,1,out)!=1)return 0;
     }
+    if(maps==1 && sliceable && elapsed>0)atomic_store(&segment_count,count);
     return 1;
+}
+
+static void serve_from_segment(int fd,unsigned index){
+    unsigned count=atomic_load(&segment_count);
+    if(!count || index>=count || !resources[0].cached){
+        response(fd,404,"text/plain",0);
+        return;
+    }
+    Resource *playlist=&resources[0];
+    size_t header=segment_positions[0].line, start=segment_positions[index].line;
+    response(fd,200,"application/vnd.apple.mpegurl",
+             (long long)(header+playlist->cached_size-start));
+    if(send_all(fd,playlist->cached,header))
+        send_all(fd,playlist->cached+start,playlist->cached_size-start);
 }
 
 /* Movy advertises muxed renditions up to 4K. Present one media playlist so
@@ -290,7 +321,9 @@ static void *relay_worker(void *opaque){
         unsigned id;
         int flags=fcntl(client,F_GETFL,0);
         if(flags>=0)fcntl(client,F_SETFL,flags|O_NONBLOCK);
-        if(size && sscanf(request,"GET /%u/%31s",&id,suffix)==2 && id<resource_count &&
+        if(size && sscanf(request,"GET /seek/%u/%31s",&id,suffix)==2 &&
+           !strcmp(suffix,"playlist.m3u8"))serve_from_segment(client,id);
+        else if(size && sscanf(request,"GET /%u/%31s",&id,suffix)==2 && id<resource_count &&
            !strcmp(suffix,resources[id].suffix))
             serve(client,curl,&resources[id]);
         else response(client,404,"text/plain",0);
@@ -307,6 +340,7 @@ void movy_stream_close(void){
     pthread_join(worker,NULL);
     close(listener);
     listener=-1;
+    atomic_store(&segment_count,0);
     while(resource_count){
         Resource *resource=&resources[--resource_count];
         free(resource->url);
@@ -358,4 +392,14 @@ int movy_stream_open(const char *upstream,long bandwidth,char *url,size_t size){
         return 0;
     }
     return 1;
+}
+
+int movy_stream_seek(double target,double *offset,char *url,size_t size){
+    unsigned count=atomic_load(&segment_count);
+    if(!count)return 0;
+    unsigned index=0;
+    while(index+1<count && segment_positions[index+1].time<=target)index++;
+    int n=snprintf(url,size,"http://127.0.0.1:%u/seek/%u/playlist.m3u8",port,index);
+    *offset=segment_positions[index].time;
+    return n>0 && (size_t)n<size;
 }

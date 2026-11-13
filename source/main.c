@@ -376,12 +376,16 @@ static void catalog_home_prime(const Movie *movies,int count){
     if(loader->cond)SDL_CondSignal(loader->cond);
     SDL_UnlockMutex(loader->mutex);
 }
-static int catalog_home_copy(int shelf,Movie *movies){
+static int catalog_home_copy(int shelf,Movie *movies,int start,int capacity){
     CatalogLoader *loader=&catalog_loader;
     if(!loader->mutex || shelf<0 || shelf>=HOME_SHELF_COUNT)return -1;
     SDL_LockMutex(loader->mutex);
     int count=home_shelves[shelf].state==3?home_shelves[shelf].count:-1;
-    if(count>0)memcpy(movies,home_shelves[shelf].items,(size_t)count*sizeof(Movie));
+    if(count>=0){
+        count=count>start?count-start:0;
+        if(count>capacity)count=capacity;
+        if(count>0)memcpy(movies,home_shelves[shelf].items+start,(size_t)count*sizeof(Movie));
+    }
     SDL_UnlockMutex(loader->mutex);
     return count;
 }
@@ -471,7 +475,7 @@ static int load_category(int category,const char *query,Movie *movies,char *mess
     previous_category=data_category;
     snprintf(previous_query,sizeof(previous_query),"%s",query);
     if(category==0 && !query[0] && home_cache_initialized){
-        int cached=catalog_home_copy(home_shelf,movies);
+        int cached=catalog_home_copy(home_shelf,movies,0,CATALOG_PAGE_SIZE);
         home_current_loaded=cached>=0;
         if(cached<0){
             snprintf(message,(size_t)size,"Завантаження добірки...");
@@ -502,6 +506,7 @@ static int load_category(int category,const char *query,Movie *movies,char *mess
 typedef struct {
     GLuint program, vbo, tex, solid_tex;
     GLint tint, shape, gradient, outline, sampler;
+    SDL_Rect clip;
     TTF_Font *font;
     TTF_Font *font_big;
     TTF_Font *font_clock;
@@ -513,6 +518,13 @@ typedef struct {
     TTF_Font *scripts_tiny[7];
     TTF_Font *japanese[4];
 } Paint;
+static void paint_clip(Paint *p,int x,int y,int w,int h){
+    p->clip=(SDL_Rect){x,y,w,h};
+    if(w>0 && h>0){
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(x,720-y-h,w,h);
+    }else glDisable(GL_SCISSOR_TEST);
+}
 static const char *script_fonts[]={"Tamil","Telugu","Devanagari","Malayalam",
                                   "Bengali","Arabic","Thai"};
 static TTF_Font *choose_font(Paint *p,const char *s){
@@ -792,12 +804,18 @@ static void text_color(Paint *p,const char *str,int x,int y,int limit,
     if(!texture)return;
     GLuint previous=p->tex;p->tex=texture;
     /* Never shrink a long title: clip it at the card edge instead. */
+    SDL_Rect clip=p->clip;
     if(limit>0){
-        glEnable(GL_SCISSOR_TEST);
-        glScissor(x,720-y-height,limit,height);
+        SDL_Rect label={x,y,limit,height},visible=label;
+        if(clip.w && !SDL_IntersectRect(&clip,&label,&visible)){
+            p->tex=previous;
+            if(transient_texture)glDeleteTextures(1,&transient_texture);
+            return;
+        }
+        paint_clip(p,visible.x,visible.y,visible.w,visible.h);
     }
     box_alpha(p,x,y,width,height,r,g,b,1.f,0);
-    if(limit>0)glDisable(GL_SCISSOR_TEST);
+    if(limit>0)paint_clip(p,clip.x,clip.y,clip.w,clip.h);
     p->tex=previous;
     if(transient_texture)glDeleteTextures(1,&transient_texture);
 }
@@ -815,6 +833,8 @@ enum { UI_EDGE=32, UI_FOOTER_TOP=668, UI_ROW_Y=130,
        UI_ROW_HEIGHT=50, UI_ROW_STEP=58, UI_ROWS=8 };
 enum { POSTER_COLUMNS=6, POSTER_ROW_Y=389, POSTER_ROW_BOTTOM=661,
        POSTER_GRID_Y=153, LIBRARY_GRID_Y=162, POSTER_GRID_BOTTOM=613 };
+enum { POSTER_STEP=201, GRID_ITEMS=2*POSTER_COLUMNS, GRID_PAGE_STEP=512,
+       SHELF_STEP=288, SCROLL_MS=220, PRESS_MS=150, PRESS_PREVIEW_MS=46 };
 
 typedef enum { TOUCH_NONE, TOUCH_TAP, SWIPE_LEFT, SWIPE_RIGHT,
                SWIPE_UP, SWIPE_DOWN } TouchAction;
@@ -822,7 +842,7 @@ typedef struct {
     SDL_TouchID device;
     SDL_FingerID finger;
     Page page;
-    int x,y,active,moved;
+    int x,y,dx,dy,active,moved,axis;
 } TouchGesture;
 
 static TouchAction touch_gesture(TouchGesture *gesture,const SDL_TouchFingerEvent *event,
@@ -835,14 +855,18 @@ static TouchAction touch_gesture(TouchGesture *gesture,const SDL_TouchFingerEven
     if(!gesture->active || gesture->device!=event->touchId ||
        gesture->finger!=event->fingerId)return TOUCH_NONE;
 
-    int dx=x-gesture->x,dy=y-gesture->y;
+    int dx=gesture->dx=x-gesture->x,dy=gesture->dy=y-gesture->y;
     int ax=abs(dx),ay=abs(dy);
     if(ax>16 || ay>16)gesture->moved=1;
+    if(!gesture->axis && gesture->moved){
+        if(4*ax>=5*ay)gesture->axis=1;
+        else if(4*ay>=5*ax)gesture->axis=2;
+    }
     if(event->type!=SDL_FINGERUP)return TOUCH_NONE;
     gesture->active=0;
     if(!gesture->moved)return TOUCH_TAP;
-    if(ax>=52 && 4*ax>=5*ay)return dx<0?SWIPE_LEFT:SWIPE_RIGHT;
-    if(ay>=52 && 4*ay>=5*ax)return dy<0?SWIPE_UP:SWIPE_DOWN;
+    if(gesture->axis==1 && ax>=52)return dx<0?SWIPE_LEFT:SWIPE_RIGHT;
+    if(gesture->axis==2 && ay>=52)return dy<0?SWIPE_UP:SWIPE_DOWN;
     return TOUCH_NONE;
 }
 
@@ -857,6 +881,57 @@ static int swipe_page_selection(int selected,int count,int page_size,int directi
 static int poster_row_start(int chosen,int is_home){
     return is_home && chosen>=POSTER_COLUMNS-1?
            chosen-(POSTER_COLUMNS-1):chosen/POSTER_COLUMNS*POSTER_COLUMNS;
+}
+
+typedef struct {
+    int ready,dragging;
+    float position,from,target,drag_origin;
+    Uint32 started_at;
+} ScrollMotion;
+static ScrollMotion content_motion,shelf_motion;
+static Uint32 ui_now;
+static int ui_animating,ui_hold_scroll;
+static const TouchGesture *ui_touch;
+
+static int scroll_offset(ScrollMotion *motion,int target,const int *drag,int limit,int max_step){
+    if(!motion->ready){
+        *motion=(ScrollMotion){.ready=1,.position=target,.from=target,.target=target};
+    }
+    if(ui_hold_scroll){
+        motion->from=motion->position;
+        motion->started_at=ui_now;
+        return (int)lroundf(motion->position);
+    }
+    if(drag){
+        if(!motion->dragging)motion->drag_origin=motion->position;
+        float step=fmaxf(-max_step,fminf(max_step,-*drag));
+        float position=motion->drag_origin+step;
+        /* A short resistance at either edge also makes failed swipes settle smoothly. */
+        float bounded=fmaxf(0.f,fminf(limit,position));
+        motion->position=bounded+fmaxf(-32.f,fminf(32.f,(position-bounded)*.2f));
+        motion->dragging=1;
+        ui_animating=1;
+    }else{
+        if(motion->dragging || motion->target!=target){
+            motion->from=motion->position;
+            motion->target=target;
+            motion->started_at=ui_now;
+            motion->dragging=0;
+        }
+        float t=fminf(1.f,(ui_now-motion->started_at)/(float)SCROLL_MS);
+        float remaining=1.f-t;
+        motion->position=motion->target+(motion->from-motion->target)*remaining*remaining*remaining;
+        if(t<1.f && motion->position!=motion->target)ui_animating=1;
+    }
+    return (int)lroundf(motion->position);
+}
+
+static const int *touch_drag(Page page,int axis,int top,int bottom){
+    const TouchGesture *touch=ui_touch;
+    if(!touch || !touch->active || touch->page!=page || touch->axis!=axis ||
+       touch->x<UI_EDGE || touch->x>=1280-UI_EDGE || touch->y<top || touch->y>=bottom)
+        return NULL;
+    return axis==1?&touch->dx:&touch->dy;
 }
 
 static void text_font(Paint *p,const char *s,int x,int y,int limit,
@@ -974,7 +1049,46 @@ static void accent(float *r,float *g,float *b){
     *g=ui_accent_alt?.68f:.84f;
     *b=ui_accent_alt?.88f:.73f;
 }
-static Uint32 ui_press_at=0;
+static SDL_Rect ui_focus_rect,ui_press_rect;
+static SDL_Point ui_press_point;
+static Page ui_press_page;
+static Uint32 ui_press_at;
+static int ui_press_active,ui_press_is_touch;
+static Page ui_draw_page;
+
+static float press_amount(int x,int y,int w,int h){
+    SDL_Rect rect={x,y,w,h};
+    if(ui_touch && ui_touch->active && !ui_touch->moved && ui_touch->page==ui_draw_page &&
+       SDL_PointInRect(&(SDL_Point){ui_touch->x,ui_touch->y},&rect))
+        return 1.f;
+    if(!ui_press_active || ui_draw_page!=ui_press_page)return 0.f;
+    if(ui_press_is_touch ? !SDL_PointInRect(&ui_press_point,&rect) :
+       !SDL_RectEquals(&rect,&ui_press_rect))return 0.f;
+    Uint32 elapsed=ui_now-ui_press_at;
+    return elapsed<PRESS_MS?1.f-elapsed/(float)PRESS_MS:0.f;
+}
+
+static void press_preview(Paint *p,int x,int y,int w,int h,int radius){
+    float amount=press_amount(x,y,w,h);
+    if(amount<=0.f)return;
+    ui_animating=1;
+    ui_outline_width=2;
+    box_alpha(p,x+2,y+2,w-4,h-4,.22f,.71f,.86f,.85f*amount,radius);
+    ui_outline_width=0;
+}
+
+static const int player_button_centers[]={354,476,598,832,954,1076};
+static int pressed_player_button(int key,SDL_Rect *rect){
+    const int keys[]={SDL_CONTROLLER_BUTTON_DPAD_LEFT,SDL_CONTROLLER_BUTTON_A,
+                      SDL_CONTROLLER_BUTTON_DPAD_RIGHT,SDL_CONTROLLER_BUTTON_BACK,
+                      SDL_CONTROLLER_BUTTON_Y,SDL_CONTROLLER_BUTTON_X};
+    for(int i=0;i<6;i++)if(keys[i]==key){
+        *rect=(SDL_Rect){player_button_centers[i]-38,610,76,58};
+        return 1;
+    }
+    return 0;
+}
+
 static void selection_frame(Paint *p,int x,int y,int w,int h){
     /* A single rounded SDF ring tracks the underlying button/card corners.
        Separate rectangular strokes left square joints on the Switch UI. */
@@ -983,14 +1097,15 @@ static void selection_frame(Paint *p,int x,int y,int w,int h){
     float b=ui_light_theme?.20f:.85f;
     int radius=h>=60?18:h>=40?17:12;
     ui_outline_width=3;
-    float opacity=.94f+.06f*sinf(SDL_GetTicks()*.005f);
-    /* The focused control briefly settles inward when A is pressed. */
-    if(SDL_GetTicks()-ui_press_at<95){x++;y++;w-=2;h-=2;}
+    float opacity=.94f+.06f*sinf(ui_now*.005f);
+    ui_focus_rect=(SDL_Rect){x,y,w,h};
     box_alpha(p,x-3,y-3,w+6,h+6,r,g,b,opacity,radius);
     ui_outline_width=0;
 }
 static void button(Paint *p,const char *label,int x,int y,int w,int h,int primary){
-    /* Flat fills: no simulated border/shadow in Basic White. */
+    int inset=(int)lroundf(3.f*press_amount(x,y,w,h));
+    if(inset)ui_animating=1;
+    x+=inset;y+=inset;w-=2*inset;h-=2*inset;
     float secondary=ui_light_theme?.11f:.15f;
     box_alpha(p,x,y,w,h,primary?.89f:secondary,primary?.91f:secondary,
               primary?.94f:secondary,1.f,14);
@@ -1097,6 +1212,7 @@ static void screen_header(Paint *p,const char *name,const char *context){
     box_alpha(p,0,0,1280,92,.058f,.069f,.083f,1.f,0);
     box_alpha(p,UI_EDGE,23,55,48,.13f,.16f,.20f,1.f,13);
     text_center(p,"‹",UI_EDGE,25,55,p->font_big,.96f,.97f,.99f);
+    press_preview(p,UI_EDGE,23,55,48,13);
     headline(p,name,105,23,860);
     if(context && *context && strcmp(context,"UAPlay"))
         text_tiny(p,context,979,38,264);
@@ -1113,6 +1229,7 @@ static void list_row(Paint *p,const char *title,int y,int selected,
     }
     text(p,title,UI_EDGE+22,y+9,detail?915:1155);
     if(detail)text_muted(p,detail,1052,y+13,178);
+    press_preview(p,UI_EDGE,y,1216,UI_ROW_HEIGHT,12);
 }
 static int footer_position,footer_total;
 static Page footer_page;
@@ -1214,6 +1331,79 @@ static void poster(Paint *p,const Movie *movie,int x,int y,int width,int height,
                            p->font_tiny,.98f,.96f,.88f);
     }
 }
+
+static void draw_poster_row(Paint *p,const Movie *movies,int count,int offset,int y,
+                            int chosen,int *budget){
+    if(y>=POSTER_ROW_BOTTOM || y+POSTER_ROW_BOTTOM-POSTER_ROW_Y<=POSTER_ROW_Y)return;
+    int first=offset/POSTER_STEP-1;
+    if(first<0)first=0;
+    for(int i=first;i<count && i<first+POSTER_COLUMNS+3;i++){
+        int x=53+i*POSTER_STEP-offset;
+        if(x+164<=UI_EDGE || x>=1280-UI_EDGE)continue;
+        if(i==chosen)selection_frame(p,x,y,150,221);
+        poster(p,&movies[i],x,y,150,221,budget);
+        card_title(p,movies[i].title,x,y+224,164);
+        press_preview(p,x,y,150,221,14);
+    }
+}
+
+static void draw_poster_grid(Paint *p,const Movie *movies,int count,int chosen,int library,
+                             int *budget){
+    int top=library?LIBRARY_GRID_Y:POSTER_GRID_Y;
+    int bottom=library?POSTER_ROW_BOTTOM:POSTER_GRID_BOTTOM;
+    int target=chosen/GRID_ITEMS*GRID_PAGE_STEP;
+    int limit=count?(count-1)/GRID_ITEMS*GRID_PAGE_STEP:0;
+    int offset=scroll_offset(&content_motion,target,touch_drag(CATALOG,2,top,bottom),
+                             limit,GRID_PAGE_STEP);
+    paint_clip(p,0,top-5,1280,bottom-top+8);
+    int first=(offset/GRID_PAGE_STEP-1)*GRID_ITEMS;
+    if(first<0)first=0;
+    for(int i=first;i<count && i<first+3*GRID_ITEMS;i++){
+        int k=i%GRID_ITEMS,x=54+k%POSTER_COLUMNS*POSTER_STEP;
+        int y=top+k/POSTER_COLUMNS*(library?245:246)+i/GRID_ITEMS*GRID_PAGE_STEP-offset;
+        if(y+255<top || y>=bottom)continue;
+        if(i==chosen && (!library || !catalog_hero_focus))selection_frame(p,x,y,138,206);
+        poster(p,&movies[i],x,y,138,206,budget);
+        if(library)card_title(p,movies[i].title,x,y+209,166);
+        press_preview(p,x,y,138,206,14);
+    }
+    paint_clip(p,0,0,0,0);
+}
+
+static int list_offset(Paint *p,Page page,int selected,int count){
+    if(selected>=count)selected=count?count-1:0;
+    int target=selected/UI_ROWS*UI_ROWS*UI_ROW_STEP;
+    int limit=count?(count-1)/UI_ROWS*UI_ROWS*UI_ROW_STEP:0;
+    int bottom=UI_ROW_Y+UI_ROWS*UI_ROW_STEP;
+    paint_clip(p,0,UI_ROW_Y-5,1280,bottom-UI_ROW_Y+5);
+    return scroll_offset(&content_motion,target,touch_drag(page,2,UI_ROW_Y,bottom),
+                         limit,UI_ROWS*UI_ROW_STEP);
+}
+
+static int first_visible_row(int offset){
+    int first=offset/UI_ROW_STEP-1;
+    return first>0?first:0;
+}
+
+static int touched_grid_poster(int x,int y,int top,int row_step,int bottom){
+    if(x<54 || y<top-5 || y>=bottom)return -1;
+    int col=(x-54)/POSTER_STEP;
+    if(col>=POSTER_COLUMNS || (x-54)%POSTER_STEP>=138)return -1;
+    int absolute_y=y-top+(int)lroundf(content_motion.position);
+    if(absolute_y<0)return -1;
+    int within_page=absolute_y%GRID_PAGE_STEP;
+    int row=within_page/row_step;
+    if(row>=2 || within_page%row_step>=206)return -1;
+    return absolute_y/GRID_PAGE_STEP*GRID_ITEMS+row*POSTER_COLUMNS+col;
+}
+
+static int touched_list_row(int x,int y){
+    if(x<UI_EDGE || x>=1280-UI_EDGE || y<UI_ROW_Y-5 || y>=UI_ROW_Y+UI_ROWS*UI_ROW_STEP)
+        return -1;
+    int absolute_y=y-UI_ROW_Y+(int)lroundf(content_motion.position);
+    if(absolute_y<0 || absolute_y%UI_ROW_STEP>=UI_ROW_HEIGHT)return -1;
+    return absolute_y/UI_ROW_STEP;
+}
 static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                  Source *sources,int sn,int source,const char *heading,const char *status) {
     glViewport(0,0,1280,720);
@@ -1223,16 +1413,21 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
     ui_gradient_pass=1;
     box_alpha(p,0,0,1280,720,.034f,.042f,.054f,1.f,0);
     ui_gradient_pass=0;
-    static int previous_page=-1,previous_category=-1,previous_home_shelf=-1;
+    static int previous_page=-1,previous_category=-1,previous_expanded=-1;
+    static int previous_sort=-1,painted_shelf=-1,old_shelf_offset=0;
     static Uint32 transition_at=0;
     if(previous_page!=(int)page ||
        (page==CATALOG && (previous_category!=ui_category ||
-        (ui_category==0 && previous_home_shelf!=home_shelf)))){
+        previous_expanded!=expanded_catalog || previous_sort!=catalog_sort_mode))){
         previous_page=(int)page;
         previous_category=ui_category;
-        transition_at=SDL_GetTicks();
+        previous_expanded=expanded_catalog;
+        previous_sort=catalog_sort_mode;
+        content_motion=(ScrollMotion){0};
+        shelf_motion=(ScrollMotion){0};
+        painted_shelf=-1;
+        transition_at=ui_now;
     }
-    previous_home_shelf=home_shelf;
     footer_position=page==CATALOG?(n?chosen+1:0):page==SOURCES?(sn?source+1:0):
                     page==EPISODES?(episode_count?selected_episode+1:0):
                     page==SEASONS?(season_count?selected_season+1:0):0;
@@ -1258,6 +1453,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             if(catalog_hero_focus==i+7)selection_frame(p,x-12,19,tab_w[i],43);
             text_center_button(p,tabs[i],x-12,19,tab_w[i],43,
                                p->font_small,.96f,.97f,.99f);
+            press_preview(p,x-12,19,tab_w[i],43,16);
         }
         /* Search is a real touch target, not a missing Unicode glyph. */
         box_alpha(p,767,17,277,47,.13f,.16f,.19f,1.f,15);
@@ -1265,9 +1461,11 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         search_icon(p,800,38,.13f,.16f,.19f);
         text_font(p,"Пошук",831,17+(47-text_height(p,"Пошук",p->font_small))/2,
                   177,p->font_small,1.f,1.f,1.f);
+        press_preview(p,767,17,277,47,15);
         box_alpha(p,1058,17,53,47,.13f,.16f,.19f,1.f,15);
         if(catalog_hero_focus==6)selection_frame(p,1058,17,53,47);
         gear_icon(p,1085,40,.13f,.16f,.19f);
+        press_preview(p,1058,17,53,47,15);
         time_t now=time(NULL);
         struct tm *local=localtime(&now);
         char clock_label[32]="--:--";
@@ -1288,6 +1486,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                     selection_frame(p,tab_x[i],101,tab_w[i],47);
                 text_center_button(p,names[i],tab_x[i],101,tab_w[i],47,
                                    p->font_small,.96f,.97f,.99f);
+                press_preview(p,tab_x[i],101,tab_w[i],47,13);
             }
             if(ui_category==12){
                 if(catalog_hero_focus==19)
@@ -1299,14 +1498,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                 text_center_button(p,"Тут нічого немає",UI_EDGE,305,1216,110,
                                    p->font_big,.73f,.77f,.82f);
             }
-            const int start=chosen/12*12;
-            for(int i=start;i<n && i<start+12;i++){
-                int k=i-start,x=54+k%6*201,y=LIBRARY_GRID_Y+k/6*245;
-                if(i==chosen && catalog_hero_focus==0)
-                    selection_frame(p,x,y,138,206);
-                poster(p,&movies[i],x,y,138,206,&poster_budget);
-                card_title(p,movies[i].title,x,y+209,166);
-            }
+            draw_poster_grid(p,movies,n,chosen,1,&poster_budget);
         }else if(expanded_catalog){
             headline(p,heading,UI_EDGE,97,960);
             const char *sort_labels[]={"Рейтинг","Популярність"};
@@ -1321,15 +1513,11 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                     selection_frame(p,sort_x[i],98,sort_w[i],44);
                 text_center_button(p,sort_labels[i],sort_x[i],98,sort_w[i],44,
                                    p->font_small,.96f,.97f,.99f);
+                press_preview(p,sort_x[i],98,sort_w[i],44,12);
             }
             if(catalog_hero_focus==14)selection_frame(p,1106,98,142,44);
             button(p,"‹  Назад",1106,98,142,44,0);
-            int start=chosen/12*12;
-            for(int i=start;i<n && i<start+12;i++){
-                int k=i-start,x=54+k%6*201,y=POSTER_GRID_Y+k/6*246;
-                if(i==chosen)selection_frame(p,x,y,138,206);
-                poster(p,&movies[i],x,y,138,206,&poster_budget);
-            }
+            draw_poster_grid(p,movies,n,chosen,0,&poster_budget);
             if(n)text_muted(p,movies[chosen].title,54,635,1150);
         }else{
             int active=chosen>=0 && chosen<n?chosen:0;
@@ -1390,6 +1578,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                     text_center_button(p,films?film_labels[i]:animation_tabs[i],x,328,
                                        w,43,p->font_small,
                                        .96f,.97f,.99f);
+                    press_preview(p,x,328,w,43,13);
                 }
             }else text(p,heading,UI_EDGE,336,930);
             if(status && (!strncmp(status,"Offline catalog",15) ||
@@ -1397,13 +1586,37 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                 text_tiny(p,"Офлайн",1026,340,77);
             if(n && catalog_hero_focus==3)selection_frame(p,1110,329,138,42);
             button(p,ui_category==0?"Більше  ›":"Усі  ›",1110,329,138,42,0);
-            int start=poster_row_start(chosen,ui_category==0);
-            for(int i=start;i<n && i<start+POSTER_COLUMNS;i++){
-                int k=i-start,x=53+k*201,y=POSTER_ROW_Y;
-                if(i==chosen && !catalog_hero_focus)selection_frame(p,x,y,150,221);
-                poster(p,&movies[i],x,y,150,221,&poster_budget);
-                card_title(p,movies[i].title,x,y+224,164);
+            int home=ui_category==0;
+            int target=poster_row_start(chosen,home)*POSTER_STEP;
+            int max_start=home?(n>POSTER_COLUMNS?n-POSTER_COLUMNS:0):
+                          (n?(n-1)/POSTER_COLUMNS*POSTER_COLUMNS:0);
+            if(home && painted_shelf!=home_shelf){
+                old_shelf_offset=painted_shelf>=0?(int)lroundf(content_motion.position):0;
+                painted_shelf=home_shelf;
+                content_motion=(ScrollMotion){0};
             }
+            int shelf_offset=home?scroll_offset(&shelf_motion,home_shelf*SHELF_STEP,
+                touch_drag(CATALOG,2,POSTER_ROW_Y,POSTER_ROW_BOTTOM),
+                (HOME_SHELF_COUNT-1)*SHELF_STEP,SHELF_STEP):0;
+            int offset=scroll_offset(&content_motion,target,
+                                     touch_drag(CATALOG,1,POSTER_ROW_Y,POSTER_ROW_BOTTOM),
+                                     max_start*POSTER_STEP,
+                                     (POSTER_COLUMNS-!home)*POSTER_STEP);
+            paint_clip(p,UI_EDGE,POSTER_ROW_Y-5,1280-2*UI_EDGE,
+                       POSTER_ROW_BOTTOM-POSTER_ROW_Y+5);
+            int y=POSTER_ROW_Y+(home?home_shelf*SHELF_STEP-shelf_offset:0);
+            draw_poster_row(p,movies,n,offset,y,catalog_hero_focus?-1:chosen,&poster_budget);
+            if(home && shelf_offset!=home_shelf*SHELF_STEP){
+                static Movie preview[POSTER_COLUMNS+1];
+                int other=shelf_offset/SHELF_STEP;
+                if(other==home_shelf)other++;
+                int preview_offset=shelf_motion.dragging?0:old_shelf_offset;
+                int start=preview_offset>0?preview_offset/POSTER_STEP:0;
+                int count=catalog_home_copy(other,preview,start,POSTER_COLUMNS+1);
+                draw_poster_row(p,preview,count,preview_offset-start*POSTER_STEP,
+                                POSTER_ROW_Y+other*SHELF_STEP-shelf_offset,-1,&poster_budget);
+            }
+            paint_clip(p,0,0,0,0);
         }
         footer(p,status);
     } else if(page==SETTINGS){
@@ -1422,6 +1635,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                           372,p->font,r,g,b);
                 selection_frame(p,32,y,417,72);
             }else text(p,items[i],55,y+(72-text_height(p,items[i],p->font))/2,372);
+            press_preview(p,32,y,417,72,16);
         }
         box_alpha(p,475,136,773,480,.10f,.12f,.15f,1.f,20);
         headline(p,items[settings_selected],513,174,685);
@@ -1489,10 +1703,11 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         if(!sn)
             text_center_button(p,"Нічого не знайдено",UI_EDGE,305,1216,110,
                                p->font_big,.73f,.77f,.82f);
-        int first=source/UI_ROWS*UI_ROWS;
-        for(int i=first;i<sn && i<first+UI_ROWS;i++){
-            list_row(p,sources[i].title,UI_ROW_Y+(i-first)*UI_ROW_STEP,i==source,NULL);
+        int offset=list_offset(p,page,source,sn),first=first_visible_row(offset);
+        for(int i=first;i<sn && i<first+UI_ROWS+2;i++){
+            list_row(p,sources[i].title,UI_ROW_Y+i*UI_ROW_STEP-offset,i==source,NULL);
         }
+        paint_clip(p,0,0,0,0);
         footer(p,status);
     } else if (page==DOWNLOADS) {
         static DownloadInfo records[DOWNLOADS_MAX];
@@ -1502,8 +1717,8 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         screen_header(p,"Завантажені","Збережені фільми та серії");
         if(!count)text_center_button(p,"Список порожній. Натисніть Y на джерелі або серії",
                                       UI_EDGE,305,1216,110,p->font_small,.73f,.77f,.82f);
-        int first=download_selected/UI_ROWS*UI_ROWS;
-        for(int i=first;i<count && i<first+UI_ROWS;i++){
+        int offset=list_offset(p,page,download_selected,count),first=first_visible_row(offset);
+        for(int i=first;i<count && i<first+UI_ROWS+2;i++){
             const DownloadInfo *d=&records[i];
             char name[300],detail[80];
             if(d->label[0])snprintf(name,sizeof(name),"%.150s · %.95s",d->title,d->label);
@@ -1516,46 +1731,52 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                 snprintf(detail,sizeof(detail),"%d%% · %u МБ",d->permille/10,mb);
             else if(d->state==DOWNLOAD_DONE)snprintf(detail,sizeof(detail),"Готово · %u МБ",mb);
             else snprintf(detail,sizeof(detail),"Помилка");
-            int y=UI_ROW_Y+(i-first)*UI_ROW_STEP;
+            int y=UI_ROW_Y+i*UI_ROW_STEP-offset;
             list_row(p,name,y,i==download_selected,detail);
             if(d->state==DOWNLOAD_ACTIVE && d->permille>=0)
                 box_alpha(p,UI_EDGE+12,y+UI_ROW_HEIGHT-5,1192*d->permille/1000,
                           3,.30f,.71f,.81f,1.f,1);
         }
+        paint_clip(p,0,0,0,0);
         footer(p,status);
     } else if (page==SEASONS) {
         screen_header(p,"Вибір сезону","Оберіть сезон");
-        int first=selected_season/UI_ROWS*UI_ROWS;
-        for(int i=first;i<season_count && i<first+UI_ROWS;i++){
+        int offset=list_offset(p,page,selected_season,season_count),first=first_visible_row(offset);
+        for(int i=first;i<season_count && i<first+UI_ROWS+2;i++){
             char title[96],detail[48];
             snprintf(title,sizeof(title),"Сезон %d",season_ids[i]);
             snprintf(detail,sizeof(detail),"%d серій",episodes_in_season(season_ids[i]));
-            list_row(p,title,UI_ROW_Y+(i-first)*UI_ROW_STEP,i==selected_season,detail);
+            list_row(p,title,UI_ROW_Y+i*UI_ROW_STEP-offset,i==selected_season,detail);
         }
+        paint_clip(p,0,0,0,0);
         footer(p,status);
     } else if (page==EPISODES) {
         char header[96];
         snprintf(header,sizeof(header),"Сезон %d · Серії",season_ids[selected_season]);
         screen_header(p,header,"Оберіть серію");
-        int idx=0,first=selected_episode/UI_ROWS*UI_ROWS;
+        int count=episodes_in_season(season_ids[selected_season]);
+        int offset=list_offset(p,page,selected_episode,count),first=first_visible_row(offset);
+        int idx=0;
         for(int i=0;i<episode_count;i++) {
             if(episodes[i].season!=season_ids[selected_season])continue;
             if(i>0 && episodes[i-1].season==episodes[i].season &&
                episodes[i-1].number==episodes[i].number)continue;
-            if(idx>=first && idx<first+UI_ROWS) {
-                list_row(p,episodes[i].title,UI_ROW_Y+(idx-first)*UI_ROW_STEP,
+            if(idx>=first && idx<first+UI_ROWS+2) {
+                list_row(p,episodes[i].title,UI_ROW_Y+idx*UI_ROW_STEP-offset,
                          idx==selected_episode,NULL);
             }
             idx++;
         }
+        paint_clip(p,0,0,0,0);
         footer(p,status);
     } else if (page==TRACK_PICKER) {
         screen_header(p,subtitle_picker?"Субтитри":"Аудіодоріжки","Оберіть доріжку");
-        int first=selected_track/UI_ROWS*UI_ROWS;
-        for(int i=first;i<track_count && i<first+UI_ROWS;i++) {
-            list_row(p,tracks[i].label,UI_ROW_Y+(i-first)*UI_ROW_STEP,
+        int offset=list_offset(p,page,selected_track,track_count),first=first_visible_row(offset);
+        for(int i=first;i<track_count && i<first+UI_ROWS+2;i++) {
+            list_row(p,tracks[i].label,UI_ROW_Y+i*UI_ROW_STEP-offset,
                      i==selected_track,tracks[i].selected?"Активна":NULL);
         }
+        paint_clip(p,0,0,0,0);
         if (!track_count) text_muted(p,"У цьому відео немає доступних доріжок",60,200,1100);
         footer(p,status);
     } else if (page==VIDEO_SETTINGS) {
@@ -1576,14 +1797,16 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             text_center_button(p,value,963,y,240,60,p->font,.95f,.96f,.98f);
             if(i==selected_video_option){float r,g,b;accent(&r,&g,&b);
                 box_alpha(p,UI_EDGE,y+12,4,36,r,g,b,1.f,2);}
+            press_preview(p,UI_EDGE,y,1216,60,13);
         }
         text_tiny(p,"Якість HLS визначається потоками, які надає джерело.",50,626,1150);
         footer(p,NULL);
     }
     /* Short ease-out fade after a screen/section transition; fully drawn
        frames remain responsive even while this overlay is fading. */
-    Uint32 elapsed=SDL_GetTicks()-transition_at;
+    Uint32 elapsed=ui_now-transition_at;
     if(elapsed<160){
+        ui_animating=1;
         float remain=1.f-(float)elapsed/160.f;
         box_alpha(p,0,80,1280,UI_FOOTER_TOP-80,.034f,.042f,.054f,
                   .13f*remain*remain,0);
@@ -1655,17 +1878,18 @@ static void draw_player_controls(Paint *p,mpv_handle *player) {
     box_alpha(p,70+volume*178/130-7,641,14,20,.96f,.97f,.98f,1.f,7);
     char volume_label[24];snprintf(volume_label,sizeof(volume_label),"%d%%",volume);
     text_tiny(p,volume_label,122,672,100);
-    const int centers[]={354,476,598,832,954,1076};
     const char *icons[]={"−10",paused?"▶":"Ⅱ","+10","","♪","CC"};
     const char *labels[]={"10 с назад","Пауза / пуск","10 с вперед",
                           "Параметри","Аудіо","Субтитри"};
     for(int i=0;i<6;i++){
         const int w=76;
-        box_alpha(p,centers[i]-w/2,610,w,58,.18f,.22f,.26f,.94f,15);
-        text_center(p,icons[i],centers[i]-w/2,624,w,
+        int center=player_button_centers[i];
+        int inset=(int)lroundf(3.f*press_amount(center-w/2,610,w,58));
+        box_alpha(p,center-w/2+inset,610+inset,w-2*inset,58-2*inset,.18f,.22f,.26f,.94f,15);
+        text_center(p,icons[i],center-w/2,624,w,
                     i==0||i==2?p->font_small:p->font,.98f,.98f,.99f);
-        if(i==3)gear_icon(p,centers[i],639,.18f,.22f,.26f);
-        text_center(p,labels[i],centers[i]-72,678,144,p->font_tiny,.78f,.84f,.89f);
+        if(i==3)gear_icon(p,center,639,.18f,.22f,.26f);
+        text_center(p,labels[i],center-72,678,144,p->font_tiny,.78f,.84f,.89f);
     }
 }
 static void draw_next_episode_prompt(Paint *p,const Episode *next,int seconds){
@@ -1805,14 +2029,23 @@ int main(void) {
     int stick_last_key=0;
     int media_playback_mode=0;
     TouchGesture touch={0};
+    ui_touch=&touch;
+    int pending_key=-1;
+    Page pending_key_page=CATALOG;
     static DownloadInfo download_rows[DOWNLOADS_MAX];
     while(running){
         Uint32 frame_started_at=SDL_GetTicks();
         stick_arrow(pad,&stick_last_time,&stick_last_key);
         SDL_Event e;
-        while(SDL_PollEvent(&e)){
+        for(;;){
+            int replay=pending_key>=0;
+            if(replay){
+                if(ui_press_page==page && SDL_GetTicks()-ui_press_at<PRESS_PREVIEW_MS)break;
+                e=(SDL_Event){0};
+            }else if(!SDL_PollEvent(&e))break;
             if(e.type==SDL_QUIT)running=0;
-            int key=-1;
+            int key=replay && pending_key_page==page?pending_key:-1;
+            pending_key=-1;
             if(e.type==SDL_CONTROLLERBUTTONDOWN)key=native_button(e.cbutton.button);
             if(e.type==SDL_KEYDOWN){
                 switch(e.key.keysym.sym){
@@ -1853,7 +2086,8 @@ int main(void) {
                             int home=category==0 && !expanded_catalog && !query[0];
                             if(library || expanded_catalog){
                                 int top=library?LIBRARY_GRID_Y:POSTER_GRID_Y;
-                                if(vertical && touch.y>=top && touch.y<POSTER_GRID_BOTTOM){
+                                int bottom=library?POSTER_ROW_BOTTOM:POSTER_GRID_BOTTOM;
+                                if(vertical && touch.y>=top && touch.y<bottom){
                                     chosen=swipe_page_selection(chosen,n,2*POSTER_COLUMNS,direction);
                                     catalog_hero_focus=0;
                                     if(clear_history_confirm)message[0]=0;
@@ -1918,6 +2152,13 @@ int main(void) {
                 ty=e.motion.y*720/(hh?hh:720);
             }
             if(tx>=0 && ty>=0){
+                if(page!=PLAYER){
+                    ui_press_at=SDL_GetTicks();
+                    ui_press_active=1;
+                    ui_press_page=page;
+                    ui_press_is_touch=1;
+                    ui_press_point=(SDL_Point){tx,ty};
+                }
                 if(page==PLAYER){
                     int was_visible=SDL_GetTicks()<controls_until;
                     controls_until=SDL_GetTicks()+3000;
@@ -1964,17 +2205,13 @@ int main(void) {
                             if(tx>=tab_x[i] && tx<tab_x[i]+tab_w[i])
                                 {next=category_for_tab(i);focused=i;break;}
                         int reset_home=focused==0 && home_shelf!=0;
-                        if(focused==0)home_shelf=0;
-                        if(next!=category || reset_home){
-                            category=next;query[0]=message[0]=0;
-                            n=load_category(category,query,movies,message,sizeof(message));
-                            chosen=0;expanded_catalog=0;catalog_hero_focus=0;
-                            clear_history_confirm=0;
-                        }
-                        if(focused>=0)catalog_hero_focus=7+focused;
-                        continue;
+                        if(focused>=0){
+                            catalog_hero_focus=7+focused;
+                            if(next!=category || reset_home)key=SDL_CONTROLLER_BUTTON_A;
+                            else continue;
+                        }else continue;
                     }
-                    if(ty<78 && tx>=767 && tx<1044)key=SDL_CONTROLLER_BUTTON_X;
+                    else if(ty<78 && tx>=767 && tx<1044)key=SDL_CONTROLLER_BUTTON_X;
                     else if(ty<78 && tx>=1058 && tx<1111)key=SDL_CONTROLLER_BUTTON_BACK;
                     else if((category==11 || category==12) && !expanded_catalog){
                         if(ty>=101 && ty<148){
@@ -1982,33 +2219,23 @@ int main(void) {
                             if(tx>=32 && tx<228)tab=0;
                             else if(tx>=244 && tx<402)tab=1;
                             else if(tx>=417 && tx<625)tab=2;
-                            if(tab==2){page=DOWNLOADS;download_selected=0;download_confirm=0;continue;}
                             if(tab>=0){
-                                if(category!=11+tab){
-                                    category=11+tab;
-                                    query[0]=message[0]=0;
-                                    n=load_category(category,query,movies,message,sizeof(message));
-                                    chosen=0;
-                                }
                                 clear_history_confirm=0;
                                 catalog_hero_focus=16+tab;
-                                continue;
+                                if(tab==2 || category!=11+tab)key=SDL_CONTROLLER_BUTTON_A;
+                                else continue;
                             }
                             if(category==12 && tx>=982 && tx<1248){
                                 catalog_hero_focus=19;
                                 key=SDL_CONTROLLER_BUTTON_A;
                             }
                         }
-                        if(ty>=LIBRARY_GRID_Y && ty<POSTER_GRID_BOTTOM && tx>=54){
-                            int col=(tx-54)/201,row=(ty-LIBRARY_GRID_Y)/245;
-                            int index=chosen/12*12+row*6+col;
-                            if(col<6 && row<2 && index<n && (tx-54)%201<138 &&
-                               (ty-LIBRARY_GRID_Y)%245<206){
-                                chosen=index;
-                                catalog_hero_focus=0;
-                                clear_history_confirm=0;
-                                key=SDL_CONTROLLER_BUTTON_A;
-                            }
+                        int index=touched_grid_poster(tx,ty,LIBRARY_GRID_Y,245,POSTER_ROW_BOTTOM);
+                        if(index>=0 && index<n){
+                            chosen=index;
+                            catalog_hero_focus=0;
+                            clear_history_confirm=0;
+                            key=SDL_CONTROLLER_BUTTON_A;
                         }
                     }
                     else if(expanded_catalog){
@@ -2019,14 +2246,12 @@ int main(void) {
                                     catalog_hero_focus=12+i;key=SDL_CONTROLLER_BUTTON_A;break;
                                 }
                         }
-                        if(ty>=95 && ty<145 && tx>=1106){expanded_catalog=0;chosen=0;catalog_hero_focus=0;continue;}
-                        if(ty>=POSTER_GRID_Y && ty<POSTER_GRID_BOTTOM && tx>=54){
-                            int col=(tx-54)/201,row=(ty-POSTER_GRID_Y)/246;
-                            int index=chosen/12*12+row*6+col;
-                            if(col<6 && row<2 && index<n && (tx-54)%201<138 &&
-                               (ty-POSTER_GRID_Y)%246<206){
-                                chosen=index;catalog_hero_focus=0;key=SDL_CONTROLLER_BUTTON_A;
-                            }
+                        if(ty>=95 && ty<145 && tx>=1106){
+                            catalog_hero_focus=14;key=SDL_CONTROLLER_BUTTON_A;
+                        }
+                        int index=touched_grid_poster(tx,ty,POSTER_GRID_Y,246,POSTER_GRID_BOTTOM);
+                        if(index>=0 && index<n){
+                            chosen=index;catalog_hero_focus=0;key=SDL_CONTROLLER_BUTTON_A;
                         }
                     }else{
                         if(ty>=326 && ty<375 && tx>=1095){
@@ -2039,33 +2264,28 @@ int main(void) {
                             for(int i=0;i<subsection_count(category);i++){
                                 int x=film?film_x[i]:anim_x[i],w=film?film_w[i]:anim_w[i];
                                 if(tx<x || tx>=x+w)continue;
-                                category=category_for_subsection(category,i);
-                                query[0]=message[0]=0;
-                                n=load_category(category,query,movies,message,sizeof(message));
-                                chosen=0;catalog_hero_focus=16+i;
+                                catalog_hero_focus=16+i;
+                                key=SDL_CONTROLLER_BUTTON_A;
                                 break;
                             }
-                            continue;
                         }
                         if(ty>=252 && ty<303 && tx>=261 &&
                            tx<(category==11?323:479) && n){
                             catalog_hero_focus=2;
-                            library_toggle_favorite(&movies[chosen]);
-                            if(category==11){
-                                n=load_category(category,query,movies,message,sizeof(message));
-                                if(chosen>=n)chosen=n?n-1:0;
-                                if(!n)catalog_hero_focus=7+tab_for_category(category);
-                            }
-                            continue;
+                            key=SDL_CONTROLLER_BUTTON_A;
                         }
                         if(ty>=252 && ty<303 && tx>=44 && tx<249 && n){
                             catalog_hero_focus=1;
                             key=SDL_CONTROLLER_BUTTON_A;
                         }
-                        else if(ty>=POSTER_ROW_Y && ty<POSTER_ROW_BOTTOM && tx>=53){
-                            int start=poster_row_start(chosen,category==0);
-                            int col=(tx-53)/201,index=start+col;
-                            if(col<6 && index<n && (tx-53)%201<164){
+                        else if(ty>=POSTER_ROW_Y && ty<POSTER_ROW_BOTTOM &&
+                                tx>=UI_EDGE && tx<1280-UI_EDGE){
+                            int y=category==0?
+                                ty-home_shelf*SHELF_STEP+(int)lroundf(shelf_motion.position):ty;
+                            int x=tx-53+(int)lroundf(content_motion.position);
+                            int index=x/POSTER_STEP;
+                            if(y>=POSTER_ROW_Y && y<POSTER_ROW_BOTTOM && x>=0 &&
+                               index<n && x%POSTER_STEP<164){
                                 chosen=index;catalog_hero_focus=0;key=SDL_CONTROLLER_BUTTON_A;
                             }
                         }
@@ -2079,32 +2299,24 @@ int main(void) {
                         key=SDL_CONTROLLER_BUTTON_A;
                     }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==DOWNLOADS){
-                    int slot=(ty-UI_ROW_Y)/UI_ROW_STEP;
-                    int index=download_selected/UI_ROWS*UI_ROWS+slot;
-                    if(tx>=UI_EDGE && tx<1280-UI_EDGE && ty>=UI_ROW_Y &&
-                       (ty-UI_ROW_Y)%UI_ROW_STEP<UI_ROW_HEIGHT &&
-                       slot>=0 && slot<UI_ROWS){
+                    int index=touched_list_row(tx,ty);
+                    if(index>=0){
                         int count=downloads_list(download_rows,DOWNLOADS_MAX);
                         if(index<count){download_selected=index;key=SDL_CONTROLLER_BUTTON_A;}
                     }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==SOURCES){
-                    int slot=(ty-UI_ROW_Y)/UI_ROW_STEP,new_source=source/UI_ROWS*UI_ROWS+slot;
-                    if(ty>=UI_ROW_Y && (ty-UI_ROW_Y)%UI_ROW_STEP<UI_ROW_HEIGHT &&
-                       slot>=0 && slot<UI_ROWS && new_source<sn){
+                    int new_source=touched_list_row(tx,ty);
+                    if(new_source>=0 && new_source<sn){
                         source=new_source;key=SDL_CONTROLLER_BUTTON_A;
                     }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==SEASONS){
-                    int slot=(ty-UI_ROW_Y)/UI_ROW_STEP;
-                    int next=selected_season/UI_ROWS*UI_ROWS+slot;
-                    if(ty>=UI_ROW_Y && (ty-UI_ROW_Y)%UI_ROW_STEP<UI_ROW_HEIGHT &&
-                       slot>=0 && slot<UI_ROWS && next<season_count){
+                    int next=touched_list_row(tx,ty);
+                    if(next>=0 && next<season_count){
                         selected_season=next;key=SDL_CONTROLLER_BUTTON_A;
                     }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==EPISODES){
-                    int slot=(ty-UI_ROW_Y)/UI_ROW_STEP;
-                    int episode=selected_episode/UI_ROWS*UI_ROWS+slot;
-                    if(ty>=UI_ROW_Y && (ty-UI_ROW_Y)%UI_ROW_STEP<UI_ROW_HEIGHT &&
-                       slot>=0 && slot<UI_ROWS && selected_season<season_count &&
+                    int episode=touched_list_row(tx,ty);
+                    if(episode>=0 && selected_season<season_count &&
                        episode<episodes_in_season(season_ids[selected_season])){
                         selected_episode=episode;key=SDL_CONTROLLER_BUTTON_A;
                     }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
@@ -2119,10 +2331,8 @@ int main(void) {
                     }
                     else if(ty>=UI_FOOTER_TOP)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==TRACK_PICKER){
-                    int slot=(ty-UI_ROW_Y)/UI_ROW_STEP;
-                    int new_track=selected_track/UI_ROWS*UI_ROWS+slot;
-                    if(ty>=UI_ROW_Y && (ty-UI_ROW_Y)%UI_ROW_STEP<UI_ROW_HEIGHT &&
-                       slot>=0 && slot<UI_ROWS && new_track<track_count){
+                    int new_track=touched_list_row(tx,ty);
+                    if(new_track>=0 && new_track<track_count){
                         selected_track=new_track;key=SDL_CONTROLLER_BUTTON_A;
                     }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                 }else if(page==VIDEO_SETTINGS){
@@ -2142,13 +2352,40 @@ int main(void) {
             }
             if(page==PLAYER && key>=0)controls_until=SDL_GetTicks()+3000;
             if(key<0)continue;
+            if(!replay){
+                int tapped=tx>=0 && ty>=0;
+                SDL_Rect rect=ui_focus_rect;
+                int focused=key==SDL_CONTROLLER_BUTTON_A && rect.w>0;
+                int player_button=page==PLAYER && video_loaded && pending_next_episode<0 &&
+                                  pressed_player_button(key,&rect);
+                if(tapped || focused || player_button){
+                    ui_press_at=SDL_GetTicks();
+                    ui_press_active=1;
+                    ui_press_page=page;
+                    ui_press_is_touch=tapped && page!=PLAYER;
+                    ui_press_point=(SDL_Point){tx,ty};
+                    ui_press_rect=rect;
+                    /* Let a control paint before actions that open another screen
+                       or start synchronous provider work. */
+                    if((page!=PLAYER && ((key==SDL_CONTROLLER_BUTTON_A && (tapped || focused)) ||
+                       (tapped && (key==SDL_CONTROLLER_BUTTON_B ||
+                                   key==SDL_CONTROLLER_BUTTON_X ||
+                                   key==SDL_CONTROLLER_BUTTON_BACK)))) ||
+                       (player_button && (key==SDL_CONTROLLER_BUTTON_Y ||
+                                          key==SDL_CONTROLLER_BUTTON_X ||
+                                          key==SDL_CONTROLLER_BUTTON_BACK))){
+                        pending_key=key;
+                        pending_key_page=page;
+                        break;
+                    }
+                }
+            }
             if(clear_history_confirm && !(page==CATALOG && category==12 &&
                catalog_hero_focus==19 && key==SDL_CONTROLLER_BUTTON_A)){
                 clear_history_confirm=0;
                 if(!strncmp(message,"Натисніть A ще раз",strlen("Натисніть A ще раз")))
                     message[0]=0;
             }
-            if(key==SDL_CONTROLLER_BUTTON_A && page!=PLAYER)ui_press_at=SDL_GetTicks();
             if(page==PLAYER && pending_next_episode>=0){
                 if(key==SDL_CONTROLLER_BUTTON_A){
                     next_episode_request=pending_next_episode;
@@ -2919,7 +3156,7 @@ int main(void) {
         catalog_details_poll(movies,n);
         if(page==CATALOG && category==0 && !expanded_catalog && !query[0] &&
            !home_current_loaded){
-            int count=catalog_home_copy(home_shelf,movies);
+            int count=catalog_home_copy(home_shelf,movies,0,CATALOG_PAGE_SIZE);
             if(count>=0){
                 n=count;chosen=0;home_current_loaded=1;message[0]=0;
             }
@@ -2936,6 +3173,12 @@ int main(void) {
             media_playback_mode=watching_video;
         }
         battery_status_poll();
+        ui_now=SDL_GetTicks();
+        ui_draw_page=page;
+        ui_focus_rect=(SDL_Rect){0};
+        ui_animating=0;
+        ui_hold_scroll=pending_key>=0 ||
+                       (touch.active && touch.page==page && !touch.moved);
         if(page==PLAYER && render){
             ui_theme_enabled=0;
             mpv_opengl_fbo fbo={.fbo=0,.w=1280,.h=720};int flip=1;
@@ -3016,7 +3259,7 @@ int main(void) {
         /* Do not stack a fixed sleep on top of the time that Eden/Switch
            already spent drawing or waiting for VSync. */
         Uint32 frame_elapsed=SDL_GetTicks()-frame_started_at;
-        Uint32 frame_budget=page==PLAYER?16u:33u;
+        Uint32 frame_budget=page==PLAYER || ui_animating || pending_key>=0?16u:33u;
         if(frame_elapsed<frame_budget)SDL_Delay(frame_budget-frame_elapsed);
     }
     if(media_playback_mode)appletSetMediaPlaybackState(false);

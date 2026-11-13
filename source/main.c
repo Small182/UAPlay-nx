@@ -2859,7 +2859,9 @@ int main(void) {
                         else catalog_hero_focus=subsection_count(category)?
                             focused_subsection(category):(chosen%6>=4?3:1);
                     }
-                    if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && chosen+6<n)chosen+=6;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN &&
+                       (expanded_catalog || category==0) && chosen+POSTER_COLUMNS<n)
+                        chosen+=POSTER_COLUMNS;
                     else if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && !n)
                         catalog_hero_focus=7+tab_for_category(category);
                 }

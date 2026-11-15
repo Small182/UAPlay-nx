@@ -6,11 +6,11 @@ The application is written in C using **libnx, SDL2, and libmpv**. It is not a w
 
 [Українська](README.md) | **English**
 
-> **Current release: [UAPlay 0.5.3](https://github.com/Small182/UAPlay-nx/releases/tag/UAPlay_0.5.3).** This project is under active development, and video availability depends on third-party services. A successful build does not guarantee that every video will play on a Switch.
+> **Current release: [UAPlay 0.5.4](https://github.com/Small182/UAPlay-nx/releases/tag/UAPlay_0.5.4).** This project is under active development, and video availability depends on third-party services. A successful build does not guarantee that every video will play on a Switch.
 
 ## Download and installation
 
-Download both files from the [0.5.3 release](https://github.com/Small182/UAPlay-nx/releases/tag/UAPlay_0.5.3). Older versions are available on the [Releases page](https://github.com/Small182/UAPlay-nx/releases).
+Download both files from the [0.5.4 release](https://github.com/Small182/UAPlay-nx/releases/tag/UAPlay_0.5.4). Older versions are available on the [Releases page](https://github.com/Small182/UAPlay-nx/releases).
 
 | File | Purpose |
 |---|---|
@@ -30,6 +30,7 @@ When updating, **replace only `UAPlay.nro`**. Do not delete user-data folders. T
 
 - **Ukrainian-language catalog:** Movies, TV series, cartoons, animated series, anime, and genre collections.
 - **Home screen:** Horizontal poster collections with ratings and a “Усі” (*All*) button that opens the full list.
+- **IPTV:** live channels from iptv-org playlists, country and genre filters, channel logos, and a separate favorites list.
 - **Search:** TMDB titles, the Switch on-screen keyboard, and filtering of irrelevant results.
 - **Title details:** Synopsis, year, genres, and available metadata; choose a video provider before searching for streams.
 - **Favorites and watch history:** Separate “На майбутнє” (*Watch Later*) and “Історія” (*History*) lists, playback-position saving, and the ability to clear watch history without deleting favorites.
@@ -114,6 +115,8 @@ Official release builds receive the TMDB key from the `TMDB_API_KEY` GitHub Acti
 Some catalog and parser tests are located in [`tests/`](tests/). They do not replace testing on a real console.
 
 ## Acknowledgments
+
+Thanks to the [iptv-org](https://github.com/iptv-org/) community for maintaining the playlists UAPlay uses in its IPTV section.
 
 Video downloads and some performance improvements were adapted from [UAPlay Vita](https://github.com/antoxa2584x/UAPlay-vita) by [antoxa2584x](https://github.com/antoxa2584x).
 

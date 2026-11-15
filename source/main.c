@@ -2414,6 +2414,11 @@ int main(int argc,char **argv) {
         mpv_set_option_string(player,"hwdec","auto-safe");
         mpv_set_option_string(player,"terminal","no");
         mpv_set_option_string(player,"network-timeout","20");
+        /* The Switch's libass build has no system font provider. mpv reads
+           subfont.ttf from this read-only configuration directory. */
+        mpv_set_option_string(player,"config","yes");
+        mpv_set_option_string(player,"config-dir","romfs:/");
+        mpv_set_option_string(player,"sub-font","DejaVu Sans");
         mpv_set_option_string(player,"sub-visibility","yes");
         mpv_set_option_string(player,"sub-auto","fuzzy");
         mpv_set_option_string(player,"cache","yes");
@@ -3719,12 +3724,9 @@ int main(int argc,char **argv) {
                 if(file_ready)video_loaded=1;
                 if(event->event_id==MPV_EVENT_FILE_LOADED && movy.seek_started && movy.sliced){
                     double delay=video_options[5];
-                    if(movy.external_subtitle[0]){
-                        const char *args[]={"sub-add",movy.external_subtitle,"select",NULL};
-                        mpv_command_async(player,0,args);
-                        delay-=movy.offset;
-                    }
-                    playback_set_value(player,"sub-delay",delay);
+                    if(movy.external_subtitle[0])
+                        playback_add_subtitle(player,movy.external_subtitle,"","",delay-movy.offset);
+                    else playback_set_value(player,"sub-delay",delay);
                 }
                 if(file_ready && page==PLAYER && resume_at>1 && !movy.seek_started){
                     if(movy_source){
@@ -3791,14 +3793,10 @@ int main(int argc,char **argv) {
             subdl_job.thread=NULL;
             if(page==SUBDL_PICKER && subdl_job.downloading && subdl_job.success){
                 const SubdlSubtitle *subtitle=&subdl_job.results[subdl_job.selected];
-                const char *args[]={"sub-add",subdl_job.file,"cached",subtitle->release,
-                                    subtitle->language,NULL};
-                if(mpv_command(player,args)>=0){
-                    if(movy_stream_url(playing_url)){
+                if(playback_add_subtitle(player,subdl_job.file,subtitle->release,
+                                         subtitle->language,video_options[5]-movy.offset)){
+                    if(movy_stream_url(playing_url))
                         snprintf(movy.external_subtitle,sizeof(movy.external_subtitle),"%s",subdl_job.file);
-                        playback_set_value(player,"sub-delay",video_options[5]-movy.offset);
-                    }
-                    mpv_set_property_string(player,"sub-visibility","yes");
                     controls_until=SDL_GetTicks()+3000;
                     page=PLAYER;
                 }else snprintf(subdl_job.error,sizeof(subdl_job.error),"%s",

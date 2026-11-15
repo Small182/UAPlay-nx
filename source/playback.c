@@ -65,7 +65,7 @@ int playback_tracks(mpv_handle *player, int subtitles, MediaTrack *out, int maxi
     mpv_free_node_contents(&node);
     return count;
 }
-int playback_has_external_subtitle(mpv_handle *player,const char *url) {
+static int external_subtitle_id(mpv_handle *player,const char *url) {
     if(!player || !url || !*url)return 0;
     mpv_node node={0};
     if(mpv_get_property(player,"track-list",MPV_FORMAT_NODE,&node)<0)return 0;
@@ -76,12 +76,25 @@ int playback_has_external_subtitle(mpv_handle *player,const char *url) {
             const mpv_node *track=&list->values[i];
             if(!strcmp(string_field(track,"type"),"sub") &&
                !strcmp(string_field(track,"external-filename"),url)){
-                found=1;break;
+                found=int_field(track,"id");break;
             }
         }
     }
     mpv_free_node_contents(&node);
     return found;
+}
+int playback_has_external_subtitle(mpv_handle *player,const char *url) {
+    return external_subtitle_id(player,url)>0;
+}
+int playback_add_subtitle(mpv_handle *player,const char *path,const char *title,
+                          const char *language,double delay) {
+    if(!player)return 0;
+    /* cached selects an existing entry when the same subtitle is picked again. */
+    const char *args[]={"sub-add",path,"cached",title,language,NULL};
+    if(mpv_command(player,args)<0)return 0;
+    int id=external_subtitle_id(player,path);
+    if(id<=0 || !playback_select_track(player,1,id))return 0;
+    return mpv_set_property(player,"sub-delay",MPV_FORMAT_DOUBLE,&delay)>=0;
 }
 int playback_select_track(mpv_handle *player, int subtitles, int id) {
     if (!player) return 0;

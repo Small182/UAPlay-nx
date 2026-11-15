@@ -2186,11 +2186,13 @@ static void draw_player_controls(Paint *p,mpv_handle *player,double offset,const
     double pos=0,duration=0;
     int paused=0;
     if(player){
-        mpv_get_property(player,"time-pos",MPV_FORMAT_DOUBLE,&pos);
-        mpv_get_property(player,"duration",MPV_FORMAT_DOUBLE,&duration);
+        if(!live_title){
+            mpv_get_property(player,"time-pos",MPV_FORMAT_DOUBLE,&pos);
+            mpv_get_property(player,"duration",MPV_FORMAT_DOUBLE,&duration);
+            pos+=offset;
+            duration+=offset;
+        }
         mpv_get_property(player,"pause",MPV_FORMAT_FLAG,&paused);
-        pos+=offset;
-        duration+=offset;
     }
     glViewport(0,0,1280,720);
     glEnable(GL_BLEND);
@@ -3534,7 +3536,9 @@ int main(int argc,char **argv) {
                     snprintf(message,sizeof(message),"%s",iptv_refresh()?
                         TR("Оновлення списку IPTV…","Refreshing IPTV list…"):
                         TR("Не вдалося запустити оновлення IPTV","Could not start IPTV refresh"));
-                }else if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && tv.selected>0)tv.selected--;
+                }else if(key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER && tv.count)
+                    tv.selected=swipe_page_selection(tv.selected,tv.count,UI_ROWS,1);
+                else if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && tv.selected>0)tv.selected--;
                 else if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && tv.selected+1<tv.count)tv.selected++;
                 else if(key==SDL_CONTROLLER_BUTTON_A && tv.count){
                     if(!render){
@@ -3574,7 +3578,7 @@ int main(int argc,char **argv) {
             if(page==CATALOG){
                 if(key==SDL_CONTROLLER_BUTTON_A && catalog_hero_focus==15){
                     iptv_open();
-                            message[0]=0;page=IPTV_CHANNELS;continue;
+                    message[0]=0;page=IPTV_CHANNELS;continue;
                 }
                 if(key==SDL_CONTROLLER_BUTTON_BACK){page=SETTINGS;continue;}
                 if(key==SDL_CONTROLLER_BUTTON_B && query[0]){
@@ -3652,7 +3656,7 @@ int main(int argc,char **argv) {
                         if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)catalog_hero_focus=11;
                         if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && n)
                             catalog_hero_focus=0;
-                    }else if(((catalog_hero_focus>=5 && catalog_hero_focus<=11) || catalog_hero_focus==15)){
+                    }else if((catalog_hero_focus>=5 && catalog_hero_focus<=11) || catalog_hero_focus==15){
                         catalog_hero_focus=header_focus_step(catalog_hero_focus,key);
                         if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)
                             catalog_hero_focus=focused_subsection(category);
@@ -3688,7 +3692,7 @@ int main(int argc,char **argv) {
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)
                         catalog_hero_focus=n?1:7+tab_for_category(category);
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)catalog_hero_focus=0;
-                }else if(((catalog_hero_focus>=5 && catalog_hero_focus<=11) || catalog_hero_focus==15)){
+                }else if((catalog_hero_focus>=5 && catalog_hero_focus<=11) || catalog_hero_focus==15){
                     catalog_hero_focus=header_focus_step(catalog_hero_focus,key);
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)
                         catalog_hero_focus=expanded_catalog?12+sort_button_for_mode(catalog_sort_mode):
@@ -3994,7 +3998,8 @@ int main(int argc,char **argv) {
                 }
                 if(event->event_id==MPV_EVENT_END_FILE &&
                    (page==PLAYER || page==SUBDL_PICKER || page==TRACK_PICKER ||
-                    (page==VIDEO_SETTINGS && !video_settings_from_menu))){
+                    (page==VIDEO_SETTINGS && !video_settings_from_menu &&
+                     player_return_page==IPTV_CHANNELS))){
                     mpv_event_end_file *end=(mpv_event_end_file*)event->data;
                     int interrupted_seek=end && end->reason==MPV_END_FILE_REASON_EOF && movy.seek_started;
                     if(end && (end->reason==MPV_END_FILE_REASON_ERROR || interrupted_seek)){

@@ -229,8 +229,8 @@ int iptv_load(IptvCatalog *catalog,int *from_cache) {
         curl_easy_setopt(curl,CURLOPT_USERAGENT,"UAPlay (Nintendo Switch)");
         curl_easy_setopt(curl,CURLOPT_FAILONERROR,1L);
         curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);
-        curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT,5L);
-        curl_easy_setopt(curl,CURLOPT_TIMEOUT,17L);
+        curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT,12L);
+        curl_easy_setopt(curl,CURLOPT_TIMEOUT,25L);
 #ifdef __SWITCH__
         curl_easy_setopt(curl,CURLOPT_IPRESOLVE,(long)CURL_IPRESOLVE_V4);
 #endif

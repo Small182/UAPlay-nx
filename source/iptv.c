@@ -116,6 +116,42 @@ static bool http_url(const char *url) {
            strcspn(url," \t\r\n")==strlen(url);
 }
 
+static bool quality_label(const char *label,size_t length) {
+    if(length==2 && (label[0]=='4' || label[0]=='8') &&
+       (label[1]=='K' || label[1]=='k'))return true;
+    size_t digits=0;
+    while(digits<length && isdigit((unsigned char)label[digits]))digits++;
+    if(digits<3 || digits>4)return false;
+    if(length==digits+1)
+        return label[digits]=='p' || label[digits]=='P' ||
+               label[digits]=='i' || label[digits]=='I';
+    return length==digits+2 &&
+           (!memcmp(label+digits,"р",2) || !memcmp(label+digits,"Р",2));
+}
+
+static void clean_channel_title(char *title) {
+    char *out=title;
+    for(const char *in=title;*in;){
+        if(*in=='(' || *in=='['){
+            const char *end=strchr(in+1,*in=='('?')':']');
+            if(end && quality_label(in+1,(size_t)(end-in-1))){
+                while(out>title && isspace((unsigned char)out[-1]))out--;
+                in=end+1;
+                continue;
+            }
+        }
+        *out++=*in++;
+    }
+    while(out>title && isspace((unsigned char)out[-1]))out--;
+    char *suffix=out;
+    while(suffix>title && !isspace((unsigned char)suffix[-1]))suffix--;
+    if(suffix>title && quality_label(suffix,(size_t)(out-suffix))){
+        out=suffix;
+        while(out>title && isspace((unsigned char)out[-1]))out--;
+    }
+    *out=0;
+}
+
 static void read_metadata(char *line,IptvChannel *channel) {
     *channel=(IptvChannel){.country=-1};
     /* Walk quoted attributes before the first unquoted comma. */
@@ -142,7 +178,11 @@ static void read_metadata(char *line,IptvChannel *channel) {
         else if(length==13 && !memcmp(name,"http-referrer",13))channel->referrer=value;
         p=end+1;
     }
-    if(*p==',' && p[1])channel->title=p+1;
+    if(*p==','){
+        char *title=p+1;
+        clean_channel_title(title);
+        if(*title)channel->title=title;
+    }
     channel->genres=channel_genres(channel->groups);
 }
 

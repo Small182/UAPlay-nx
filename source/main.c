@@ -1382,7 +1382,8 @@ static void list_row(Paint *p,const char *title,int y,int selected,
 static const char *const iptv_quick_countries[]={"UA","US","DE","UK","PL","IT"};
 enum { IPTV_QUICK_COUNT=sizeof(iptv_quick_countries)/sizeof(iptv_quick_countries[0]),
        IPTV_COLUMNS=6, IPTV_PAGE_SIZE=12, IPTV_GRID_X=38, IPTV_GRID_Y=177,
-       IPTV_STEP_X=202, IPTV_STEP_Y=211, IPTV_CARD_W=184, IPTV_CARD_H=160 };
+       IPTV_STEP_X=202, IPTV_STEP_Y=211, IPTV_CARD_W=184, IPTV_CARD_H=160,
+       IPTV_START_TIMEOUT_MS=12000, IPTV_STABLE_MS=3000 };
 static struct {
     SDL_Thread *thread;
     SDL_atomic_t done;
@@ -1391,6 +1392,9 @@ static struct {
     int country,genre,selected,filter_row,initialized,show_favorites,header_focus;
     int more_countries[IPTV_MAX_COUNTRIES],more_count;
     int *visible,count;
+    int failures;
+    int64_t entry;
+    Uint32 playing_since;
 } tv;
 
 static const IptvChannel *iptv_channel(int row){
@@ -2555,9 +2559,19 @@ static void play_iptv_channel(mpv_handle *player,char *url,size_t size,
     mpv_set_property_string(player,"referrer",channel->referrer?channel->referrer:"");
     mpv_set_property_string(player,"pause","no");
     apply_hls_quality(player);
+    tv.entry=0;
+    tv.playing_since=0;
     command(player,"loadfile",url);
     *started=SDL_GetTicks();
     *loaded=0;
+}
+
+static bool iptv_skip_failed(mpv_handle *player,char *url,size_t size,
+                             MovyPlayback *movy,Uint32 *started,int *loaded){
+    if(++tv.failures>=tv.count)return false;
+    tv.selected=(tv.selected+1)%tv.count;
+    play_iptv_channel(player,url,size,movy,started,loaded);
+    return true;
 }
 
 static int movy_open_at(mpv_handle *player,MovyPlayback *state,double target){
@@ -3250,6 +3264,7 @@ int main(int argc,char **argv) {
                     if(player_return_page==IPTV_CHANNELS){
                         if(video_loaded && tv.count>1){
                             tv.selected=(tv.selected+tv.count+direction)%tv.count;
+                            tv.failures=0;
                             play_iptv_channel(player,playing_url,sizeof(playing_url),&movy,
                                               &video_started_at,&video_loaded);
                         }
@@ -3446,6 +3461,7 @@ int main(int argc,char **argv) {
                     if(i==6){
                         apply_hls_quality(player);
                         if(playing_url[0] && !video_settings_from_menu && player_return_page==IPTV_CHANNELS){
+                            tv.failures=0;
                             play_iptv_channel(player,playing_url,sizeof(playing_url),&movy,
                                               &video_started_at,&video_loaded);
                         }else if(playing_url[0] && !video_settings_from_menu){
@@ -3690,6 +3706,7 @@ int main(int argc,char **argv) {
                     resume_at=0;
                     pending_next_episode=next_episode_request=-1;
                     player_return_page=IPTV_CHANNELS;
+                    tv.failures=0;
                     play_iptv_channel(player,playing_url,sizeof(playing_url),&movy,
                                       &video_started_at,&video_loaded);
                     controls_until=SDL_GetTicks()+3000;
@@ -4099,6 +4116,8 @@ int main(int argc,char **argv) {
                 mpv_event *event=mpv_wait_event(player,0);
                 if(event->event_id==MPV_EVENT_NONE)break;
                 if(event->event_id==MPV_EVENT_START_FILE){
+                    if(player_return_page==IPTV_CHANNELS && event->data)
+                        tv.entry=((mpv_event_start_file *)event->data)->playlist_entry_id;
                     if(!movy.seek_started)movy_frame_valid=0;
                     history_playback_committed=0;
                     /* Eden and some GLES drivers may recycle renderer-side
@@ -4122,7 +4141,13 @@ int main(int argc,char **argv) {
                     pending_subtitle[0]=0;
                 }
                 int movy_source=movy_stream_url(playing_url);
-                int file_ready=event->event_id==(movy_source?MPV_EVENT_PLAYBACK_RESTART:MPV_EVENT_FILE_LOADED);
+                bool live=player_return_page==IPTV_CHANNELS;
+                int file_ready=event->event_id==((movy_source || live)?
+                              MPV_EVENT_PLAYBACK_RESTART:MPV_EVENT_FILE_LOADED);
+                if(live && file_ready && !video_loaded){
+                    tv.playing_since=SDL_GetTicks();
+                    controls_until=tv.playing_since+3000;
+                }
                 if(file_ready)video_loaded=1;
                 if(event->event_id==MPV_EVENT_FILE_LOADED && movy.seek_started && movy.sliced){
                     double delay=video_options[5];
@@ -4156,6 +4181,19 @@ int main(int argc,char **argv) {
                     (page==VIDEO_SETTINGS && !video_settings_from_menu &&
                      player_return_page==IPTV_CHANNELS))){
                     mpv_event_end_file *end=(mpv_event_end_file*)event->data;
+                    if(end && live){
+                        if(end->playlist_entry_id==tv.entry &&
+                           (end->reason==MPV_END_FILE_REASON_ERROR || end->reason==MPV_END_FILE_REASON_EOF)){
+                            if(iptv_skip_failed(player,playing_url,sizeof(playing_url),&movy,
+                                               &video_started_at,&video_loaded))page=PLAYER;
+                            else{
+                                snprintf(message,sizeof(message),"%s",
+                                         TR("У цьому списку немає доступних ефірів","No live streams available in this list"));
+                                page=IPTV_CHANNELS;
+                            }
+                        }
+                        continue;
+                    }
                     int interrupted_seek=end && end->reason==MPV_END_FILE_REASON_EOF && movy.seek_started;
                     if(end && (end->reason==MPV_END_FILE_REASON_ERROR || interrupted_seek)){
                         if(retry_movy(player,&movy,playing_url,video_loaded,&resume_at,&video_started_at)){
@@ -4169,12 +4207,6 @@ int main(int argc,char **argv) {
                             snprintf(message,sizeof(message),"%s",TR("Movy: перемотування перервано","Movy: seek interrupted"));
                         page=player_return_page;
                     }else if(end && end->reason==MPV_END_FILE_REASON_EOF){
-                        if(player_return_page==IPTV_CHANNELS){
-                            snprintf(message,sizeof(message),"%s",
-                                TR("Прямий ефір завершився","The live stream ended"));
-                            page=IPTV_CHANNELS;
-                            continue;
-                        }
                         if(player_return_page==DOWNLOADS && download_episode)
                             library_set_episode_progress(&playing_movie,download_season,download_episode,0);
                         else if(player_return_page==EPISODES && active_episode_variant>=0)
@@ -4297,6 +4329,18 @@ int main(int argc,char **argv) {
                 page=player_return_page;
             }
         }
+        if(page==PLAYER && player_return_page==IPTV_CHANNELS){
+            Uint32 now=SDL_GetTicks();
+            if(video_loaded && tv.playing_since && now-tv.playing_since>=IPTV_STABLE_MS)
+                tv.failures=0;
+            if(!video_loaded && now-video_started_at>=IPTV_START_TIMEOUT_MS &&
+               !iptv_skip_failed(player,playing_url,sizeof(playing_url),&movy,&video_started_at,&video_loaded)){
+                snprintf(message,sizeof(message),"%s",
+                         TR("У цьому списку немає доступних ефірів","No live streams available in this list"));
+                command(player,"stop",NULL);
+                page=IPTV_CHANNELS;
+            }
+        }
         if(page==PLAYER && render){
             ui_theme_enabled=0;
             int movy_source=movy_stream_url(playing_url);
@@ -4345,10 +4389,12 @@ int main(int argc,char **argv) {
                     box_alpha(&paint,loading_center_x+(int)(sx[i]*42)-6,340+(int)(sy[i]*42)-6,
                               13,13,bright,bright,bright,1.f,6);
                 }
-                text_center(&paint,TR("Завантаження відео","Loading video"),
-                            loading_center_x-310,426,620,paint.font,.76f,.78f,.82f);
+                const char *loading=player_return_page==IPTV_CHANNELS?iptv_channel(tv.selected)->title:
+                                    TR("Завантаження відео","Loading video");
+                text_center(&paint,loading,loading_center_x-470,426,940,paint.font,.76f,.78f,.82f);
                 unsigned timeout=movy_stream_url(playing_url)?60000u:30000u;
-                if(!movy.seek_started && video_started_at && SDL_GetTicks()-video_started_at>timeout &&
+                if(player_return_page!=IPTV_CHANNELS && !movy.seek_started && video_started_at &&
+                   SDL_GetTicks()-video_started_at>timeout &&
                    !retry_movy(player,&movy,playing_url,0,&resume_at,&video_started_at)){
                     snprintf(message,sizeof(message),TR("Час очікування відео вичерпано (%u с)","Video timed out (%u s)"),timeout/1000);
                     command(player,"stop",NULL);page=player_return_page;

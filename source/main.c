@@ -199,7 +199,7 @@ static int expanded_catalog=0;
    12...14: expanded sorting/back controls, 15: IPTV,
    16...: subsection tabs, 18: clear watch history. */
 static int catalog_hero_focus=0;
-enum { IPTV_TAB_FOCUS=15 };
+enum { CATALOG_BACK_FOCUS=14, IPTV_TAB_FOCUS=15 };
 static const struct {int focus,x,w;} main_tabs[]={
     {7,193,96},{8,295,95},{9,398,89},{10,490,144},{IPTV_TAB_FOCUS,638,76},{11,720,110}
 };
@@ -1651,7 +1651,7 @@ static void draw_poster_grid(Paint *p,const Movie *movies,int count,int chosen,i
         int k=i%GRID_ITEMS,x=54+k%POSTER_COLUMNS*POSTER_STEP;
         int y=top+k/POSTER_COLUMNS*(library?245:246)+i/GRID_ITEMS*GRID_PAGE_STEP-offset;
         if(y+255<top || y>=bottom)continue;
-        if(i==chosen && (!library || !catalog_hero_focus))selection_frame(p,x,y,138,206);
+        if(i==chosen && !catalog_hero_focus)selection_frame(p,x,y,138,206);
         poster(p,&movies[i],x,y,138,206,budget);
         if(library)card_title(p,movies[i].title,x,y+209,166);
         press_preview(p,x,y,138,206,14);
@@ -1930,7 +1930,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                                    p->font_small,.96f,.97f,.99f);
                 press_preview(p,sort_x[i],98,sort_w[i],44,12);
             }
-            if(catalog_hero_focus==14)selection_frame(p,1106,98,142,44);
+            if(catalog_hero_focus==CATALOG_BACK_FOCUS)selection_frame(p,1106,98,142,44);
             button(p,TR("‹  Назад","‹  Back"),1106,98,142,44,0);
             draw_poster_grid(p,movies,n,chosen,0,&poster_budget);
             if(n)text_muted(p,movies[chosen].title,54,635,1150);
@@ -3051,7 +3051,7 @@ int main(int argc,char **argv) {
                                 }
                         }
                         if(ty>=95 && ty<145 && tx>=1106){
-                            catalog_hero_focus=14;key=SDL_CONTROLLER_BUTTON_A;
+                            catalog_hero_focus=CATALOG_BACK_FOCUS;key=SDL_CONTROLLER_BUTTON_A;
                         }
                         int index=touched_grid_poster(tx,ty,POSTER_GRID_Y,246,POSTER_GRID_BOTTOM);
                         if(index>=0 && index<n){
@@ -3789,7 +3789,7 @@ int main(int argc,char **argv) {
                     message[0]=0;page=IPTV_CHANNELS;continue;
                 }
                 if(key==SDL_CONTROLLER_BUTTON_BACK){page=SETTINGS;continue;}
-                if(expanded_catalog && catalog_hero_focus==14 && key==SDL_CONTROLLER_BUTTON_A)
+                if(expanded_catalog && catalog_hero_focus==CATALOG_BACK_FOCUS && key==SDL_CONTROLLER_BUTTON_A)
                     key=SDL_CONTROLLER_BUTTON_B;
                 if(key==SDL_CONTROLLER_BUTTON_B && query[0]){
                     category=search_return_category;
@@ -3886,13 +3886,18 @@ int main(int argc,char **argv) {
                         }
                     }
                 }else if(expanded_catalog && catalog_hero_focus>=12 &&
-                   catalog_hero_focus<=14){
+                   catalog_hero_focus<=CATALOG_BACK_FOCUS){
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && catalog_hero_focus>12)
                         catalog_hero_focus--;
-                    if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && catalog_hero_focus<14)
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && catalog_hero_focus<CATALOG_BACK_FOCUS)
                         catalog_hero_focus++;
-                    if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)
-                        catalog_hero_focus=7+tab_for_category(category);
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_UP){
+                        int first=chosen/GRID_ITEMS*GRID_ITEMS;
+                        if(catalog_hero_focus==CATALOG_BACK_FOCUS && first>0){
+                            chosen=first-POSTER_COLUMNS+chosen%POSTER_COLUMNS;
+                            catalog_hero_focus=0;
+                        }else catalog_hero_focus=7+tab_for_category(category);
+                    }
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)catalog_hero_focus=0;
                 }else if(!expanded_catalog && catalog_hero_focus>=16){
                     int count=subsection_count(category);
@@ -3928,7 +3933,10 @@ int main(int argc,char **argv) {
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && chosen<n-1)chosen++;
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_UP){
                         if(expanded_catalog){
-                            if(chosen>=POSTER_COLUMNS)chosen-=POSTER_COLUMNS;
+                            if(n && chosen%GRID_ITEMS<POSTER_COLUMNS &&
+                               (chosen%POSTER_COLUMNS==POSTER_COLUMNS-1 || chosen==n-1))
+                                catalog_hero_focus=CATALOG_BACK_FOCUS;
+                            else if(chosen>=POSTER_COLUMNS)chosen-=POSTER_COLUMNS;
                             else catalog_hero_focus=12+sort_button_for_mode(catalog_sort_mode);
                         }else if(category!=0){
                             int last=poster_row_start(chosen,0)+POSTER_COLUMNS-1;

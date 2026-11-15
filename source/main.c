@@ -1397,7 +1397,7 @@ static void list_row(Paint *p,const char *title,int y,int selected,
 static const char *const iptv_quick_countries[]={"UA","US","DE","UK","PL","IT"};
 enum { IPTV_QUICK_COUNT=sizeof(iptv_quick_countries)/sizeof(iptv_quick_countries[0]),
        IPTV_COLUMNS=6, IPTV_PAGE_SIZE=2*IPTV_COLUMNS, IPTV_GRID_X=38, IPTV_GRID_Y=177,
-       IPTV_STEP_X=202, IPTV_STEP_Y=211, IPTV_CARD_W=184, IPTV_CARD_H=160,
+       IPTV_STEP_X=202, IPTV_STEP_Y=211, IPTV_CARD_SIZE=184,
        IPTV_PAGE_STEP=2*IPTV_STEP_Y, IPTV_GRID_BOTTOM=IPTV_GRID_Y+IPTV_PAGE_STEP,
        IPTV_FILTER_Y=101, IPTV_FILTER_H=46,
        IPTV_START_TIMEOUT_MS=12000, IPTV_STABLE_MS=3000 };
@@ -1698,7 +1698,7 @@ static int iptv_touched_card(int x,int y){
     x-=IPTV_GRID_X;
     y+=(int)lroundf(content_motion.position)-IPTV_GRID_Y;
     if(x<0 || y<0 || x/IPTV_STEP_X>=IPTV_COLUMNS ||
-       x%IPTV_STEP_X>=IPTV_CARD_W || y%IPTV_STEP_Y>=IPTV_CARD_H+38)return -1;
+       x%IPTV_STEP_X>=IPTV_CARD_SIZE || y%IPTV_STEP_Y>=IPTV_CARD_SIZE)return -1;
     int row=y/IPTV_STEP_Y*IPTV_COLUMNS+x/IPTV_STEP_X;
     return row<tv.count?row:-1;
 }
@@ -1741,27 +1741,27 @@ static void draw_iptv(Paint *p,Page page,const char *status){
             if(y+IPTV_STEP_Y<=IPTV_GRID_Y-5 || y>=IPTV_GRID_BOTTOM)continue;
             const IptvChannel *channel=iptv_channel(i);
             if(i==tv.selected && tv.focus==IPTV_FOCUS_GRID)
-                selection_frame(p,x,y,IPTV_CARD_W,IPTV_CARD_H);
-            box(p,x,y,IPTV_CARD_W,IPTV_CARD_H,.19f,.22f,.26f);
+                selection_frame(p,x,y,IPTV_CARD_SIZE,IPTV_CARD_SIZE);
+            box(p,x,y,IPTV_CARD_SIZE,IPTV_CARD_SIZE,.19f,.22f,.26f);
             int w=0,h=0;
             GLuint logo=logo_texture(channel->logo,&budget,&w,&h);
             if(logo && w>0 && h>0){
-                float scale=fminf((IPTV_CARD_W-26)/(float)w,(IPTV_CARD_H-32)/(float)h);
+                float scale=(IPTV_CARD_SIZE-32)/(float)(w>h?w:h);
                 int rw=(int)fmaxf(1,w*scale),rh=(int)fmaxf(1,h*scale);
                 GLuint previous=p->tex;
                 p->tex=logo;
-                box_alpha(p,x+(IPTV_CARD_W-rw)/2,y+(IPTV_CARD_H-rh)/2,rw,rh,1,1,1,1,0);
+                box_alpha(p,x+(IPTV_CARD_SIZE-rw)/2,y+(IPTV_CARD_SIZE-rh)/2,rw,rh,1,1,1,1,0);
                 p->tex=previous;
-            }else text_center_button(p,"TV",x,y,IPTV_CARD_W,IPTV_CARD_H,
+            }else text_center_button(p,"TV",x,y,IPTV_CARD_SIZE,IPTV_CARD_SIZE,
                                      p->font_big,.75f,.79f,.82f);
             bool favorite=iptv_favorite_index(&tv.favorites,channel->id)>=0;
-            box_alpha(p,x+IPTV_CARD_W-39,y+7,31,31,.10f,.13f,.17f,.93f,10);
-            text_center_button(p,favorite?"★":"☆",x+IPTV_CARD_W-39,y+7,31,31,
+            box_alpha(p,x+IPTV_CARD_SIZE-39,y+7,31,31,.10f,.13f,.17f,.93f,10);
+            text_center_button(p,favorite?"★":"☆",x+IPTV_CARD_SIZE-39,y+7,31,31,
                                p->font_small,.96f,.88f,.62f);
-            card_title(p,channel->title,x,y+IPTV_CARD_H+6,IPTV_CARD_W);
-            press_preview(p,x,y,IPTV_CARD_W,IPTV_CARD_H,14);
+            press_preview(p,x,y,IPTV_CARD_SIZE,IPTV_CARD_SIZE,14);
         }
         paint_clip(p,0,0,0,0);
+        if(tv.count)text_muted(p,iptv_channel(tv.selected)->title,54,635,1150);
         footer_position=tv.count?tv.selected/IPTV_PAGE_SIZE+1:0;
         footer_total=(tv.count+IPTV_PAGE_SIZE-1)/IPTV_PAGE_SIZE;
     }else{
@@ -3129,7 +3129,7 @@ int main(int argc,char **argv) {
                             tv.focus=IPTV_FOCUS_GRID;
                             int local_x=(tx-IPTV_GRID_X)%IPTV_STEP_X;
                             int local_y=(ty-IPTV_GRID_Y+(int)lroundf(content_motion.position))%IPTV_STEP_Y;
-                            key=local_x>=IPTV_CARD_W-42 && local_y<42?
+                            key=local_x>=IPTV_CARD_SIZE-42 && local_y<42?
                                 SDL_CONTROLLER_BUTTON_Y:SDL_CONTROLLER_BUTTON_A;
                         }
                     }

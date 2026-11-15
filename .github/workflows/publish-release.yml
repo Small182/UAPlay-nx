@@ -1,10 +1,12 @@
 name: Publish UAPlay with NSP
 
 on:
-  workflow_run:
-    workflows: ["Build native UAPlay with libmpv"]
-    types: [completed]
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful main run ID for Build native UAPlay with libmpv
+        required: true
+        type: string
 
 permissions:
   actions: read
@@ -12,19 +14,36 @@ permissions:
 
 jobs:
   publish:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     concurrency:
       group: uaplay-release
       cancel-in-progress: false
     steps:
+      - name: Verify the selected build
+        id: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        run: |
+          set -eu
+          case "$BUILD_RUN_ID" in
+            ''|*[!0-9]*) exit 1 ;;
+          esac
+          source_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN_ID" | jq -er '
+            select(.path == ".github/workflows/build.yml" and
+                   .head_branch == "main" and .conclusion == "success" and
+                   .head_repository.full_name == .repository.full_name)
+            | .head_sha | select(test("^[0-9a-f]{40}$"))
+          ')"
+          printf 'sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ steps.build.outputs.sha }}
       - name: Download NRO from the exact successful main build
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
         run: |
           set -eu
           mkdir -p dist
@@ -42,7 +61,7 @@ jobs:
       - name: Publish versioned UAPlay release
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_SHA: ${{ steps.build.outputs.sha }}
         run: |
           set -eu
           test -f source/version.h || exit 0

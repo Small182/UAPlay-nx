@@ -1529,7 +1529,7 @@ static void footer(Paint *p,const char *message) {
         HINT("L",TR("Розділ","Section"));HINT("R",TR("Розділ","Section"));
         HINT("X",TR("Пошук","Search"));HINT("−",TR("Меню","Menu"));HINT("A",TR("Відкрити","Open"));
         if(ui_category==0 && !expanded_catalog)HINT("↑↓",TR("Добірка","Collection"));
-        if(expanded_catalog)HINT("B",TR("Згорнути","Collapse"));
+        if(expanded_catalog)HINT("B",TR("Назад","Back"));
         else if(ui_category!=0)HINT("B",TR("Головна","Home"));
     }else if(footer_page==IPTV_CHANNELS){
         HINT("L/R",tv.focus==IPTV_FOCUS_HEADER?TR("Розділ","Section"):TR("Сторінка","Page"));
@@ -3789,6 +3789,8 @@ int main(int argc,char **argv) {
                     message[0]=0;page=IPTV_CHANNELS;continue;
                 }
                 if(key==SDL_CONTROLLER_BUTTON_BACK){page=SETTINGS;continue;}
+                if(expanded_catalog && catalog_hero_focus==14 && key==SDL_CONTROLLER_BUTTON_A)
+                    key=SDL_CONTROLLER_BUTTON_B;
                 if(key==SDL_CONTROLLER_BUTTON_B && query[0]){
                     category=search_return_category;
                     expanded_catalog=search_return_expanded;
@@ -3813,7 +3815,10 @@ int main(int argc,char **argv) {
                     }
                 }
                 if(key==SDL_CONTROLLER_BUTTON_B && expanded_catalog){
-                    expanded_catalog=0;chosen=0;catalog_hero_focus=0;continue;
+                    expanded_catalog=0;
+                    chosen=0;
+                    catalog_hero_focus=7+tab_for_category(category);
+                    continue;
                 }
                 if(key==SDL_CONTROLLER_BUTTON_B && category!=0){
                     category=0;home_shelf=0;query[0]=message[0]=0;
@@ -3922,22 +3927,19 @@ int main(int argc,char **argv) {
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && chosen>0)chosen--;
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && chosen<n-1)chosen++;
                     if(key==SDL_CONTROLLER_BUTTON_DPAD_UP){
-                        if(category!=0 && !expanded_catalog){
+                        if(expanded_catalog){
+                            if(chosen>=POSTER_COLUMNS)chosen-=POSTER_COLUMNS;
+                            else catalog_hero_focus=12+sort_button_for_mode(catalog_sort_mode);
+                        }else if(category!=0){
                             int last=poster_row_start(chosen,0)+POSTER_COLUMNS-1;
                             if(last>=n)last=n-1;
                             if(!n)catalog_hero_focus=7+tab_for_category(category);
                             else if(chosen==last)catalog_hero_focus=3;
                             else catalog_hero_focus=subsection_count(category)?
                                 focused_subsection(category):1;
-                        }else if(expanded_catalog && category!=0 &&
-                                 chosen%GRID_ITEMS<POSTER_COLUMNS){
-                            catalog_hero_focus=12+sort_button_for_mode(catalog_sort_mode);
-                        }else if(!expanded_catalog && n>5 &&
-                           (category==0 && !query[0] ? chosen>=5 : chosen%6==5))
+                        }else if(n>5 && (!query[0]?chosen>=5:chosen%6==5))
                             catalog_hero_focus=3; /* Up from rightmost poster. */
                         else if(chosen>=6)chosen-=6;
-                        else if(expanded_catalog)
-                            catalog_hero_focus=12+sort_button_for_mode(catalog_sort_mode);
                         else if(!n)catalog_hero_focus=7+tab_for_category(category);
                         else catalog_hero_focus=subsection_count(category)?
                             focused_subsection(category):(chosen%6>=4?3:1);
@@ -3950,16 +3952,12 @@ int main(int argc,char **argv) {
                 }
                 if(key==SDL_CONTROLLER_BUTTON_A && (n || catalog_hero_focus>=3)){
                     if(expanded_catalog && catalog_hero_focus>=12 &&
-                       catalog_hero_focus<=14){
-                        if(catalog_hero_focus==14){
-                            expanded_catalog=0;catalog_hero_focus=0;chosen=0;
-                        }else{
-                            int next=sort_mode_for_button(catalog_hero_focus-12);
-                            if(next!=catalog_sort_mode){
-                                catalog_sort_mode=next;
-                                n=load_category(category,query,movies,message,sizeof(message));
-                                chosen=0;
-                            }
+                       catalog_hero_focus<=13){
+                        int next=sort_mode_for_button(catalog_hero_focus-12);
+                        if(next!=catalog_sort_mode){
+                            catalog_sort_mode=next;
+                            n=load_category(category,query,movies,message,sizeof(message));
+                            chosen=0;
                         }
                     }else if(!expanded_catalog && category==12 && catalog_hero_focus==19){
                         if(!n){

@@ -25,8 +25,9 @@
 #define POSTER_DISK_MAGIC 0x55415032u
 
 typedef struct {
-    int id;
+    uint64_t id;
     GLuint texture;
+    int width,height;
     Uint32 retry_after;
     unsigned long long last_used;
 } PosterEntry;
@@ -36,10 +37,12 @@ typedef struct {
     SDL_Thread *thread;
     SDL_mutex *mutex;
     SDL_cond *cond;
-    int quit,pending,busy,request_id;
+    int quit,pending,busy;
+    uint64_t request_id;
     Uint32 blocked_until;
-    char request_path[256];
-    int ready,completed_id;
+    char request_path[1024];
+    int ready;
+    uint64_t completed_id;
     ImageData completed_image;
 } PosterLoader;
 
@@ -118,19 +121,26 @@ static void disk_write(const char *path,const ImageData *image){
 static ImageData download_image(const char *path,CURL *curl,int *ssl_failed){
     ImageData data={0};
     *ssl_failed=0;
-    if(!path || path[0]!='/' || strstr(path,".."))return data;
+    int external=!strncmp(path,"https://",8) || !strncmp(path,"http://",7);
+    if(!external && (path[0]!='/' || strstr(path,"..")))return data;
     data=disk_read(path);
     if(data.used)return data;
     if(!curl)return data;
-    char url[512];
-    snprintf(url,sizeof(url),"https://image.tmdb.org/t/p/w342%s",path);
+    char url[1100];
+    snprintf(url,sizeof(url),external?"%s":"https://image.tmdb.org/t/p/w342%s",path);
     /* Reset request-specific options but preserve the handle's persistent
        TCP/TLS connection pool and TLS session cache across poster requests. */
     curl_easy_reset(curl);
     curl_easy_setopt(curl,CURLOPT_URL,url);
     curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,1L);
-    curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT,4L);
-    curl_easy_setopt(curl,CURLOPT_TIMEOUT,7L);
+    curl_easy_setopt(curl,CURLOPT_MAXREDIRS,4L);
+#if LIBCURL_VERSION_NUM >= 0x075500
+    curl_easy_setopt(curl,CURLOPT_REDIR_PROTOCOLS_STR,"http,https");
+#else
+    curl_easy_setopt(curl,CURLOPT_REDIR_PROTOCOLS,(long)(CURLPROTO_HTTP|CURLPROTO_HTTPS));
+#endif
+    curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT,external?10L:4L);
+    curl_easy_setopt(curl,CURLOPT_TIMEOUT,external?15L:7L);
     curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);
     curl_easy_setopt(curl,CURLOPT_HTTP_VERSION,CURL_HTTP_VERSION_1_1);
     curl_easy_setopt(curl,CURLOPT_TCP_KEEPALIVE,1L);
@@ -166,9 +176,9 @@ static int download_worker(void *opaque){
         while(!task->quit && !task->pending)
             SDL_CondWait(task->cond,task->mutex);
         if(task->quit){SDL_UnlockMutex(task->mutex);break;}
-        char path[256];
+        char path[1024];
         snprintf(path,sizeof(path),"%s",task->request_path);
-        int id=task->request_id;
+        uint64_t id=task->request_id;
         task->pending=0;task->busy=1;
         SDL_UnlockMutex(task->mutex);
 
@@ -178,7 +188,7 @@ static int download_worker(void *opaque){
 
         SDL_LockMutex(task->mutex);
         task->busy=0;
-        if(ssl_failed)
+        if(ssl_failed && path[0]=='/')
             task->blocked_until=SDL_GetTicks()+POSTER_TLS_COOLDOWN_MS;
         if(!task->quit){
             task->completed_image=image;
@@ -207,7 +217,7 @@ void posters_init(void){
     }
 }
 
-static GLuint image_texture(const ImageData *data){
+static GLuint image_texture(const ImageData *data,int *width,int *height){
     if(!data->data || !data->used)return 0;
     SDL_RWops *rw=SDL_RWFromConstMem(data->data,(int)data->used);
     SDL_Surface *image=rw?IMG_Load_RW(rw,1):NULL;
@@ -215,6 +225,17 @@ static GLuint image_texture(const ImageData *data){
     SDL_Surface *rgba=SDL_ConvertSurfaceFormat(image,SDL_PIXELFORMAT_ABGR8888,0);
     SDL_FreeSurface(image);
     if(!rgba)return 0;
+    if(rgba->w>1024 || rgba->h>1024){
+        int max=rgba->w>rgba->h?rgba->w:rgba->h;
+        int w=(int)(rgba->w*1024LL/max),h=(int)(rgba->h*1024LL/max);
+        SDL_Surface *small=SDL_CreateRGBSurfaceWithFormat(0,w?w:1,h?h:1,32,SDL_PIXELFORMAT_ABGR8888);
+        SDL_SetSurfaceBlendMode(rgba,SDL_BLENDMODE_NONE);
+        int scaled=small?SDL_BlitScaled(rgba,NULL,small,NULL):-1;
+        SDL_FreeSurface(rgba);
+        rgba=small;
+        if(scaled<0){SDL_FreeSurface(rgba);return 0;}
+    }
+    *width=rgba->w;*height=rgba->h;
     GLuint texture=0;
     glGenTextures(1,&texture);
     if(texture){
@@ -230,7 +251,7 @@ static GLuint image_texture(const ImageData *data){
     return texture;
 }
 
-static void cache_store(int id,GLuint texture){
+static void cache_store(uint64_t id,GLuint texture,int width,int height){
     int slot=used;
     if(used==POSTER_CACHE_MAX){
         slot=0;
@@ -240,6 +261,7 @@ static void cache_store(int id,GLuint texture){
     }else used++;
     cache[slot].id=id;
     cache[slot].texture=texture;
+    cache[slot].width=width;cache[slot].height=height;
     cache[slot].retry_after=texture?0:SDL_GetTicks()+POSTER_RETRY_DELAY_MS;
     cache[slot].last_used=++cache_clock;
 }
@@ -251,18 +273,19 @@ static void collect_completed(void){
         SDL_LockMutex(task->mutex);
         if(!task->ready){SDL_UnlockMutex(task->mutex);continue;}
         ImageData image=task->completed_image;
-        int id=task->completed_id;
+        uint64_t id=task->completed_id;
         task->completed_image=(ImageData){0};
         task->ready=0;
         SDL_UnlockMutex(task->mutex);
-        GLuint texture=image_texture(&image);
+        int width=0,height=0;
+        GLuint texture=image_texture(&image,&width,&height);
         free(image.data);
         /* A failed request is remembered to prevent a network retry loop. */
-        cache_store(id,texture);
+        cache_store(id,texture,width,height);
     }
 }
 
-static int already_cached(int id){
+static int already_cached(uint64_t id){
     for(int i=0;i<used;i++)if(cache[i].id==id){
         if(!cache[i].texture && SDL_TICKS_PASSED(SDL_GetTicks(),cache[i].retry_after)){
             cache[i].id=0;
@@ -272,7 +295,7 @@ static int already_cached(int id){
     }
     return 0;
 }
-static int in_flight(int id){
+static int in_flight(uint64_t id){
     for(int i=0;i<POSTER_WORKERS;i++){
         PosterLoader *task=&loaders[i];
         if(!task->mutex)continue;
@@ -284,10 +307,9 @@ static int in_flight(int id){
     }
     return 0;
 }
-static int request_poster(const Movie *movie){
-    int id=movie->series?-movie->id:movie->id;
-    if(!movie->poster[0] || !strcmp(movie->poster,"null") ||
-       already_cached(id) || in_flight(id))return 0;
+static int request_image(const char *path,uint64_t id){
+    if(!path || !*path || !strcmp(path,"null") ||
+       strlen(path)>=sizeof(loaders[0].request_path) || already_cached(id) || in_flight(id))return 0;
     for(int i=0;i<POSTER_WORKERS;i++){
         PosterLoader *task=&loaders[i];
         if(!task->thread)continue;
@@ -296,7 +318,7 @@ static int request_poster(const Movie *movie){
            (!task->blocked_until || SDL_TICKS_PASSED(SDL_GetTicks(),task->blocked_until))){
             task->request_id=id;
             snprintf(task->request_path,sizeof(task->request_path),
-                     "%s",movie->poster);
+                     "%s",path);
             task->pending=1;
             SDL_CondSignal(task->cond);
             SDL_UnlockMutex(task->mutex);
@@ -307,10 +329,9 @@ static int request_poster(const Movie *movie){
     return 0;
 }
 
-GLuint poster_texture(const Movie *movie,int *budget){
-    if(!movie || !movie->poster[0] || !strcmp(movie->poster,"null"))return 0;
+static GLuint cached_texture(const char *path,uint64_t identity,int *budget,int *width,int *height){
+    if(!path || !*path || !strcmp(path,"null"))return 0;
     collect_completed();
-    int identity=movie->series?-movie->id:movie->id;
     for(int i=0;i<used;i++){
         if(cache[i].id==identity){
             if(!cache[i].texture &&
@@ -319,11 +340,27 @@ GLuint poster_texture(const Movie *movie,int *budget){
                 break;
             }
             cache[i].last_used=++cache_clock;
+            if(width)*width=cache[i].width;
+            if(height)*height=cache[i].height;
             return cache[i].texture;
         }
     }
-    if(budget && *budget>0 && request_poster(movie))--*budget;
+    if(budget && *budget>0 && request_image(path,identity))--*budget;
     return 0;
+}
+
+static uint64_t movie_identity(const Movie *movie){
+    return (uint64_t)(uint32_t)(movie->series?-movie->id:movie->id);
+}
+
+GLuint poster_texture(const Movie *movie,int *budget){
+    return movie?cached_texture(movie->poster,movie_identity(movie),budget,NULL,NULL):0;
+}
+
+GLuint logo_texture(const char *url,int *budget,int *width,int *height){
+    if(!url || !*url)return 0;
+    uint64_t key=path_fingerprint(url) | (UINT64_C(1)<<63);
+    return cached_texture(url,key,budget,width,height);
 }
 
 void posters_prefetch(const Movie *movies,int count,int start,int ahead){
@@ -333,7 +370,7 @@ void posters_prefetch(const Movie *movies,int count,int start,int ahead){
     if(end>count)end=count;
     /* Only fill idle network slots. Visible poster requests are submitted by
        draw() first and always take precedence over speculative prefetches. */
-    for(int i=start;i<end;i++)request_poster(&movies[i]);
+    for(int i=start;i<end;i++)request_image(movies[i].poster,movie_identity(&movies[i]));
 }
 
 void posters_destroy(void){

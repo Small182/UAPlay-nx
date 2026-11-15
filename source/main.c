@@ -26,7 +26,7 @@
 
 typedef enum { CATALOG, DETAILS, PROVIDERS, SOURCES, PLAYER, SETTINGS,
                SEASONS, EPISODES, TRACK_PICKER, VIDEO_SETTINGS, DOWNLOADS,
-               PROVIDER_SETTINGS, SUBDL_PICKER, UPDATE_DIALOG, IPTV_CHANNELS, IPTV_COUNTRIES, IPTV_GENRES } Page;
+               PROVIDER_SETTINGS, SUBDL_PICKER, UPDATE_DIALOG, IPTV_CHANNELS, IPTV_COUNTRIES, IPTV_MORE_COUNTRIES, IPTV_GENRES } Page;
 static int selected_provider=0;
 static int provider_settings_selected=0;
 static int download_selected=0;
@@ -1379,35 +1379,47 @@ static void list_row(Paint *p,const char *title,int y,int selected,
     if(detail)text_muted(p,detail,1052,y+13,178);
     press_preview(p,UI_EDGE,y,1216,UI_ROW_HEIGHT,12);
 }
+static const char *const iptv_quick_countries[]={"UA","US","DE","UK","PL","IT"};
+enum { IPTV_QUICK_COUNT=sizeof(iptv_quick_countries)/sizeof(iptv_quick_countries[0]),
+       IPTV_COLUMNS=6, IPTV_PAGE_SIZE=12, IPTV_GRID_X=38, IPTV_GRID_Y=177,
+       IPTV_STEP_X=202, IPTV_STEP_Y=211, IPTV_CARD_W=184, IPTV_CARD_H=160 };
 static struct {
     SDL_Thread *thread;
     SDL_atomic_t done;
-    IptvCatalog catalog,pending;
-    int result,from_cache,cached;
-    int country,genre,selected,filter_row,initialized;
+    IptvCatalog catalog,pending,favorites;
+    int result,from_cache,cached,loaded_country,requested_country;
+    int country,genre,selected,filter_row,initialized,show_favorites,header_focus;
+    int more_countries[IPTV_MAX_COUNTRIES],more_count;
     int *visible,count;
 } tv;
 
+static const IptvChannel *iptv_channel(int row){
+    return tv.show_favorites?&tv.favorites.channels[row]:
+                            &tv.catalog.channels[tv.visible[row]];
+}
+
 static void iptv_filter(void){
     tv.count=0;
-    for(int i=0;i<tv.catalog.count;i++){
-        const IptvChannel *channel=&tv.catalog.channels[i];
-        if((tv.country==IPTV_ALL || channel->country==tv.country) &&
-           (tv.genre==IPTV_ALL || (channel->genres & (UINT32_C(1)<<tv.genre))))
-            tv.visible[tv.count++]=i;
-    }
+    if(tv.show_favorites)tv.count=tv.favorites.count;
+    else if(tv.loaded_country==tv.country)
+        for(int i=0;i<tv.catalog.count;i++){
+            const IptvChannel *channel=&tv.catalog.channels[i];
+            if(tv.genre==IPTV_ALL || (channel->genres & (UINT32_C(1)<<tv.genre)))
+                tv.visible[tv.count++]=i;
+        }
     tv.selected=0;
 }
 
 static int iptv_worker(void *unused){
     (void)unused;
-    tv.result=iptv_load(&tv.pending,&tv.from_cache);
+    tv.result=iptv_load(tv.requested_country,&tv.pending,&tv.from_cache);
     SDL_AtomicSet(&tv.done,1);
     return 0;
 }
 
-static int iptv_refresh(void){
+static int iptv_request_country(void){
     if(tv.thread)return 1;
+    tv.requested_country=tv.country;
     SDL_AtomicSet(&tv.done,0);
     tv.thread=SDL_CreateThread(iptv_worker,"iptv",NULL);
     return tv.thread!=NULL;
@@ -1417,9 +1429,14 @@ static int iptv_finish(void){
     if(!tv.thread || !SDL_AtomicGet(&tv.done))return 0;
     SDL_WaitThread(tv.thread,NULL);
     tv.thread=NULL;
+    if(tv.requested_country!=tv.country){
+        iptv_free(&tv.pending);
+        if(tv.loaded_country==tv.country)return 1;
+        return iptv_request_country()?0:-1;
+    }
     if(tv.result!=IPTV_OK)return -1;
-    int *visible=malloc((size_t)tv.pending.count*sizeof(*visible));
-    if(!visible){
+    int *visible=tv.pending.count?malloc((size_t)tv.pending.count*sizeof(*visible)):NULL;
+    if(tv.pending.count && !visible){
         iptv_free(&tv.pending);
         return -1;
     }
@@ -1428,26 +1445,36 @@ static int iptv_finish(void){
     tv.catalog=tv.pending;
     tv.pending=(IptvCatalog){0};
     tv.visible=visible;
+    tv.loaded_country=tv.requested_country;
     tv.cached=tv.from_cache;
-    iptv_filter();
+    if(!tv.show_favorites)iptv_filter();
     return 1;
 }
 
 static void iptv_open(void){
+    tv.header_focus=1;
     if(tv.initialized)return;
     int n;
     const IptvCountry *countries=iptv_countries(&n);
-    tv.country=IPTV_ALL;
+    tv.country=iptv_country_index("UA");
+    tv.loaded_country=-1;
     tv.genre=IPTV_ALL;
-    for(int i=0;i<n;i++)if(!strcmp(countries[i].code,"UA")){tv.country=i;break;}
+    for(int i=0;i<n;i++){
+        bool quick=false;
+        for(int j=0;j<IPTV_QUICK_COUNT;j++)
+            if(!strcmp(countries[i].code,iptv_quick_countries[j])){quick=true;break;}
+        if(!quick)tv.more_countries[tv.more_count++]=i;
+    }
+    iptv_favorites_load(&tv.favorites);
     tv.initialized=1;
-    iptv_refresh();
+    iptv_request_country();
 }
 
 static int iptv_filter_count(Page page){
+    if(page==IPTV_COUNTRIES)return IPTV_QUICK_COUNT+1;
+    if(page==IPTV_MORE_COUNTRIES)return tv.more_count;
     int n;
-    if(page==IPTV_COUNTRIES)iptv_countries(&n);
-    else iptv_genres(&n);
+    iptv_genres(&n);
     return n+1;
 }
 
@@ -1478,9 +1505,11 @@ static void footer(Paint *p,const char *message) {
         if(expanded_catalog)HINT("B",TR("Згорнути","Collapse"));
         else if(ui_category!=0)HINT("B",TR("Головна","Home"));
     }else if(footer_page==IPTV_CHANNELS){
-        HINT("Y",TR("Країна","Country"));HINT("X",TR("Жанр","Genre"));HINT("L",TR("Оновити","Refresh"));
-        HINT("R",TR("Сторінка","Page"));HINT("A",TR("Дивитися","Watch"));HINT("B",TR("Назад","Back"));
-    }else if(footer_page==IPTV_COUNTRIES || footer_page==IPTV_GENRES){
+        HINT("L/R",tv.header_focus?TR("Розділ","Section"):TR("Сторінка","Page"));
+        HINT("Y",TR("Країна","Country"));HINT("X",TR("Жанри","Genres"));
+        HINT("−",TR("Вибране","Favorites"));HINT("R3",TR("★ Канал","★ Channel"));
+        HINT("A",TR("Дивитися","Watch"));
+    }else if(footer_page==IPTV_COUNTRIES || footer_page==IPTV_MORE_COUNTRIES || footer_page==IPTV_GENRES){
         HINT("↑↓",TR("Вибір","Select"));HINT("L/R",TR("Сторінка","Page"));
         HINT("A",TR("Застосувати","Apply"));HINT("B",TR("Назад","Back"));
     }else if(footer_page==DETAILS){
@@ -1637,46 +1666,88 @@ static int touched_list_row(int x,int y){
     if(absolute_y<0 || absolute_y%UI_ROW_STEP>=UI_ROW_HEIGHT)return -1;
     return absolute_y/UI_ROW_STEP;
 }
+static int iptv_touched_card(int x,int y){
+    x-=IPTV_GRID_X;y-=IPTV_GRID_Y;
+    if(x<0 || y<0 || x/IPTV_STEP_X>=IPTV_COLUMNS || y/IPTV_STEP_Y>=2 ||
+       x%IPTV_STEP_X>=IPTV_CARD_W || y%IPTV_STEP_Y>=IPTV_CARD_H+38)return -1;
+    int row=tv.selected/IPTV_PAGE_SIZE*IPTV_PAGE_SIZE+
+            y/IPTV_STEP_Y*IPTV_COLUMNS+x/IPTV_STEP_X;
+    return row<tv.count?row:-1;
+}
+
 static void draw_iptv(Paint *p,Page page,const char *status){
     int country_count,genre_count;
     const IptvCountry *countries=iptv_countries(&country_count);
     const UiText *genres=iptv_genres(&genre_count);
-    bool channels=page==IPTV_CHANNELS,country=page==IPTV_COUNTRIES;
-    int count=channels?tv.count:1+(country?country_count:genre_count);
-    int selected=channels?tv.selected:tv.filter_row;
-    const char *all=TR("Усі","All");
-    screen_header(p,channels?"IPTV":country?TR("Країна","Country"):TR("Жанр","Genre"),
-                  channels && tv.cached?TR("Збережений список","Cached list"):NULL);
-    if(channels){
+    if(page==IPTV_CHANNELS){
         char label[180];
-        snprintf(label,sizeof(label),TR("Країна: %s","Country: %s"),
-                 tv.country==IPTV_ALL?all:ui_text(countries[tv.country].name));
-        button(p,label,32,79,420,43,0);
-        snprintf(label,sizeof(label),TR("Жанр: %s","Genre: %s"),
-                 tv.genre==IPTV_ALL?all:ui_text(genres[tv.genre]));
-        button(p,label,464,79,400,43,0);
-        button(p,TR("Оновити","Refresh"),1008,79,240,43,0);
-        if(!count)text_center_button(p,tv.thread?TR("Завантаження каналів…","Loading channels…"):
-            TR("Каналів не знайдено","No channels found"),
-            UI_EDGE,271,1216,96,p->font_big,.73f,.77f,.82f);
+        snprintf(label,sizeof(label),TR("Країна: %s","Country: %s"),ui_text(countries[tv.country].name));
+        button(p,label,32,101,364,46,0);
+        snprintf(label,sizeof(label),TR("Жанри: %s","Genres: %s"),
+                 tv.genre==IPTV_ALL?TR("Усі","All"):ui_text(genres[tv.genre]));
+        button(p,label,412,101,354,46,0);
+        button(p,tv.show_favorites?TR("Усі канали","All channels"):TR("Вибране","Favorites"),
+               782,101,236,46,tv.show_favorites);
+        if(tv.cached && tv.loaded_country==tv.country && !tv.show_favorites)
+            text_small(p,TR("Збережений список","Cached list"),1030,111,205);
+        if(!tv.count){
+            const char *empty=tv.show_favorites?TR("У вибраному поки немає каналів","No favorite channels yet"):
+                tv.thread?TR("Завантаження каналів…","Loading channels…"):
+                          TR("Каналів не знайдено","No channels found");
+            text_center_button(p,empty,UI_EDGE,271,1216,96,p->font_big,.73f,.77f,.82f);
+        }
+        int first=tv.selected/IPTV_PAGE_SIZE*IPTV_PAGE_SIZE;
+        int budget=1;
+        for(int i=first;i<tv.count && i<first+IPTV_PAGE_SIZE;i++){
+            int item=i-first,x=IPTV_GRID_X+item%IPTV_COLUMNS*IPTV_STEP_X;
+            int y=IPTV_GRID_Y+item/IPTV_COLUMNS*IPTV_STEP_Y;
+            const IptvChannel *channel=iptv_channel(i);
+            if(i==tv.selected && !tv.header_focus)
+                selection_frame(p,x,y,IPTV_CARD_W,IPTV_CARD_H);
+            box(p,x,y,IPTV_CARD_W,IPTV_CARD_H,.19f,.22f,.26f);
+            int w=0,h=0;
+            GLuint logo=logo_texture(channel->logo,&budget,&w,&h);
+            if(logo && w>0 && h>0){
+                float scale=fminf((IPTV_CARD_W-26)/(float)w,(IPTV_CARD_H-32)/(float)h);
+                int rw=(int)fmaxf(1,w*scale),rh=(int)fmaxf(1,h*scale);
+                GLuint previous=p->tex;
+                p->tex=logo;
+                box_alpha(p,x+(IPTV_CARD_W-rw)/2,y+(IPTV_CARD_H-rh)/2,rw,rh,1,1,1,1,0);
+                p->tex=previous;
+            }else text_center_button(p,"TV",x,y,IPTV_CARD_W,IPTV_CARD_H,
+                                     p->font_big,.75f,.79f,.82f);
+            bool favorite=iptv_favorite_index(&tv.favorites,channel->id)>=0;
+            box_alpha(p,x+IPTV_CARD_W-39,y+7,31,31,.10f,.13f,.17f,.93f,10);
+            text_center_button(p,favorite?"★":"☆",x+IPTV_CARD_W-39,y+7,31,31,
+                               p->font_small,.96f,.88f,.62f);
+            card_title(p,channel->title,x,y+IPTV_CARD_H+6,IPTV_CARD_W);
+            press_preview(p,x,y,IPTV_CARD_W,IPTV_CARD_H,14);
+        }
+        footer_position=tv.count?tv.selected/IPTV_PAGE_SIZE+1:0;
+        footer_total=(tv.count+IPTV_PAGE_SIZE-1)/IPTV_PAGE_SIZE;
+    }else{
+        bool country=page!=IPTV_GENRES;
+        int count=iptv_filter_count(page),selected=tv.filter_row;
+        screen_header(p,page==IPTV_MORE_COUNTRIES?TR("Більше країн","More countries"):
+                         country?TR("Країна","Country"):TR("Жанри","Genres"),NULL);
+        int offset=list_offset(p,page,selected,count),first=first_visible_row(offset);
+        for(int row=first;row<count && row<first+UI_ROWS+2;row++){
+            const char *name,*detail=NULL;
+            if(!country)name=row?ui_text(genres[row-1]):TR("Усі","All");
+            else if(page==IPTV_COUNTRIES && row==IPTV_QUICK_COUNT)
+                name=TR("Більше країн","More countries");
+            else{
+                int index=page==IPTV_MORE_COUNTRIES?tv.more_countries[row]:
+                          iptv_country_index(iptv_quick_countries[row]);
+                name=ui_text(countries[index].name);
+                detail=countries[index].code;
+            }
+            list_row(p,name,UI_ROW_Y+row*UI_ROW_STEP-offset,row==selected,detail);
+        }
+        paint_clip(p,0,0,0,0);
+        footer_position=selected+1;
+        footer_total=count;
     }
-    int offset=list_offset(p,page,selected,count),first=first_visible_row(offset);
-    for(int row=first;row<count && row<first+UI_ROWS+2;row++){
-        const char *name,*detail=NULL;
-        if(channels){
-            const IptvChannel *channel=&tv.catalog.channels[tv.visible[row]];
-            name=channel->title;
-            detail=countries[channel->country].code;
-        }else if(!row)name=all;
-        else if(country){
-            name=ui_text(countries[row-1].name);
-            detail=countries[row-1].code;
-        }else name=ui_text(genres[row-1]);
-        list_row(p,name,UI_ROW_Y+row*UI_ROW_STEP-offset,row==selected,detail);
-    }
-    paint_clip(p,0,0,0,0);
-    footer_position=count?selected+1:0;
-    footer_total=count;
     footer(p,status);
 }
 
@@ -1740,7 +1811,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                     episodes_in_season(season_ids[selected_season]):0;
     footer_page=page;
     int poster_budget=1;
-    if (page==CATALOG) {
+    if (page==CATALOG || page==IPTV_CHANNELS) {
         box_alpha(p,0,0,1280,80,.059f,.070f,.081f,1.f,0);
         headline(p,"UAPlay",25,18,166);
         const char *tabs[]={TR("Головна","Home"),TR("Серіали","TV Shows"),TR("Фільми","Movies"),TR("Мультфільми","Animation"),TR("Вибране","Favorites")};
@@ -1748,29 +1819,30 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         const int tab_w[]={96,95,89,144,106};
         for(int i=0;i<5;i++){
             int x=tab_x[i];
-            int active=(i==0 && ui_category==0) ||
+            int active=page==CATALOG && ((i==0 && ui_category==0) ||
                        (i==1 && ui_category==1) ||
                        (i==2 && ui_category>=2 && ui_category<=10) ||
                        (i==3 && ui_category>=ANIMATION_FIRST && ui_category<=ANIMATION_LAST) ||
-                       (i==4 && (ui_category==11 || ui_category==12));
+                       (i==4 && (ui_category==11 || ui_category==12)));
             if(active)box_alpha(p,x-12,19,tab_w[i],43,.19f,.24f,.28f,1.f,16);
-            if(catalog_hero_focus==i+7)selection_frame(p,x-12,19,tab_w[i],43);
+            if(page==CATALOG && catalog_hero_focus==i+7)selection_frame(p,x-12,19,tab_w[i],43);
             text_center_button(p,tabs[i],x-12,19,tab_w[i],43,
                                p->font_small,.96f,.97f,.99f);
             press_preview(p,x-12,19,tab_w[i],43,16);
         }
         /* Search is a real touch target, not a missing Unicode glyph. */
-        button(p,"IPTV",767,17,107,47,0);
-        if(catalog_hero_focus==15)selection_frame(p,767,17,107,47);
+        button(p,"IPTV",767,17,107,47,page==IPTV_CHANNELS);
+        if((page==CATALOG && catalog_hero_focus==15) || (page==IPTV_CHANNELS && tv.header_focus))
+            selection_frame(p,767,17,107,47);
         press_preview(p,767,17,107,47,15);
         box_alpha(p,887,17,157,47,.13f,.16f,.19f,1.f,15);
-        if(catalog_hero_focus==5)selection_frame(p,887,17,157,47);
+        if(page==CATALOG && catalog_hero_focus==5)selection_frame(p,887,17,157,47);
         search_icon(p,915,38,.13f,.16f,.19f);
         text_font(p,TR("Пошук","Search"),946,17+(47-text_height(p,TR("Пошук","Search"),p->font_small))/2,
                   88,p->font_small,1.f,1.f,1.f);
         press_preview(p,887,17,157,47,15);
         box_alpha(p,1058,17,53,47,.13f,.16f,.19f,1.f,15);
-        if(catalog_hero_focus==6)selection_frame(p,1058,17,53,47);
+        if(page==CATALOG && catalog_hero_focus==6)selection_frame(p,1058,17,53,47);
         gear_icon(p,1085,40,.13f,.16f,.19f);
         press_preview(p,1058,17,53,47,15);
         time_t now=time(NULL);
@@ -1779,6 +1851,11 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         if(local)strftime(clock_label,sizeof(clock_label),"%H:%M",local);
         text_font(p,clock_label,1116,18,106,
                   p->font_clock?p->font_clock:p->font_big,.95f,.97f,.99f);
+        if(page==IPTV_CHANNELS){
+            battery_status_vertical(p,1218,27);
+            draw_iptv(p,page,status);
+            return;
+        }
         if(ui_category==11 || ui_category==12){
             /* Favorites uses a poster-only library layout, without the hero.
                Both tabs stay reachable even when their list is empty. */
@@ -1996,7 +2073,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         button(p,library_favorite(&movies[chosen])?TR("✓  У вибраному","✓  In favorites"):TR("+  У вибране","+  Add to favorites"),
                320,526,255,58,0);
         footer(p,status);
-    } else if(page==IPTV_CHANNELS || page==IPTV_COUNTRIES || page==IPTV_GENRES){
+    } else if(page==IPTV_CHANNELS || page==IPTV_COUNTRIES || page==IPTV_MORE_COUNTRIES || page==IPTV_GENRES){
         draw_iptv(p,page,status);
     } else if (page==PROVIDERS || page==PROVIDER_SETTINGS) {
         int configuring=page==PROVIDER_SETTINGS;
@@ -2468,7 +2545,7 @@ static void play_stream(mpv_handle *player,const char *url,MovyPlayback *state){
 
 static void play_iptv_channel(mpv_handle *player,char *url,size_t size,
                               MovyPlayback *movy,Uint32 *started,int *loaded){
-    const IptvChannel *channel=&tv.catalog.channels[tv.visible[tv.selected]];
+    const IptvChannel *channel=iptv_channel(tv.selected);
     snprintf(url,size,"%s",channel->url);
     if(movy->offset>0)playback_set_value(player,"sub-delay",video_options[5]);
     *movy=(MovyPlayback){0};
@@ -2652,7 +2729,7 @@ int main(int argc,char **argv) {
             update_return=page;
             page=UPDATE_DIALOG;
         }
-        if(page==IPTV_CHANNELS || page==IPTV_COUNTRIES || page==IPTV_GENRES){
+        if(page==IPTV_CHANNELS || page==IPTV_COUNTRIES || page==IPTV_MORE_COUNTRIES || page==IPTV_GENRES){
             int refreshed=iptv_finish();
             if(refreshed)snprintf(message,sizeof(message),"%s",refreshed>0?"":
                 TR("Не вдалося завантажити список IPTV","Could not load the IPTV list"));
@@ -2679,7 +2756,9 @@ int main(int argc,char **argv) {
                     case SDLK_RIGHT:key=SDL_CONTROLLER_BUTTON_DPAD_RIGHT;break;
                     case SDLK_x:key=SDL_CONTROLLER_BUTTON_X;break;
                     case SDLK_y:key=SDL_CONTROLLER_BUTTON_Y;break;
-                    case SDLK_TAB:key=SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;break;
+                    case SDLK_TAB:key=(e.key.keysym.mod & KMOD_SHIFT)?
+                        SDL_CONTROLLER_BUTTON_LEFTSHOULDER:SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;break;
+                    case SDLK_z:key=SDL_CONTROLLER_BUTTON_RIGHTSTICK;break;
                     case SDLK_m:key=SDL_CONTROLLER_BUTTON_BACK;break;
                     case SDLK_ESCAPE:key=SDL_CONTROLLER_BUTTON_START;break;
                 }
@@ -2786,12 +2865,14 @@ int main(int argc,char **argv) {
                                     catalog_hero_focus=0;
                                 }
                             }
+                        }else if(page==IPTV_CHANNELS && touch.y>=IPTV_GRID_Y && touch.y<590){
+                            tv.header_focus=0;
+                            tv.selected=swipe_page_selection(tv.selected,tv.count,IPTV_PAGE_SIZE,direction);
                         }else if(vertical && touch.y>=UI_ROW_Y && touch.y<UI_ROW_Y+UI_ROWS*UI_ROW_STEP){
                             int *selected=NULL,count=0;
                             switch(page){
                                 case SOURCES:selected=&source;count=sn;break;
-                                case IPTV_CHANNELS:selected=&tv.selected;count=tv.count;break;
-                                case IPTV_COUNTRIES:case IPTV_GENRES:
+                                case IPTV_COUNTRIES:case IPTV_MORE_COUNTRIES:case IPTV_GENRES:
                                     selected=&tv.filter_row;count=iptv_filter_count(page);break;
                                 case SEASONS:selected=&selected_season;count=season_count;break;
                                 case EPISODES:
@@ -2992,18 +3073,43 @@ int main(int argc,char **argv) {
                         else selected_provider=slot;
                         key=SDL_CONTROLLER_BUTTON_A;
                     }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
-                }else if(page==IPTV_CHANNELS || page==IPTV_COUNTRIES || page==IPTV_GENRES){
-                    if(ty<77 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
-                    else if(page==IPTV_CHANNELS && ty>=79 && ty<122){
-                        if(tx>=32 && tx<452)key=SDL_CONTROLLER_BUTTON_Y;
-                        else if(tx>=464 && tx<864)key=SDL_CONTROLLER_BUTTON_X;
-                        else if(tx>=1008 && tx<1248)key=SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
+                }else if(page==IPTV_CHANNELS){
+                    if(ty<78 && tx>=193 && tx<742){
+                        const int tab_x[]={193,295,398,490,638};
+                        const int tab_w[]={96,95,89,144,106};
+                        for(int i=0;i<5;i++)
+                            if(tx>=tab_x[i] && tx<tab_x[i]+tab_w[i]){
+                                catalog_hero_focus=7+i;
+                                page=CATALOG;
+                                key=SDL_CONTROLLER_BUTTON_A;
+                                break;
+                            }
+                    }else if(ty<78 && tx>=767 && tx<874)tv.header_focus=1;
+                    else if(ty<78 && tx>=887 && tx<1044){
+                        page=CATALOG;key=SDL_CONTROLLER_BUTTON_X;
+                    }else if(ty<78 && tx>=1058 && tx<1111){
+                        settings_selected=0;page=SETTINGS;continue;
+                    }else if(ty>=101 && ty<147){
+                        if(tx>=32 && tx<396)key=SDL_CONTROLLER_BUTTON_Y;
+                        else if(tx>=412 && tx<766)key=SDL_CONTROLLER_BUTTON_X;
+                        else if(tx>=782 && tx<1018)key=SDL_CONTROLLER_BUTTON_BACK;
                     }else{
+                        int row=iptv_touched_card(tx,ty);
+                        if(row>=0){
+                            tv.selected=row;
+                            tv.header_focus=0;
+                            int local_x=(tx-IPTV_GRID_X)%IPTV_STEP_X;
+                            int local_y=(ty-IPTV_GRID_Y)%IPTV_STEP_Y;
+                            key=local_x>=IPTV_CARD_W-42 && local_y<42?
+                                SDL_CONTROLLER_BUTTON_RIGHTSTICK:SDL_CONTROLLER_BUTTON_A;
+                        }
+                    }
+                }else if(page==IPTV_COUNTRIES || page==IPTV_MORE_COUNTRIES || page==IPTV_GENRES){
+                    if(ty<77 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
+                    else{
                         int row=touched_list_row(tx,ty);
-                        int count=page==IPTV_CHANNELS?tv.count:iptv_filter_count(page);
-                        if(row>=0 && row<count){
-                            if(page==IPTV_CHANNELS)tv.selected=row;
-                            else tv.filter_row=row;
+                        if(row>=0 && row<iptv_filter_count(page)){
+                            tv.filter_row=row;
                             key=SDL_CONTROLLER_BUTTON_A;
                         }
                     }
@@ -3527,19 +3633,51 @@ int main(int argc,char **argv) {
             if(key==SDL_CONTROLLER_BUTTON_START){running=0;continue;}
             if(page==IPTV_CHANNELS){
                 if(key==SDL_CONTROLLER_BUTTON_B){
+                    if(!tv.header_focus){tv.header_focus=1;continue;}
                     message[0]=0;page=CATALOG;
+                    catalog_hero_focus=15;
+                }else if(key==SDL_CONTROLLER_BUTTON_BACK){
+                    tv.show_favorites=!tv.show_favorites;
+                    iptv_filter();
+                    tv.header_focus=0;
+                    message[0]=0;
+                    if(!tv.show_favorites && tv.loaded_country!=tv.country)iptv_request_country();
+                }else if(key==SDL_CONTROLLER_BUTTON_RIGHTSTICK && tv.count && !tv.header_focus){
+                    int row=tv.selected;
+                    if(iptv_favorite_toggle(&tv.favorites,iptv_channel(row))){
+                        if(tv.show_favorites){
+                            iptv_filter();
+                            tv.selected=row<tv.count?row:tv.count?tv.count-1:0;
+                        }
+                    }else snprintf(message,sizeof(message),"%s",
+                        TR("Не вдалося зберегти вибране IPTV","Could not save IPTV favorites"));
                 }else if(key==SDL_CONTROLLER_BUTTON_X || key==SDL_CONTROLLER_BUTTON_Y){
                     page=key==SDL_CONTROLLER_BUTTON_Y?IPTV_COUNTRIES:IPTV_GENRES;
-                    tv.filter_row=(page==IPTV_COUNTRIES?tv.country:tv.genre)+1;
+                    tv.filter_row=page==IPTV_GENRES?tv.genre+1:IPTV_QUICK_COUNT;
+                    if(page==IPTV_COUNTRIES)
+                        for(int i=0;i<IPTV_QUICK_COUNT;i++)
+                            if(iptv_country_index(iptv_quick_countries[i])==tv.country){tv.filter_row=i;break;}
                     message[0]=0;
-                }else if(key==SDL_CONTROLLER_BUTTON_LEFTSHOULDER){
-                    snprintf(message,sizeof(message),"%s",iptv_refresh()?
-                        TR("Оновлення списку IPTV…","Refreshing IPTV list…"):
-                        TR("Не вдалося запустити оновлення IPTV","Could not start IPTV refresh"));
-                }else if(key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER && tv.count)
-                    tv.selected=swipe_page_selection(tv.selected,tv.count,UI_ROWS,1);
-                else if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && tv.selected>0)tv.selected--;
-                else if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && tv.selected+1<tv.count)tv.selected++;
+                }else if(key==SDL_CONTROLLER_BUTTON_LEFTSHOULDER || key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER){
+                    bool right=key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
+                    if(tv.header_focus){
+                        category=category_for_tab(right?0:4);
+                        if(category==0)home_shelf=0;
+                        expanded_catalog=0;catalog_hero_focus=0;chosen=0;
+                        query[0]=message[0]=0;
+                        n=load_category(category,query,movies,message,sizeof(message));
+                        page=CATALOG;
+                    }else tv.selected=swipe_page_selection(tv.selected,tv.count,IPTV_PAGE_SIZE,right?1:-1);
+                }else if(tv.header_focus && (key==SDL_CONTROLLER_BUTTON_A || key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)){
+                    tv.header_focus=0;
+                    if(!tv.count && !tv.show_favorites && tv.loaded_country!=tv.country)iptv_request_country();
+                }else if(!tv.header_focus && key==SDL_CONTROLLER_BUTTON_DPAD_UP){
+                    if(tv.selected%IPTV_PAGE_SIZE<IPTV_COLUMNS)tv.header_focus=1;
+                    else tv.selected-=IPTV_COLUMNS;
+                }else if(!tv.header_focus && key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && tv.selected+IPTV_COLUMNS<tv.count)
+                    tv.selected+=IPTV_COLUMNS;
+                else if(!tv.header_focus && key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && tv.selected>0)tv.selected--;
+                else if(!tv.header_focus && key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && tv.selected+1<tv.count)tv.selected++;
                 else if(key==SDL_CONTROLLER_BUTTON_A && tv.count){
                     if(!render){
                         snprintf(message,sizeof(message),"%s",
@@ -3559,7 +3697,7 @@ int main(int argc,char **argv) {
                 }
                 continue;
             }
-            if(page==IPTV_COUNTRIES || page==IPTV_GENRES){
+            if(page==IPTV_COUNTRIES || page==IPTV_MORE_COUNTRIES || page==IPTV_GENRES){
                 int count=iptv_filter_count(page);
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && tv.filter_row>0)tv.filter_row--;
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && tv.filter_row+1<count)tv.filter_row++;
@@ -3568,11 +3706,24 @@ int main(int argc,char **argv) {
                 if(key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)
                     tv.filter_row=swipe_page_selection(tv.filter_row,count,UI_ROWS,1);
                 if(key==SDL_CONTROLLER_BUTTON_A){
-                    if(page==IPTV_COUNTRIES)tv.country=tv.filter_row-1;
-                    else tv.genre=tv.filter_row-1;
+                    if(page==IPTV_COUNTRIES && tv.filter_row==IPTV_QUICK_COUNT){
+                        page=IPTV_MORE_COUNTRIES;tv.filter_row=0;continue;
+                    }
+                    if(page==IPTV_GENRES)tv.genre=tv.filter_row-1;
+                    else tv.country=page==IPTV_MORE_COUNTRIES?tv.more_countries[tv.filter_row]:
+                                    iptv_country_index(iptv_quick_countries[tv.filter_row]);
+                    tv.show_favorites=0;
+                    if(tv.country!=tv.loaded_country && !iptv_request_country())
+                        snprintf(message,sizeof(message),"%s",
+                             TR("Не вдалося завантажити список IPTV","Could not load the IPTV list"));
                     iptv_filter();
+                    tv.header_focus=0;
                     page=IPTV_CHANNELS;
-                }else if(key==SDL_CONTROLLER_BUTTON_B)page=IPTV_CHANNELS;
+                }else if(key==SDL_CONTROLLER_BUTTON_B){
+                    if(page==IPTV_MORE_COUNTRIES){
+                        page=IPTV_COUNTRIES;tv.filter_row=IPTV_QUICK_COUNT;
+                    }else page=IPTV_CHANNELS;
+                }
                 continue;
             }
             if(page==CATALOG){
@@ -3804,7 +3955,11 @@ int main(int argc,char **argv) {
                 }
                 if(key==SDL_CONTROLLER_BUTTON_LEFTSHOULDER || key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER){
                     int tab=tab_for_category(category);
-                    tab=(tab+(key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER?1:4))%5;
+                    tab=(tab+(key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER?1:5))%6;
+                    if(tab==5){
+                        iptv_open();
+                        message[0]=0;page=IPTV_CHANNELS;continue;
+                    }
                     category=category_for_tab(tab);
                     if(category==0)home_shelf=0;
                     expanded_catalog=0;catalog_hero_focus=0;
@@ -4206,7 +4361,7 @@ int main(int argc,char **argv) {
                show and hide both at the same time while playing. */
             if(video_loaded && SDL_GetTicks()<controls_until){
                 const char *live_title=player_return_page==IPTV_CHANNELS?
-                    tv.catalog.channels[tv.visible[tv.selected]].title:NULL;
+                    iptv_channel(tv.selected)->title:NULL;
                 draw_player_controls(&paint,player,movy.offset,live_title);
                 battery_status_horizontal(&paint,1187,28);
             }
@@ -4269,6 +4424,7 @@ int main(int argc,char **argv) {
     if(tv.thread)SDL_WaitThread(tv.thread,NULL);
     iptv_free(&tv.pending);
     iptv_free(&tv.catalog);
+    iptv_free(&tv.favorites);
     free(tv.visible);
     downloads_shutdown();
     catalog_loader_shutdown();

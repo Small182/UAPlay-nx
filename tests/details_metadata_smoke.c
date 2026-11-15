@@ -38,6 +38,25 @@ int main(void){
     assert(series.details_state==1);
     assert(series.runtime_minutes==0);
     assert(series.season_count==5 && series.episode_count==62);
+
+    /* TMDB TV detail responses can list creator and genre names first. */
+    const char *simpsons="{\"id\":456,\"created_by\":[{\"name\":\"Метт Ґрейнінґ\","
+        "\"original_name\":\"Matt Groening\"}],\"genres\":[{\"name\":\"Мультфільм\"}],"
+        "\"name\" : \"Сімпсони\",\"original_name\":\"The Simpsons\"}";
+    catalog_parse_details_json(&series,simpsons);
+    assert(!strcmp(series.title,"Сімпсони"));
+    char original[192];
+    tmdb_series_name(simpsons,simpsons+strlen(simpsons),"original_name",original,sizeof(original));
+    assert(!strcmp(original,"The Simpsons"));
+
+    catalog_parse_details_json(&series,
+        "{\"name\":null,\"created_by\":[{\"name\":\"Метт Ґрейнінґ\"}]}");
+    assert(!strcmp(series.title,"Сімпсони"));
+    Movie unlocalized={.series=1};
+    catalog_parse_details_json(&unlocalized,
+        "{\"created_by\":[{\"name\":\"A \\\"quoted\\\" name\"}],\"name\":\"\","
+        "\"original_name\":\"The Simpsons\"}");
+    assert(!strcmp(unlocalized.title,"The Simpsons"));
     puts("TMDB details metadata: PASS");
     return 0;
 }

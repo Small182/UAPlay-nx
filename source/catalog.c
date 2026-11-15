@@ -37,6 +37,8 @@
 typedef struct { char *data; size_t length, capacity; } Response;
 static void json_field(const char *object,const char *end,const char *key,
                        char *value,size_t size);
+static const char *json_ws(const char *p);
+static const char *json_skip(const char *p,int depth);
 
 #define COUNTRY_CACHE_LIMIT 4096
 #define COUNTRY_CACHE_PATH "sdmc:/switch/uaplay/country_cache.tsv"
@@ -779,11 +781,42 @@ static const char *tmdb_language(UiLanguage language){
     return language==UI_ENGLISH?"en-US":"uk-UA";
 }
 
+static void tmdb_series_name(const char *object,const char *end,const char *key,
+                             char *name,size_t size){
+    name[0]=0;
+    const char *p=json_ws(object);
+    if(p>=end || *p!='{')return;
+    size_t length=strlen(key);
+    p=json_ws(p+1);
+    while(p<end && *p=='"'){
+        const char *field_end=json_skip(p,0);
+        if(!field_end || field_end>=end)return;
+        const char *colon=json_ws(field_end);
+        if(colon>=end || *colon!=':')return;
+        const char *value=json_ws(colon+1);
+        if(value>=end)return;
+        /* TMDB also uses "name" inside created_by, networks and genres. */
+        if((size_t)(field_end-p)==length+2 && !memcmp(p+1,key,length)){
+            if(*value=='"')json_field(p,end,key,name,size);
+            return;
+        }
+        const char *next=json_skip(value,0);
+        if(!next || next>=end)return;
+        p=json_ws(next);
+        if(p>=end || *p!=',')return;
+        p=json_ws(p+1);
+    }
+}
+
 static void catalog_parse_details_json(Movie *movie,const char *json){
     char value[32];
     const char *end=json+strlen(json);
     char title[sizeof(movie->title)],overview[sizeof(movie->overview)];
-    json_field(json,end,movie->series?"name":"title",title,sizeof(title));
+    if(movie->series){
+        tmdb_series_name(json,end,"name",title,sizeof(title));
+        if(!title[0] && !movie->title[0])
+            tmdb_series_name(json,end,"original_name",title,sizeof(title));
+    }else json_field(json,end,"title",title,sizeof(title));
     json_field(json,end,"overview",overview,sizeof(overview));
     if(title[0] && strcmp(title,"null"))
         snprintf(movie->title,sizeof(movie->title),"%s",title);
@@ -956,10 +989,20 @@ int catalog_load_page_sorted(const char *category, const char *query, int page,
         char number[40], type[40], date[40], rating[40], popularity[40];
         json_field(p, end, "id", number, sizeof(number));
         json_field(p, end, "media_type", type, sizeof(type));
-        json_field(p, end, "title", m.title, sizeof(m.title));
-        if (!m.title[0]) json_field(p, end, "name", m.title, sizeof(m.title));
-        json_field(p, end, "original_title", m.original, sizeof(m.original));
-        if (!m.original[0]) json_field(p, end, "original_name", m.original, sizeof(m.original));
+        m.series = !strcmp(type, "tv") || (!searching &&
+                    (!strcmp(category,"series") ||
+                     !strcmp(category,"cartoon_series") ||
+                     !strcmp(category,"anime")));
+        if(m.series){
+            tmdb_series_name(p,end,"name",m.title,sizeof(m.title));
+            tmdb_series_name(p,end,"original_name",m.original,sizeof(m.original));
+            if(!m.title[0])snprintf(m.title,sizeof(m.title),"%s",m.original);
+        }else{
+            json_field(p, end, "title", m.title, sizeof(m.title));
+            if (!m.title[0]) json_field(p, end, "name", m.title, sizeof(m.title));
+            json_field(p, end, "original_title", m.original, sizeof(m.original));
+            if (!m.original[0]) json_field(p, end, "original_name", m.original, sizeof(m.original));
+        }
         json_field(p, end, "overview", m.overview, sizeof(m.overview));
         json_field(p, end, "poster_path", m.poster, sizeof(m.poster));
         json_field(p, end, "vote_average", rating, sizeof(rating));
@@ -976,10 +1019,6 @@ int catalog_load_page_sorted(const char *category, const char *query, int page,
         }
         memcpy(m.year, date, strlen(date) >= 4 ? 4 : strlen(date));
         m.id = atoi(number);
-        m.series = !strcmp(type, "tv") || (!searching &&
-                    (!strcmp(category,"series") ||
-                     !strcmp(category,"cartoon_series") ||
-                     !strcmp(category,"anime")));
         if (m.id && m.title[0] && strcmp(type, "person") &&
             (!offline_search || contains_title(m.title,query) ||
              contains_title(m.original,query)) &&
@@ -2394,8 +2433,9 @@ static const char *json_skip(const char *p,int depth){
         }
         return *p==end?p+1:NULL;
     }
+    const char *start=p;
     while(*p && *p!=',' && *p!=']' && *p!='}' && !isspace((unsigned char)*p))p++;
-    return p;
+    return p==start?NULL:p;
 }
 static int title_number(const char *title){
     while(*title && !isdigit((unsigned char)*title))title++;

@@ -8,7 +8,7 @@
 #include <switch.h>
 #include <SDL.h>
 #include <SDL_ttf.h>
-#include <GLES2/gl2.h>
+#include <GLES3/gl3.h>
 #include <mpv/client.h>
 #include <mpv/render_gl.h>
 #include <curl/curl.h>
@@ -20,10 +20,12 @@
 #include "downloads.h"
 #include "subdl.h"
 #include "movy_stream.h"
+#include "update.h"
+#include "version.h"
 
 typedef enum { CATALOG, DETAILS, PROVIDERS, SOURCES, PLAYER, SETTINGS,
                SEASONS, EPISODES, TRACK_PICKER, VIDEO_SETTINGS, DOWNLOADS,
-               PROVIDER_SETTINGS, SUBDL_PICKER } Page;
+               PROVIDER_SETTINGS, SUBDL_PICKER, UPDATE_DIALOG } Page;
 static int selected_provider=0;
 static int provider_settings_selected=0;
 static int download_selected=0;
@@ -43,20 +45,28 @@ static void battery_status_poll(void){
     else battery_percentage=-1;
 }
 static int download_season=0, download_episode=0;
-static const UiText provider_names[]={{"UAFlix","UAFlix"},{"UASerials","UASerials"},{"Eneyida","Eneyida"},
-    {"UAFilm","UAFilm"},{"UAKino","UAKino"},{"Mikai (аніме)","Mikai (anime)"},{"AnimeON (аніме)","AnimeON (anime)"},{"HydraHD (тестове)","HydraHD (experimental)"},
-    {"Movy (тестове)","Movy (experimental)"}};
-enum { PROVIDER_COUNT=sizeof(provider_names)/sizeof(provider_names[0]),
-       ALL_PROVIDERS=(1u<<PROVIDER_COUNT)-1u,
-       MOVY_PROVIDER_BIT=1u<<(UAKINO_PROVIDER_MOVY-1) };
-/* Bit positions follow the provider IDs in uakino_search_provider (index + 1). */
-static unsigned enabled_providers=ALL_PROVIDERS &
-    ~((1u<<(UAKINO_PROVIDER_HYDRAHD-1)) | MOVY_PROVIDER_BIT);
+static const struct {
+    int id;
+    UiText name;
+} providers[]={
+    {1,{"UAFlix","UAFlix"}},{2,{"UASerials","UASerials"}},{3,{"Eneyida","Eneyida"}},
+    {4,{"UAFilm","UAFilm"}},{5,{"UAKino","UAKino"}},{6,{"Mikai (аніме)","Mikai (anime)"}},
+    {7,{"AnimeON (аніме)","AnimeON (anime)"}},
+    {UAKINO_PROVIDER_MOVY,{"Movy (тестове)","Movy (experimental)"}}
+};
+enum { PROVIDER_COUNT=sizeof(providers)/sizeof(providers[0]),
+       MOVY_PROVIDER_BIT=1u<<(UAKINO_PROVIDER_MOVY-1),
+       LEGACY_PROVIDER_MASK=(1u<<UAKINO_PROVIDER_MOVY)-1u,
+       ALL_PROVIDERS=0x7fu|MOVY_PROVIDER_BIT };
+/* Bit positions follow the persisted provider IDs, including the slot
+   retired between AnimeON and Movy. */
+static unsigned enabled_providers=ALL_PROVIDERS & ~MOVY_PROVIDER_BIT;
 
 static int provider_for_row(int row){
     if(row<0)return -1;
     for(int i=0;i<PROVIDER_COUNT;i++)
-        if((enabled_providers & (1u<<i)) && row--==0)return i;
+        if((enabled_providers & (1u<<(providers[i].id-1))) && row--==0)
+            return providers[i].id;
     return -1;
 }
 
@@ -232,8 +242,8 @@ static void theme_load(void){
         /* Legacy files only store the theme and optionally autoplay. */
         if(autoplay=='0' || autoplay=='1'){
             unsigned mask;
-            if(fscanf(f," %u",&mask)==1 && mask<=ALL_PROVIDERS){
-                enabled_providers=mask;
+            if(fscanf(f," %u",&mask)==1 && mask<=LEGACY_PROVIDER_MASK){
+                enabled_providers=mask & ALL_PROVIDERS;
                 char language[8];
                 if(fscanf(f," %7s",language)==1 && !strcmp(language,"en"))
                     ui_set_language(UI_ENGLISH);
@@ -1867,10 +1877,10 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                                UI_EDGE,305,1216,110,p->font_small,.73f,.77f,.82f);
         int row=0;
         for(int i=0;i<PROVIDER_COUNT;i++){
-            int enabled=(enabled_providers & (1u<<i))!=0;
+            int enabled=(enabled_providers & (1u<<(providers[i].id-1)))!=0;
             if(!configuring && !enabled)continue;
             int selected=configuring?i==provider_settings_selected:row==selected_provider;
-            list_row(p,ui_text(provider_names[i]),UI_ROW_Y+row*UI_ROW_STEP,selected,
+            list_row(p,ui_text(providers[i].name),UI_ROW_Y+row*UI_ROW_STEP,selected,
                      configuring?(enabled?TR("Увімкнено","Enabled"):TR("Вимкнено","Disabled")):NULL);
             row++;
         }
@@ -2101,6 +2111,22 @@ static void draw_player_controls(Paint *p,mpv_handle *player,double offset) {
         text_center(p,labels[i],center-72,678,144,p->font_tiny,.78f,.84f,.89f);
     }
 }
+static GLuint video_framebuffer(GLuint *texture){
+    GLuint fbo=0;
+    glGenTextures(1,texture);
+    glBindTexture(GL_TEXTURE_2D,*texture);
+    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,1280,720,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+    glGenFramebuffers(1,&fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER,fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,*texture,0);
+    GLenum status=glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    glBindFramebuffer(GL_FRAMEBUFFER,0);
+    if(status==GL_FRAMEBUFFER_COMPLETE)return fbo;
+    glDeleteFramebuffers(1,&fbo);
+    glDeleteTextures(1,texture);
+    *texture=0;
+    return 0;
+}
 static void draw_next_episode_prompt(Paint *p,const Episode *next,int seconds){
     ui_theme_enabled=0;
     box_alpha(p,0,0,1280,720,.012f,.018f,.027f,.88f,0);
@@ -2115,6 +2141,119 @@ static void draw_next_episode_prompt(Paint *p,const Episode *next,int seconds){
     text_small(p,timer,286,376,681);
     text_small(p,TR("A — дивитися зараз     B — скасувати","A — Watch now     B — Cancel"),286,448,690);
 }
+typedef enum { UPDATE_OFFER, UPDATE_DETAILS, UPDATE_DOWNLOADING,
+               UPDATE_FAILED } UpdateScreen;
+enum { UPDATE_CHECK_JOB, UPDATE_NOTES_JOB, UPDATE_FILE_JOB,
+       UPDATE_NOTE_ROWS=14, UPDATE_LINE_SIZE=192, UPDATE_MAX_LINES=256 };
+
+static struct {
+    SDL_Thread *thread;
+    SDL_atomic_t done;
+    atomic_uint progress;
+    atomic_int cancel;
+    int job,result,available,focused,first_line,line_count,cancelled,notes_loaded;
+    UpdateScreen screen;
+    UpdateRelease release;
+    char path[1024];
+    char notes[UPDATE_NOTES_SIZE];
+    char lines[UPDATE_MAX_LINES][UPDATE_LINE_SIZE];
+} app_update;
+
+static int update_worker(void *unused){
+    (void)unused;
+    if(app_update.job==UPDATE_CHECK_JOB)
+        app_update.result=update_check(&app_update.release);
+    else if(app_update.job==UPDATE_NOTES_JOB)
+        app_update.result=update_details(&app_update.release,app_update.notes,sizeof(app_update.notes));
+    else app_update.result=update_download(&app_update.release,app_update.path,
+                                          &app_update.progress,&app_update.cancel);
+    SDL_AtomicSet(&app_update.done,1);
+    return 0;
+}
+
+static int update_start(int job){
+    app_update.job=job;
+    SDL_AtomicSet(&app_update.done,0);
+    atomic_store(&app_update.cancel,0);
+    atomic_store(&app_update.progress,0);
+    app_update.cancelled=0;
+    app_update.thread=SDL_CreateThread(update_worker,"update",NULL);
+    return app_update.thread!=NULL;
+}
+
+/* Keep paragraph boundaries and break long lines at a UTF-8 boundary. */
+static void update_wrap_notes(Paint *p){
+    const char *cursor=app_update.notes;
+    app_update.line_count=0;
+    app_update.first_line=0;
+    while(*cursor && app_update.line_count<(int)(sizeof(app_update.lines)/sizeof(app_update.lines[0]))){
+        while(*cursor==' ' || *cursor=='#')cursor++;
+        char *line=app_update.lines[app_update.line_count++];
+        size_t bytes=0,last_space=0;
+        while(cursor[bytes] && cursor[bytes]!='\n'){
+            size_t next=bytes+1;
+            while(((unsigned char)cursor[next]&0xc0)==0x80)next++;
+            if(next>=UPDATE_LINE_SIZE)break;
+            memcpy(line+bytes,cursor+bytes,next-bytes);
+            line[next]=0;
+            if(bytes && measure(p,line,p->font_small)>1100)break;
+            if(cursor[bytes]==' ')last_space=bytes;
+            bytes=next;
+        }
+        if(cursor[bytes] && cursor[bytes]!='\n' && last_space)
+            bytes=last_space;
+        line[bytes]=0;
+        cursor+=bytes;
+        if(*cursor=='\n')cursor++;
+    }
+}
+
+static void draw_update(Paint *p){
+    ui_theme_enabled=0;
+    box(p,0,0,1280,720,.055f,.069f,.091f);
+    if(app_update.screen==UPDATE_DETAILS){
+        screen_header(p,TR("Деталі оновлення","Update details"),app_update.release.version);
+        if(app_update.thread)
+            text_small(p,TR("Завантаження опису…","Loading release notes…"),90,125,1080);
+        else if(!app_update.line_count)
+            text_small(p,app_update.notes_loaded?TR("Опис релізу відсутній","No release notes"):
+                       TR("Не вдалося завантажити опис. A — повторити","Could not load notes. A — Retry"),90,125,1080);
+        for(int i=0;i<UPDATE_NOTE_ROWS && app_update.first_line+i<app_update.line_count;i++)
+            text_small(p,app_update.lines[app_update.first_line+i],90,118+i*34,1100);
+        text_small(p,TR("↑↓ — Прокрутити     B — Назад","↑↓ — Scroll     B — Back"),90,658,1100);
+        return;
+    }
+    box_alpha(p,210,175,860,370,.095f,.125f,.170f,1.f,24);
+    if(app_update.screen==UPDATE_DOWNLOADING){
+        headline(p,TR("Завантаження оновлення","Downloading update"),258,215,760);
+        unsigned percent=atomic_load(&app_update.progress);
+        box_alpha(p,262,332,756,10,.30f,.34f,.40f,1.f,5);
+        if(percent)box_alpha(p,262,332,756*(int)percent/100,10,.88f,.92f,.98f,1.f,5);
+        char status[24];
+        snprintf(status,sizeof(status),"%u%%",percent);
+        text_small(p,status,262,357,145);
+        text_small(p,app_update.cancelled?TR("Скасування…","Canceling…"):TR("B — Скасувати","B — Cancel"),262,445,755);
+    }else if(app_update.screen==UPDATE_FAILED){
+        headline(p,TR("Не вдалося оновити UAPlay","Could not update UAPlay"),258,215,760);
+        const char *reason=app_update.result==UPDATE_INVALID?
+            TR("Файл не пройшов перевірку цілісності.","The file failed verification."):
+            app_update.result==UPDATE_SD?TR("Перевірте доступ і вільне місце на SD-карті.",
+                                            "Check SD card access and free space."):
+            TR("Не вдалося завантажити файл із GitHub.","Could not download the file from GitHub.");
+        text_small(p,reason,262,312,755);
+        text_small(p,TR("A — Повторити     B — Назад","A — Retry     B — Back"),262,445,755);
+    }else{
+        headline(p,TR("Доступне оновлення UAPlay","UAPlay update available"),258,215,760);
+        char label[96];
+        snprintf(label,sizeof(label),TR("Версія %s → %s","Version %s → %s"),UAPLAY_VERSION,app_update.release.version);
+        text(p,label,262,304,750);
+        text_small(p,TR("Після встановлення застосунок закриється.","The app will close after installation."),262,357,755);
+        button(p,TR("Встановити","Install"),262,439,248,56,app_update.focused==0);
+        button(p,TR("Деталі","Details"),524,439,198,56,app_update.focused==1);
+        button(p,TR("Пізніше","Later"),736,439,198,56,app_update.focused==2);
+    }
+}
+
 static int native_button(int button) {
     /* SDL uses Xbox-style face button names; Switch prints the opposite labels. */
     switch(button) {
@@ -2240,7 +2379,7 @@ static int keyboard(char *value,size_t size) {
     swkbdClose(&cfg);
     return R_SUCCEEDED(result) && value[0];
 }
-int main(void) {
+int main(int argc,char **argv) {
     romfsInit();
     library_init();
     theme_load();
@@ -2252,6 +2391,8 @@ int main(void) {
     battery_status_poll();
     catalog_http_init();
     downloads_init();
+    int can_update=R_SUCCEEDED(network_result) && argc>0 &&
+                   update_path(argv[0],app_update.path,sizeof(app_update.path));
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,SDL_GL_CONTEXT_PROFILE_ES);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION,3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,0);
@@ -2260,6 +2401,7 @@ int main(void) {
     SDL_GLContext gl=SDL_GL_CreateContext(window);
     if(!gl) { SDL_DestroyWindow(window);SDL_Quit();return 3; }
     Paint paint={0};
+    int install_update=0;
     if(!paint_init(&paint)) goto cleanup;
     posters_init();
     SDL_GameController *pad=NULL;
@@ -2299,6 +2441,7 @@ int main(void) {
     Page page=CATALOG;
     char query[192]={0},message[256]={0};
     catalog_loader_init();
+    if(can_update)update_start(UPDATE_CHECK_JOB);
     n=load_category(category,query,movies,message,sizeof(message));
     Movie playing_movie={0};
     double resume_at=0;
@@ -2308,6 +2451,8 @@ int main(void) {
     Uint32 video_started_at=0;
     int video_loaded=0;
     MovyPlayback movy={0};
+    GLuint movy_texture=0,movy_fbo=0;
+    int movy_frame_valid=0;
     int history_playback_committed=0;
     Uint32 controls_until=0;
     int pending_next_episode=-1,next_episode_request=-1;
@@ -2321,8 +2466,29 @@ int main(void) {
     int pending_key=-1;
     Page pending_key_page=CATALOG;
     static DownloadInfo download_rows[DOWNLOADS_MAX];
+    Page update_return=CATALOG;
     while(running){
         Uint32 frame_started_at=SDL_GetTicks();
+        if(app_update.thread && SDL_AtomicGet(&app_update.done)){
+            SDL_WaitThread(app_update.thread,NULL);
+            app_update.thread=NULL;
+            if(app_update.job==UPDATE_CHECK_JOB)app_update.available=app_update.result;
+            else if(app_update.job==UPDATE_NOTES_JOB){
+                app_update.notes_loaded=app_update.result;
+                if(app_update.notes_loaded)update_wrap_notes(&paint);
+            }else if(app_update.result==UPDATE_OK && !app_update.cancelled){
+                install_update=1;
+                break;
+            }else{
+                app_update.screen=app_update.cancelled?UPDATE_OFFER:UPDATE_FAILED;
+            }
+        }
+        if(app_update.available && page==CATALOG){
+            app_update.available=0;
+            app_update.screen=UPDATE_OFFER;
+            update_return=page;
+            page=UPDATE_DIALOG;
+        }
         stick_arrow(pad,&stick_last_time,&stick_last_key);
         SDL_Event e;
         for(;;){
@@ -2353,6 +2519,58 @@ int main(void) {
             if(touch.page!=page || key>=0 || e.type==SDL_APP_WILLENTERBACKGROUND ||
                (e.type==SDL_WINDOWEVENT && e.window.event==SDL_WINDOWEVENT_FOCUS_LOST))
                 touch.active=0;
+            if(page==UPDATE_DIALOG){
+                if(e.type==SDL_FINGERUP || (e.type==SDL_MOUSEBUTTONUP && e.button.which!=SDL_TOUCH_MOUSEID)){
+                    int x=e.type==SDL_FINGERUP?(int)(e.tfinger.x*1280):e.button.x;
+                    int y=e.type==SDL_FINGERUP?(int)(e.tfinger.y*720):e.button.y;
+                    if(app_update.screen==UPDATE_OFFER && y>=439 && y<495 && x>=262 && x<934){
+                        app_update.focused=x<524?0:x<736?1:2;
+                        key=SDL_CONTROLLER_BUTTON_A;
+                    }else if(app_update.screen==UPDATE_DETAILS && y<92 && x<100)
+                        key=SDL_CONTROLLER_BUTTON_B;
+                }
+                if(app_update.screen==UPDATE_DOWNLOADING){
+                    if(key==SDL_CONTROLLER_BUTTON_B && app_update.thread){
+                        app_update.cancelled=1;
+                        atomic_store(&app_update.cancel,1);
+                    }
+                    continue;
+                }
+                if(app_update.screen==UPDATE_DETAILS){
+                    if(key==SDL_CONTROLLER_BUTTON_B)app_update.screen=UPDATE_OFFER;
+                    if(key==SDL_CONTROLLER_BUTTON_A && !app_update.notes_loaded && !app_update.thread)
+                        update_start(UPDATE_NOTES_JOB);
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && app_update.first_line>0)app_update.first_line--;
+                    if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN &&
+                       app_update.first_line+UPDATE_NOTE_ROWS<app_update.line_count)app_update.first_line++;
+                    continue;
+                }
+                if(app_update.screen==UPDATE_FAILED){
+                    if(key==SDL_CONTROLLER_BUTTON_B)app_update.screen=UPDATE_OFFER;
+                    if(key!=SDL_CONTROLLER_BUTTON_A)continue;
+                    app_update.focused=0;
+                }
+                if(key==SDL_CONTROLLER_BUTTON_X){
+                    app_update.screen=UPDATE_DETAILS;
+                    if(!app_update.thread && !app_update.notes_loaded)update_start(UPDATE_NOTES_JOB);
+                    continue;
+                }
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && app_update.focused>0)app_update.focused--;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT && app_update.focused<2)app_update.focused++;
+                if(key==SDL_CONTROLLER_BUTTON_B ||
+                   (key==SDL_CONTROLLER_BUTTON_A && app_update.focused==2))page=update_return;
+                else if(key==SDL_CONTROLLER_BUTTON_A && app_update.focused==1){
+                    app_update.screen=UPDATE_DETAILS;
+                    if(!app_update.thread && !app_update.notes_loaded)update_start(UPDATE_NOTES_JOB);
+                }else if(key==SDL_CONTROLLER_BUTTON_A && !app_update.thread){
+                    if(update_start(UPDATE_FILE_JOB))app_update.screen=UPDATE_DOWNLOADING;
+                    else{
+                        app_update.result=UPDATE_NETWORK;
+                        app_update.screen=UPDATE_FAILED;
+                    }
+                }
+                continue;
+            }
             int tx=-1,ty=-1;
             if(e.type==SDL_FINGERDOWN || e.type==SDL_FINGERMOTION || e.type==SDL_FINGERUP){
                 int x=(int)(e.tfinger.x*1280),y=(int)(e.tfinger.y*720);
@@ -2957,10 +3175,6 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_Y){
                     Episode *ep=selected_episode_item();
                     if(ep){
-                        if(!strncmp(ep->url,HYDRAHD_PLAYER_URL,sizeof(HYDRAHD_PLAYER_URL)-1)){
-                            snprintf(message,sizeof(message),TR("HydraHD: доступний перегляд онлайн","HydraHD: streaming only"));
-                            continue;
-                        }
                         Source episode_source={0};
                         snprintf(episode_source.url,sizeof(episode_source.url),"%s",ep->url);
                         char url[2048]={0};
@@ -3105,7 +3319,7 @@ int main(void) {
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && provider_settings_selected<PROVIDER_COUNT-1)
                     provider_settings_selected++;
                 if(key==SDL_CONTROLLER_BUTTON_A){
-                    enabled_providers^=1u<<provider_settings_selected;
+                    enabled_providers^=1u<<(providers[provider_settings_selected].id-1);
                     message[0]=0;
                     if(!theme_save())
                         snprintf(message,sizeof(message),TR("Не вдалося зберегти джерела на SD-карті","Could not save providers to the SD card"));
@@ -3409,23 +3623,19 @@ int main(void) {
                     if(provider<0)continue;
                     message[0]=0;
                     Movie lookup=movies[chosen];
-                    if(provider+1!=UAKINO_PROVIDER_MOVY &&
-                       (provider+1!=UAKINO_PROVIDER_HYDRAHD || lookup.series))
+                    if(provider!=UAKINO_PROVIDER_MOVY)
                         catalog_use_ukrainian_search_title(&lookup);
                     sn=uakino_search_provider(&lookup,sources,UAKINO_MAX,
-                                              provider+1,message,sizeof(message));
+                                              provider,message,sizeof(message));
                     sn=catalog_rank_sources(&lookup,sources,sn,source_mode);
-                    if(!sn && (!message[0] || (provider+1!=UAKINO_PROVIDER_HYDRAHD &&
-                                               provider+1!=UAKINO_PROVIDER_MOVY)))
+                    if(!sn && (!message[0] || provider!=UAKINO_PROVIDER_MOVY))
                         snprintf(message,sizeof(message),TR("Нічого не знайдено","No results found"));
                     source=0;page=SOURCES;
                 }
             }else if(page==SOURCES){
                 if(key==SDL_CONTROLLER_BUTTON_B){page=PROVIDERS;message[0]=0;}
                 if(key==SDL_CONTROLLER_BUTTON_Y && sn){
-                    if(provider_for_row(selected_provider)+1==UAKINO_PROVIDER_HYDRAHD)
-                        snprintf(message,sizeof(message),TR("HydraHD: доступний перегляд онлайн","HydraHD: streaming only"));
-                    else if(movies[chosen].series)
+                    if(movies[chosen].series)
                         snprintf(message,sizeof(message),TR("Відкрийте серіал і виберіть серію для завантаження","Open the show and choose an episode to download"));
                     else {
                         char url[2048]={0};
@@ -3456,8 +3666,7 @@ int main(void) {
                                     }
                             page=SEASONS;continue;
                         }
-                        if(!strncmp(sources[source].url,HYDRAHD_SERIES_URL,sizeof(HYDRAHD_SERIES_URL)-1) ||
-                           !strncmp(sources[source].url,MOVY_SERIES_URL,sizeof(MOVY_SERIES_URL)-1))
+                        if(!strncmp(sources[source].url,MOVY_SERIES_URL,sizeof(MOVY_SERIES_URL)-1))
                             continue;
                     }
                     char url[2048]={0};
@@ -3483,6 +3692,7 @@ int main(void) {
                 mpv_event *event=mpv_wait_event(player,0);
                 if(event->event_id==MPV_EVENT_NONE)break;
                 if(event->event_id==MPV_EVENT_START_FILE){
+                    if(!movy.seek_started)movy_frame_valid=0;
                     history_playback_committed=0;
                     /* Eden and some GLES drivers may recycle renderer-side
                        resources during source switches. Discard old glyph
@@ -3680,9 +3890,17 @@ int main(void) {
         }
         if(page==PLAYER && render){
             ui_theme_enabled=0;
-            mpv_opengl_fbo fbo={.fbo=0,.w=1280,.h=720};int flip=1;
+            int movy_source=movy_stream_url(playing_url);
+            int seeking=movy.seek_started!=0;
+            if(movy_source && !movy_fbo && video_loaded && !seeking)
+                movy_fbo=video_framebuffer(&movy_texture);
+            int keep_frame=movy_source && movy_fbo && (video_loaded || seeking);
+            mpv_opengl_fbo fbo={.fbo=keep_frame?(int)movy_fbo:0,.w=1280,.h=720,
+                                .internal_format=keep_frame?GL_RGBA8:0};
+            int flip=1,skip=keep_frame && seeking;
             mpv_render_param frame[]={{MPV_RENDER_PARAM_OPENGL_FBO,&fbo},
                                       {MPV_RENDER_PARAM_FLIP_Y,&flip},
+                                      {MPV_RENDER_PARAM_SKIP_RENDERING,&skip},
                                       {MPV_RENDER_PARAM_INVALID,NULL}};
             int render_result=mpv_render_context_render(render,frame);
             /* libmpv explicitly does not preserve all OpenGL state (viewport,
@@ -3697,7 +3915,14 @@ int main(void) {
             glEnable(GL_BLEND);
             glBlendEquation(GL_FUNC_ADD);
             glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
-            if(!video_loaded){
+            if(keep_frame && !skip && render_result>=0)movy_frame_valid=1;
+            if(keep_frame && movy_frame_valid){
+                glBindFramebuffer(GL_READ_FRAMEBUFFER,movy_fbo);
+                glBlitFramebuffer(0,0,1280,720,0,0,1280,720,GL_COLOR_BUFFER_BIT,GL_NEAREST);
+                glBindFramebuffer(GL_READ_FRAMEBUFFER,0);
+            }
+            if(seeking && !movy_frame_valid)box(&paint,0,0,1280,720,0.f,0.f,0.f);
+            if(!video_loaded && !seeking){
                 box(&paint,0,0,1280,720,.035f,.044f,.059f);
                 box_alpha(&paint,35,33,168,53,.10f,.15f,.22f,.95f,14);
                 text(&paint,TR("‹  Назад","‹  Back"),54,44,141);
@@ -3711,8 +3936,7 @@ int main(void) {
                     box_alpha(&paint,loading_center_x+(int)(sx[i]*42)-6,340+(int)(sy[i]*42)-6,
                               13,13,bright,bright,bright,1.f,6);
                 }
-                text_center(&paint,movy.seek_started?TR("Перемотування…","Seeking…"):
-                            TR("Завантаження відео","Loading video"),
+                text_center(&paint,TR("Завантаження відео","Loading video"),
                             loading_center_x-310,426,620,paint.font,.76f,.78f,.82f);
                 unsigned timeout=movy_stream_url(playing_url)?60000u:30000u;
                 if(!movy.seek_started && video_started_at && SDL_GetTicks()-video_started_at>timeout &&
@@ -3720,15 +3944,12 @@ int main(void) {
                     snprintf(message,sizeof(message),TR("Час очікування відео вичерпано (%u с)","Video timed out (%u s)"),timeout/1000);
                     command(player,"stop",NULL);page=player_return_page;
                 }
-            }else if(render_result<0){
+            }else if(render_result<0 && !seeking){
                 snprintf(message,sizeof(message),TR("Помилка відеорендерера mpv: %s","mpv video renderer error: %s"),mpv_error_string(render_result));
                 command(player,"stop",NULL);page=player_return_page;
             }
             /* The battery meter belongs to the player controls overlay:
                show and hide both at the same time while playing. */
-            if(video_loaded && movy.seek_started && SDL_GetTicks()-movy.seek_started>600u)
-                text_center(&paint,TR("Перемотування…","Seeking…"),
-                            330,342,620,paint.font,.92f,.94f,.98f);
             if(video_loaded && SDL_GetTicks()<controls_until){
                 draw_player_controls(&paint,player,movy.offset);
                 battery_status_horizontal(&paint,1187,28);
@@ -3740,6 +3961,8 @@ int main(void) {
                 draw_next_episode_prompt(&paint,&episodes[pending_next_episode],remaining);
             }
 
+        }else if(page==UPDATE_DIALOG){
+            draw_update(&paint);
         }else{
             ui_category=category;
             /* The focused card takes priority; the remaining worker slots
@@ -3769,12 +3992,30 @@ int main(void) {
         Uint32 frame_budget=page==PLAYER || ui_animating || pending_key>=0?16u:33u;
         if(frame_elapsed<frame_budget)SDL_Delay(frame_budget-frame_elapsed);
     }
+    if(app_update.thread){
+        atomic_store(&app_update.cancel,1);
+        SDL_WaitThread(app_update.thread,NULL);
+    }
+    if(!install_update && app_update.job==UPDATE_FILE_JOB){
+        char temp[1100];
+        snprintf(temp,sizeof(temp),"%s.update",app_update.path);
+        remove(temp);
+    }
+    if(install_update){
+        ui_theme_enabled=0;
+        box(&paint,0,0,1280,720,.055f,.069f,.091f);
+        text_center(&paint,TR("Встановлення оновлення…","Installing update…"),
+                    0,330,1280,paint.font_big,.96f,.97f,.98f);
+        SDL_GL_SwapWindow(window);
+    }
     if(media_playback_mode)appletSetMediaPlaybackState(false);
     if(subdl_job.thread)SDL_WaitThread(subdl_job.thread,NULL);
     downloads_shutdown();
     catalog_loader_shutdown();
     free(movies);
     if(render)mpv_render_context_free(render);
+    if(movy_fbo)glDeleteFramebuffers(1,&movy_fbo);
+    if(movy_texture)glDeleteTextures(1,&movy_texture);
     if(player)mpv_terminate_destroy(player);
     movy_stream_close();
     if(pad)SDL_GameControllerClose(pad);
@@ -3800,6 +4041,19 @@ int main(void) {
 cleanup:
     SDL_GL_DeleteContext(gl);
     SDL_DestroyWindow(window);SDL_Quit();if(battery_service_ready)psmExit();romfsExit();
+    if(install_update && !update_install(app_update.path)){
+        consoleInit(NULL);
+        puts("Could not install UAPlay.nro. Check the SD card and UAPlay.nro.bak.\nPress B to exit.");
+        PadState exit_pad;
+        padConfigureInput(1,HidNpadStyleSet_NpadStandard);
+        padInitializeDefault(&exit_pad);
+        while(appletMainLoop()){
+            padUpdate(&exit_pad);
+            if(padGetButtonsDown(&exit_pad)&HidNpadButton_B)break;
+            consoleUpdate(NULL);
+        }
+        consoleExit(NULL);
+    }
     if (R_SUCCEEDED(network_result)) { curl_global_cleanup(); socketExit(); }
     return 0;
 }

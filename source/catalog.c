@@ -2,6 +2,8 @@
 #include "catalog.h"
 #include "platform.h"
 #include "subdl.h"
+#include "update.h"
+#include "version.h"
 
 #include <curl/curl.h>
 #include <ctype.h>
@@ -30,7 +32,6 @@
 #define UAPLAY_TMDB_BUILD_KEY ""
 #endif
 #define UAFRESH_WORKER "https://uakino.ofreshofresh.workers.dev"
-#define HYDRAHD_HOST "https://hydrahd.gd"
 #define MOVY_API "https://api.wecollege.net"
 
 typedef struct { char *data; size_t length, capacity; } Response;
@@ -250,8 +251,8 @@ static char *encode(const char *value) {
 }
 
 /* A compact JSON string reader, safe for escaped quotation marks. */
-static void json_field(const char *object, const char *end, const char *key,
-                       char *value, size_t size) {
+static void json_read_field(const char *object,const char *end,const char *key,
+                            char *value,size_t size,int multiline) {
     value[0] = 0;
     char needle[80];
     snprintf(needle, sizeof(needle), "\"%s\"", key);
@@ -271,7 +272,10 @@ static void json_field(const char *object, const char *end, const char *key,
             if (!quoted && (*p == ',' || *p == '}' || isspace((unsigned char)*p))) break;
             if (*p == '\\' && p + 1 < end) {
                 p++;
-                if (*p == 'n' || *p == 'r') { value[n++] = ' '; p++; continue; }
+                if (*p == 'n' || *p == 'r' || (multiline && *p == 't')) {
+                    if (*p!='r' || !multiline) value[n++]=multiline && *p=='n'?'\n':' ';
+                    p++;continue;
+                }
                 if (*p == 'u' && p + 4 < end) { p += 5; continue; }
             }
             value[n++] = *p++;
@@ -279,6 +283,11 @@ static void json_field(const char *object, const char *end, const char *key,
         value[n] = 0;
         return;
     }
+}
+
+static void json_field(const char *object,const char *end,const char *key,
+                       char *value,size_t size){
+    json_read_field(object,end,key,value,size,0);
 }
 
 static const char *object_end(const char *p) {
@@ -322,6 +331,91 @@ static const char *json_array_start(const char *start,const char *end,const char
     if(p==end || *p++!=':')return NULL;
     while(p<end && isspace((unsigned char)*p))p++;
     return p<end && *p=='['?p+1:NULL;
+}
+
+/* Updates use their own handle, separate from the catalog's two pools. */
+static char *request_release(const char *url){
+    CURL *curl=curl_easy_init();
+    if(!curl)return NULL;
+    Response response={0};
+    request_options(curl,url,&response,5L,12L);
+    curl_easy_setopt(curl,CURLOPT_USERAGENT,"UAPlay/" UAPLAY_VERSION);
+    curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,0L);
+    CURLcode result=curl_easy_perform(curl);
+    long status=0;
+    curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status);
+    curl_easy_cleanup(curl);
+    if(result==CURLE_OK && status==200 && response.length)return response.data;
+    free(response.data);
+    return NULL;
+}
+
+static int release_version(const char *tag,unsigned version[3]){
+    if(!strncmp(tag,"UAPlay_",7))tag+=7;
+    else if(*tag=='v')tag++;
+    for(int i=0;i<3;i++){
+        if(!isdigit((unsigned char)*tag))return 0;
+        unsigned number=0;
+        do{
+            number=number*10u+(unsigned)(*tag++-'0');
+            if(number>99999)return 0;
+        }while(isdigit((unsigned char)*tag));
+        version[i]=number;
+        if(i<2 && *tag++!='.')return 0;
+    }
+    return *tag==0;
+}
+
+static int parse_update_release(const char *json,UpdateRelease *release){
+    const char *end=json+strlen(json);
+    unsigned latest[3],installed[3];
+    json_field(json,end,"tag_name",release->tag,sizeof(release->tag));
+    if(!release_version(release->tag,latest) || !release_version(UAPLAY_VERSION,installed))
+        return 0;
+    int i=0;
+    while(i<3 && latest[i]==installed[i])i++;
+    if(i==3 || latest[i]<installed[i])return 0;
+    const char *p=json_array_start(json,end,"assets");
+    if(!p)return 0;
+    for(p+=strspn(p," \t\r\n,");*p=='{';p+=strspn(p," \t\r\n,")){
+        const char *next=object_end(p);
+        if(!next)return 0;
+        char name[48],digest[80],bytes[24];
+        json_field(p,next,"name",name,sizeof(name));
+        if(!strcmp(name,"UAPlay.nro")){
+            json_field(p,next,"digest",digest,sizeof(digest));
+            json_field(p,next,"size",bytes,sizeof(bytes));
+            char *after;
+            unsigned long size=strtoul(bytes,&after,10);
+            if(strncmp(digest,"sha256:",7) || strlen(digest)!=71 ||
+               strspn(digest+7,"0123456789abcdefABCDEF")!=64 ||
+               *after || size<128 || size>UPDATE_MAX_NRO_SIZE)return 0;
+            memcpy(release->digest,digest+7,sizeof(release->digest));
+            release->size=(size_t)size;
+            snprintf(release->version,sizeof(release->version),"%u.%u.%u",latest[0],latest[1],latest[2]);
+            return 1;
+        }
+        p=next;
+    }
+    return 0;
+}
+
+int update_check(UpdateRelease *release){
+    char *json=request_release(UPDATE_RELEASES_API "/latest");
+    if(!json)return 0;
+    int available=parse_update_release(json,release);
+    free(json);
+    return available;
+}
+
+int update_details(const UpdateRelease *release,char *notes,size_t size){
+    char url[160];
+    snprintf(url,sizeof(url),UPDATE_RELEASES_API "/tags/%s",release->tag);
+    char *json=request_release(url);
+    if(!json)return 0;
+    json_read_field(json,json+strlen(json),"body",notes,size,1);
+    free(json);
+    return 1;
 }
 
 static int subdl_parse(const char *json,int season,int episode,
@@ -1740,94 +1834,6 @@ unavailable:
     return 0;
 }
 
-static int hydrahd_resolve(const char *player,char *stream,int size,
-                           char *error,int error_size){
-    const char *params=strchr(player,'?');
-    if(!params)return 0;
-    char request_url[256];
-    int length=snprintf(request_url,sizeof(request_url),
-                        "%.*s?action=sources&provider=febbox&%s",
-                        (int)(params-player),player,params+1);
-    if(length<0 || length>=(int)sizeof(request_url))return 0;
-    char *json=request_form(request_url,NULL,player,error,error_size);
-    if(!json)return 0;
-    char candidate[1024]="";
-    const char *p=strstr(json,"\"sources\"");
-    if(p && (p=strchr(p,'['))){
-        for(p++;*p;p++){
-            if(isspace((unsigned char)*p) || *p==',')continue;
-            if(*p!='{')break;
-            const char *end=object_end(p);
-            if(!end)break;
-            char url[1024],label[24];
-            json_field(p,end,"file",url,sizeof(url));
-            if(!strncmp(url,"https://hls.shegu.net/",sizeof("https://hls.shegu.net/")-1) &&
-               strstr(url,".m3u8") && strlen(url)<sizeof(url)-1){
-                json_field(p,end,"label",label,sizeof(label));
-                if(!candidate[0] || !strcmp(label,"720p") || !strcmp(label,"AUTO"))
-                    snprintf(candidate,sizeof(candidate),"%s",url);
-                if(!strcmp(label,"AUTO"))break;
-            }
-            p=end-1;
-        }
-    }
-    free(json);
-    if(!candidate[0] || strlen(candidate)>=(size_t)size){
-        snprintf(error,error_size,TR("HydraHD: відеопотік недоступний","HydraHD: video stream unavailable"));
-        return 0;
-    }
-    snprintf(stream,(size_t)size,"%s",candidate);
-    return 1;
-}
-
-static int search_hydrahd(const Movie *movie,Source *item,char *error,int error_size){
-    if(movie->id<=0)return 0;
-    if(!movie->series){
-        snprintf(item->url,sizeof(item->url),HYDRAHD_PLAYER_URL "movieplayer.php?tmdb=%d",movie->id);
-    }else{
-        const char *query=movie->original[0]?movie->original:movie->title;
-        char *encoded=encode(query);
-        if(!encoded)return 0;
-        char url[720];
-        snprintf(url,sizeof(url),HYDRAHD_HOST "/index.php?menu=search&query=%s",encoded);
-        free(encoded);
-        char *html=request(url,error,error_size);
-        if(!html)return 0;
-        char original[384],localized[384];
-        normalize_title(query,strlen(query),original,sizeof(original));
-        normalize_title(movie->title,strlen(movie->title),localized,sizeof(localized));
-        const char *card=html;
-        item->url[0]=0;
-        while((card=strstr(card,"<figure"))){
-            const char *end=strstr(card,"</figure>");
-            if(!end)break;
-            char href[800],label[192],normalized[384];
-            int found=html_attr(card,end,"href",href,sizeof(href)) &&
-                      !strncmp(href,"/watchseries/",13) &&
-                      card_label(card,end,"class=\"title detz\"",label,sizeof(label));
-            if(found){
-                normalize_title(label,strlen(label),normalized,sizeof(normalized));
-                const char *poster=movie->poster[0]?strstr(card,movie->poster):NULL;
-                int same_poster=poster && poster<end;
-                if(same_poster || (!item->url[0] && normalized[0] &&
-                   (!strcmp(normalized,original) || !strcmp(normalized,localized)))){
-                    snprintf(item->url,sizeof(item->url),HYDRAHD_HOST "%s#tmdb=%d",href,movie->id);
-                    if(same_poster)break;
-                }
-            }
-            card=end+9;
-        }
-        free(html);
-        if(!item->url[0]){
-            snprintf(error,error_size,TR("HydraHD: серіал не знайдено","HydraHD: show not found"));
-            return 0;
-        }
-    }
-    snprintf(item->title,sizeof(item->title),"HydraHD: %.182s",
-             movie->original[0]?movie->original:movie->title);
-    return 1;
-}
-
 int uakino_search_provider(const Movie *movie, Source *items, int max,
                            int selected, char *error, int error_size) {
     int count=0;
@@ -1836,8 +1842,6 @@ int uakino_search_provider(const Movie *movie, Source *items, int max,
     const char *localized=movie->title;
     const char *original=movie->original;
     error[0]=0;
-    if(selected==UAKINO_PROVIDER_HYDRAHD)
-        return max>0?search_hydrahd(movie,items,error,error_size):0;
     if(selected==UAKINO_PROVIDER_MOVY){
         if(max<1 || movie->id<=0)return 0;
         if(movie->series)
@@ -2273,9 +2277,6 @@ int uakino_resolve(const Source *source, char *stream, int size,
         snprintf(error,error_size,"%s",TR("Movy: серію не вибрано","Movy: no episode selected"));
         return 0;
     }
-    if(!strncmp(source->url,HYDRAHD_PLAYER_URL "tvplayer.php?",sizeof(HYDRAHD_PLAYER_URL "tvplayer.php?")-1) ||
-       !strncmp(source->url,HYDRAHD_PLAYER_URL "movieplayer.php?",sizeof(HYDRAHD_PLAYER_URL "movieplayer.php?")-1))
-        return hydrahd_resolve(source->url,stream,size,error,error_size);
     /* A Playerjs playlist leaf already contains the actual media URL. */
     if((strstr(source->url,".m3u8") || strstr(source->url,".mp4") ||
         strstr(source->url,".mpd")) &&
@@ -2582,45 +2583,6 @@ static void parse_uaflix_episodes(const char *html,const char *root,
     }
 }
 
-static int hydrahd_episodes(const char *url,Episode *items,int max,char *error,int error_size){
-    const char *id=strstr(url,"#tmdb=");
-    if(!id)return 0;
-    int tmdb=atoi(id+6);
-    if(tmdb<=0)return 0;
-    char page_url[1024];
-    snprintf(page_url,sizeof(page_url),"%.*s",(int)(id-url),url);
-    char *html=request(page_url,error,error_size);
-    if(!html)return 0;
-    int count=0;
-    const char *p=html;
-    while(count<max && (p=strstr(p,"<a "))){
-        const char *end=strchr(p,'>');
-        if(!end)break;
-        char season[12],number[12];
-        int found=html_attr(p,end,"data-season",season,sizeof(season)) &&
-                  html_attr(p,end,"data-episode",number,sizeof(number));
-        p=end+1;
-        if(!found)continue;
-        int s=atoi(season),e=atoi(number);
-        if(s<1 || s>999 || e<1 || e>9999)continue;
-        int duplicate=0;
-        for(int i=0;i<count;i++)
-            if(items[i].season==s && items[i].number==e){duplicate=1;break;}
-        if(duplicate)continue;
-        Episode *item=&items[count++];
-        memset(item,0,sizeof(*item));
-        item->season=s;
-        item->number=e;
-        snprintf(item->title,sizeof(item->title),TR("Сезон %d · Серія %d","Season %d · Episode %d"),s,e);
-        snprintf(item->url,sizeof(item->url),HYDRAHD_PLAYER_URL "tvplayer.php?tmdb=%d&s=%d&e=%d",
-                 tmdb,s,e);
-    }
-    free(html);
-    if(count)qsort(items,(size_t)count,sizeof(*items),episode_order);
-    else snprintf(error,error_size,TR("HydraHD: перелік серій недоступний","HydraHD: episode list unavailable"));
-    return count;
-}
-
 static int movy_episodes(const char *url,Episode *items,int max,char *error,int error_size){
     int id=atoi(url+sizeof(MOVY_SERIES_URL)-1);
     if(id<=0)return 0;
@@ -2662,8 +2624,6 @@ int uakino_episodes(const Source *source, Episode *items, int max,
                     char *error, int error_size) {
     if(!strncmp(source->url,MOVY_SERIES_URL,sizeof(MOVY_SERIES_URL)-1))
         return movy_episodes(source->url,items,max,error,error_size);
-    if(!strncmp(source->url,HYDRAHD_SERIES_URL,sizeof(HYDRAHD_SERIES_URL)-1))
-        return hydrahd_episodes(source->url,items,max,error,error_size);
     if(strstr(source->url,"animeon.club/api/player/")){
         char *response=request(source->url,error,error_size);
         if(!response)return 0;

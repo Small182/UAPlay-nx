@@ -1710,6 +1710,39 @@ static int iptv_touched_card(int x,int y){
 }
 
 
+enum { WALL_COLS=4,WALL_PAGE=12,WALL_X=32,WALL_Y=165,WALL_W=290,WALL_STEP_X=308,WALL_STEP_Y=158 };
+static int wall_selected,wall_filter,wall_focus,wall_count,wall_rows[WALLPAPERS_MAX];
+static char wall_query[96];
+static const UiText wall_tags[]={{"Усі","All"},{"Темні","Dark"},{"Мінімалізм","Minimal"},{"Аніме","Anime"}};
+static int wall_match(const char *s,const char *needle){
+    if(!*needle)return 1;
+    for(;*s;s++){const unsigned char *a=(const unsigned char*)s,*b=(const unsigned char*)needle;
+        while(*a && *b && tolower(*a)==tolower(*b)){a++;b++;}
+        if(!*b)return 1;}
+    return 0;
+}
+static void wall_rebuild(void){
+    wall_count=0;
+    for(int i=0;i<wallpapers_count();i++){
+        const WallpaperItem *it=wallpapers_item(i);
+        if(!it)continue;
+        const char *t=wall_filter==1?"dark":wall_filter==2?"minimal":"anime";
+        if(wall_filter && !wall_match(it->name,t) && !wall_match(it->tags,t) &&
+           !(wall_filter==2 && wall_match(it->name,"nord")) &&
+           !(wall_filter==3 && wall_match(it->name,"manga")))continue;
+        if(*wall_query && !wall_match(it->name,wall_query) && !wall_match(it->tags,wall_query))continue;
+        wall_rows[wall_count++]=i;
+    }
+    if(wall_selected>=wall_count)wall_selected=wall_count?wall_count-1:0;
+}
+static int wall_hit(int x,int y){
+    if(x<WALL_X || y<WALL_Y)return -1;
+    int col=(x-WALL_X)/WALL_STEP_X,row=(y-WALL_Y)/WALL_STEP_Y;
+    if(col>=WALL_COLS || row>=3 || (x-WALL_X)%WALL_STEP_X>=WALL_W ||
+       (y-WALL_Y)%WALL_STEP_Y>=137)return -1;
+    int i=wall_selected/WALL_PAGE*WALL_PAGE+row*WALL_COLS+col;
+    return i<wall_count?i:-1;
+}
 static void draw_wallpapers(Paint *p){
     screen_header(p,TR("Шпалери","Wallpapers"),"Awesome Wallpapers");
     for(int i=0;i<4;i++){
@@ -2568,39 +2601,6 @@ static void draw_update(Paint *p){
 }
 
 
-enum { WALL_COLS=4,WALL_PAGE=12,WALL_X=32,WALL_Y=165,WALL_W=290,WALL_STEP_X=308,WALL_STEP_Y=158 };
-static int wall_selected,wall_filter,wall_focus,wall_count,wall_rows[WALLPAPERS_MAX];
-static char wall_query[96];
-static const UiText wall_tags[]={{"Усі","All"},{"Темні","Dark"},{"Мінімалізм","Minimal"},{"Аніме","Anime"}};
-static int wall_match(const char *s,const char *needle){
-    if(!*needle)return 1;
-    for(;*s;s++){const unsigned char *a=(const unsigned char*)s,*b=(const unsigned char*)needle;
-        while(*a && *b && tolower(*a)==tolower(*b)){a++;b++;}
-        if(!*b)return 1;}
-    return 0;
-}
-static void wall_rebuild(void){
-    wall_count=0;
-    for(int i=0;i<wallpapers_count();i++){
-        const WallpaperItem *it=wallpapers_item(i);
-        if(!it)continue;
-        const char *t=wall_filter==1?"dark":wall_filter==2?"minimal":"anime";
-        if(wall_filter && !wall_match(it->name,t) && !wall_match(it->tags,t) &&
-           !(wall_filter==2 && wall_match(it->name,"nord")) &&
-           !(wall_filter==3 && wall_match(it->name,"manga")))continue;
-        if(*wall_query && !wall_match(it->name,wall_query) && !wall_match(it->tags,wall_query))continue;
-        wall_rows[wall_count++]=i;
-    }
-    if(wall_selected>=wall_count)wall_selected=wall_count?wall_count-1:0;
-}
-static int wall_hit(int x,int y){
-    if(x<WALL_X || y<WALL_Y)return -1;
-    int col=(x-WALL_X)/WALL_STEP_X,row=(y-WALL_Y)/WALL_STEP_Y;
-    if(col>=WALL_COLS || row>=3 || (x-WALL_X)%WALL_STEP_X>=WALL_W ||
-       (y-WALL_Y)%WALL_STEP_Y>=137)return -1;
-    int i=wall_selected/WALL_PAGE*WALL_PAGE+row*WALL_COLS+col;
-    return i<wall_count?i:-1;
-}
 static int native_button(int button) {
     /* SDL uses Xbox-style face button names; Switch prints the opposite labels. */
     switch(button) {
@@ -3008,6 +3008,9 @@ int main(int argc,char **argv) {
                                     catalog_hero_focus=0;
                                 }
                             }
+                        }else if(page==WALLPAPERS && vertical &&
+                                  touch.y>=WALL_Y && touch.y<640){
+                            wall_selected=swipe_page_selection(wall_selected,wall_count,WALL_PAGE,direction);
                         }else if(page==IPTV_CHANNELS && vertical &&
                                  touch.y>=IPTV_GRID_Y && touch.y<IPTV_GRID_BOTTOM){
                             tv.focus=IPTV_FOCUS_GRID;
@@ -3243,6 +3246,21 @@ int main(int argc,char **argv) {
                             tv.filter_row=row;
                             key=SDL_CONTROLLER_BUTTON_A;
                         }
+                    }
+                }else if(page==WALLPAPERS){
+                    if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
+                    else if(ty>=101 && ty<147 && tx>=32 && tx<651){
+                        int filter=(tx-32)/158;
+                        if(filter>=0 && filter<4){
+                            wall_filter=filter;wall_focus=1;wall_selected=0;wall_rebuild();
+                        }
+                        continue;
+                    }else if(ty>=101 && ty<147 && tx>=674 && tx<1034){
+                        key=SDL_CONTROLLER_BUTTON_X;
+                    }else if(ty>=101 && ty<147 && tx>=1050)key=SDL_CONTROLLER_BUTTON_Y;
+                    else{
+                        int index=wall_hit(tx,ty);
+                        if(index>=0){wall_selected=index;wall_focus=0;key=SDL_CONTROLLER_BUTTON_A;}
                     }
                 }else if(page==DOWNLOADS){
                     int index=touched_list_row(tx,ty);
@@ -3707,6 +3725,46 @@ int main(int argc,char **argv) {
                 }
                 continue;
             }
+            if(page==WALLPAPERS){
+                if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){
+                    page=SETTINGS;continue;
+                }
+                if(key==SDL_CONTROLLER_BUTTON_X){
+                    char search[sizeof(wall_query)];
+                    snprintf(search,sizeof(search),"%s",wall_query);
+                    if(keyboard(search,sizeof(search))){
+                        snprintf(wall_query,sizeof(wall_query),"%s",search);
+                        wall_selected=0;wall_rebuild();
+                    }else if(wall_query[0]){wall_query[0]=0;wall_selected=0;wall_rebuild();}
+                }
+                if(key==SDL_CONTROLLER_BUTTON_Y)wallpapers_reset();
+                if(key==SDL_CONTROLLER_BUTTON_LEFTSHOULDER)
+                    wall_selected=swipe_page_selection(wall_selected,wall_count,WALL_PAGE,-1);
+                if(key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)
+                    wall_selected=swipe_page_selection(wall_selected,wall_count,WALL_PAGE,1);
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_UP){
+                    if(!wall_focus && wall_selected%WALL_PAGE<WALL_COLS)wall_focus=1;
+                    else if(!wall_focus)wall_selected-=WALL_COLS;
+                }
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN){
+                    if(wall_focus)wall_focus=0;
+                    else if(wall_selected+WALL_COLS<wall_count &&
+                            (wall_selected+WALL_COLS)/WALL_PAGE==wall_selected/WALL_PAGE)
+                        wall_selected+=WALL_COLS;
+                }
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT){
+                    if(wall_focus){wall_filter=(wall_filter+3)%4;wall_selected=0;wall_rebuild();}
+                    else if(wall_selected>0)wall_selected--;
+                }
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT){
+                    if(wall_focus){wall_filter=(wall_filter+1)%4;wall_selected=0;wall_rebuild();}
+                    else if(wall_selected+1<wall_count)wall_selected++;
+                }
+                if(key==SDL_CONTROLLER_BUTTON_A && !wall_focus &&
+                   wall_count && wall_selected<wall_count)
+                    wallpapers_apply(wall_rows[wall_selected]);
+                continue;
+            }
             if(page==SETTINGS){
                 if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){
                     if(catalog_language_changed){
@@ -3733,6 +3791,9 @@ int main(int argc,char **argv) {
                         provider_settings_selected=0;
                         message[0]=0;
                         page=PROVIDER_SETTINGS;
+                    }else if(settings_selected==SETTING_WALLPAPERS){
+                        wall_selected=0;wall_focus=0;
+                        wallpapers_open();wall_rebuild();page=WALLPAPERS;
                     }else if(settings_selected==SETTING_LANGUAGE){
                         ui_set_language(ui_language()==UI_ENGLISH?UI_UKRAINIAN:UI_ENGLISH);
                         catalog_invalidate_language(category,query);

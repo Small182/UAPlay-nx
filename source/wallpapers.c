@@ -25,7 +25,12 @@
 #define WALLPAPER_NAME_TMP WALLPAPER_HOME "/wallpaper.txt.part"
 #define WALLPAPER_NAME_BACKUP WALLPAPER_HOME "/wallpaper.txt.bak"
 #define CATALOG_BYTES_LIMIT (768u * 1024u)
-#define IMAGE_BYTES_LIMIT (24u * 1024u * 1024u)
+/* The remote image service supplies a 1280x720 JPEG, avoiding large
+   decodes and GPU uploads on the Switch. The raw original is only used
+   as a fallback when its reported dimensions and size are safe. */
+#define IMAGE_BYTES_LIMIT (8u * 1024u * 1024u)
+#define IMAGE_PROXY "https://images.weserv.nl/?url=raw.githubusercontent.com/AlexandrosLiaskos/Awesome_Wallpapers/main/images/"
+#define IMAGE_PROXY_LIMIT (5u * 1024u * 1024u)
 #define IMAGE_PIXELS_LIMIT (12u * 1024u * 1024u)
 
 enum { JOB_NONE, JOB_CATALOG, JOB_IMAGE };
@@ -164,7 +169,7 @@ static int parse_catalog(const char *json,WallpaperItem *out) {
            number_field(p,end,"file_size",&bytes) &&
            !strncmp(item.url,WALLPAPER_RAW_PREFIX,strlen(WALLPAPER_RAW_PREFIX)) &&
            !strstr(item.url,"..") && w>0 && h>0 &&
-           bytes>0 && bytes<=IMAGE_BYTES_LIMIT &&
+           bytes>0 && w<=16000 && h<=16000 &&
            strchr(item.name,'/')==NULL && strchr(item.name,'\\')==NULL){
             item.width=(int)w;item.height=(int)h;item.bytes=bytes;
             tag_field(p,end,item.tags,sizeof(item.tags));
@@ -214,9 +219,20 @@ static int load_catalog(CURL *curl){
     }
     return pending_count>0;
 }
-static int save_image(CURL *curl,const char *url){
-    Buffer bytes={.limit=IMAGE_BYTES_LIMIT};
-    int ok=fetch_data(curl,url,&bytes);
+static int save_image(CURL *curl,const WallpaperItem *item){
+    if(!item)return 0;
+    char resized[640];
+    int length=snprintf(resized,sizeof(resized),
+        IMAGE_PROXY "%s&w=1280&h=720&fit=cover&output=jpg&q=85",item->name);
+    Buffer bytes={.limit=IMAGE_PROXY_LIMIT};
+    int ok=length>0 && (size_t)length<sizeof(resized) &&
+           fetch_data(curl,resized,&bytes);
+    if(!ok && item->bytes<=IMAGE_BYTES_LIMIT &&
+       (unsigned long long)item->width*(unsigned)item->height<=IMAGE_PIXELS_LIMIT){
+        free(bytes.data);
+        bytes=(Buffer){.limit=IMAGE_BYTES_LIMIT};
+        ok=fetch_data(curl,item->url,&bytes);
+    }
     if(ok){
         FILE *f=fopen(WALLPAPER_TEMP,"wb");
         ok=f && fwrite(bytes.data,1,bytes.used,f)==bytes.used;
@@ -305,12 +321,12 @@ static int worker_main(void *opaque){
         if(quitting){SDL_UnlockMutex(mutex);break;}
         int job=requested,index=requested_index,serial=requested_generation;
         requested=0;busy=job;
-        char url[384]={0};
+        WallpaperItem selected={0};
         if(job==JOB_IMAGE && index>=0 && index<count)
-            snprintf(url,sizeof(url),"%s",catalog[index].url);
+            selected=catalog[index];
         SDL_UnlockMutex(mutex);
         int ok=job==JOB_CATALOG?load_catalog(curl):
-            job==JOB_IMAGE && url[0]?save_image(curl,url):0;
+            job==JOB_IMAGE && selected.url[0]?save_image(curl,&selected):0;
         SDL_LockMutex(mutex);
         result=ok;result_job=job;result_index=index;result_generation=serial;
         completed=1;busy=0;
@@ -389,12 +405,8 @@ int wallpapers_busy(void){
 }
 int wallpapers_apply(int index){
     if(!mutex || index<0 || index>=count || wallpapers_busy())return 0;
-    const WallpaperItem *item=&catalog[index];
-    if((unsigned long long)item->width*(unsigned)item->height>IMAGE_PIXELS_LIMIT){
-        snprintf(notice,sizeof(notice),"%s",
-                 TR("Занадто велике зображення для Switch.","This image is too large for Switch."));
-        return 0;
-    }
+    /* Every catalog image, including large 4K/8K originals, is requested
+       as a Switch-sized image. The worker bounds both download and decode. */
     SDL_LockMutex(mutex);
     requested=JOB_IMAGE;requested_index=index;requested_generation=++generation;
     snprintf(notice,sizeof(notice),"%s",TR("Завантаження шпалер…","Downloading wallpaper…"));

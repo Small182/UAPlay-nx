@@ -846,9 +846,14 @@ static void box_alpha(Paint *p,int x,int y,int w,int h,float r,float g,float b,f
     }
     /* Panels become translucent when a wallpaper is selected. The test for
        solid_tex deliberately leaves text glyphs, posters, and previews opaque. */
+    /* Primary actions (e.g. Watch) need a solid, bright surface even on
+       top of a wallpaper. They are intentionally excluded from the general
+       translucent-panel treatment; their dedicated ~2% tonal gradient
+       is kept by ui_soft_primary_gradient below. */
     int soft_panel=ui_theme_enabled && wallpapers_texture() &&
         p->tex==p->solid_tex && !ui_gradient_pass &&
-        !ui_outline_width && w>=65 && h>=30;
+        !ui_outline_width && !ui_soft_primary_gradient &&
+        w>=65 && h>=30;
     if(soft_panel)a*=ui_light_theme?.43f:.46f;
     /* 0=no gradient; 1=light subtle; 2=dark stronger.
        Text, selection frames, previews, and posters stay fully opaque. */

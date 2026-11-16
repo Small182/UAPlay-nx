@@ -1523,11 +1523,17 @@ static void battery_status_vertical(Paint *p,int x,int y){
     int old_theme=ui_theme_enabled;
     ui_theme_enabled=0;
     float r,g,b;battery_fill_color(&r,&g,&b);
-    /* Compact 19x32 vertical battery aligned with the catalog clock,
-       matching the reference screenshot without changing other controls. */
-    box_alpha(p,x+6,y-4,7,4,.96f,.97f,.98f,1.f,2);
-    box_alpha(p,x,y,19,32,.96f,.97f,.98f,1.f,4);
-    box_alpha(p,x+2,y+2,15,28,.055f,.074f,.092f,1.f,3);
+    /* The light catalog header needs a dark battery shell and terminal;
+       the dark theme keeps its original white outline. */
+    float br=ui_light_theme?.10f:.96f;
+    float bg=ui_light_theme?.12f:.97f;
+    float bb=ui_light_theme?.15f:.98f;
+    float inside_r=ui_light_theme?.93f:.055f;
+    float inside_g=ui_light_theme?.94f:.074f;
+    float inside_b=ui_light_theme?.96f:.092f;
+    box_alpha(p,x+6,y-4,7,4,br,bg,bb,1.f,2);
+    box_alpha(p,x,y,19,32,br,bg,bb,1.f,4);
+    box_alpha(p,x+2,y+2,15,28,inside_r,inside_g,inside_b,1.f,3);
     if(battery_percentage>=0){
         int filled=(28*battery_percentage+99)/100;
         if(filled>28)filled=28;
@@ -1539,12 +1545,19 @@ static void battery_status_horizontal(Paint *p,int x,int y){
     int old_theme=ui_theme_enabled;
     ui_theme_enabled=0;
     float r,g,b;battery_fill_color(&r,&g,&b);
-    /* Match existing dark, rounded player overlay; icon only. */
-    box_alpha(p,x,y,57,43,.047f,.067f,.088f,.88f,12);
+    /* Keep the horizontal player badge readable in either theme. */
+    box_alpha(p,x,y,57,43,
+              ui_light_theme?.91f:.047f,ui_light_theme?.92f:.067f,
+              ui_light_theme?.94f:.088f,.88f,12);
     int bx=x+11,by=y+13;
-    box_alpha(p,bx,by,28,16,.96f,.97f,.98f,1.f,3);
-    box_alpha(p,bx+2,by+2,24,12,.055f,.074f,.092f,1.f,2);
-    box_alpha(p,bx+28,by+5,4,6,.96f,.97f,.98f,1.f,2);
+    float br=ui_light_theme?.10f:.96f;
+    float bg=ui_light_theme?.12f:.97f;
+    float bb=ui_light_theme?.15f:.98f;
+    box_alpha(p,bx,by,28,16,br,bg,bb,1.f,3);
+    box_alpha(p,bx+2,by+2,24,12,
+              ui_light_theme?.94f:.055f,ui_light_theme?.95f:.074f,
+              ui_light_theme?.97f:.092f,1.f,2);
+    box_alpha(p,bx+28,by+5,4,6,br,bg,bb,1.f,2);
     if(battery_percentage>=0){
         int filled=(24*battery_percentage+99)/100;
         if(filled>24)filled=24;

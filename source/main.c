@@ -1395,8 +1395,26 @@ static void press_preview(Paint *p,int x,int y,int w,int h,int radius){
     float amount=press_amount(x,y,w,h);
     if(amount<=0.f)return;
     ui_animating=1;
-    ui_outline_width=2;
-    box_alpha(p,x+2,y+2,w-4,h-4,.22f,.71f,.86f,.85f*amount,radius);
+    /* Press feedback shares the selected accent with the focus ring,
+       instead of using the old fixed cyan outline. */
+    float r,g,b;accent(&r,&g,&b);
+    if(ui_accent_index==ACCENT_WHITE || ui_accent_index==ACCENT_BLACK){
+        /* The neutral accents need the same contrasting edge as the
+           selection ring, including in Basic White. */
+        int old_theme=ui_theme_enabled;
+        ui_theme_enabled=0;
+        float contrast=ui_accent_index==ACCENT_WHITE?.15f:.96f;
+        ui_outline_width=3;
+        box_alpha(p,x+1,y+1,w-2,h-2,contrast,contrast,contrast,
+                  .72f*amount,radius);
+        ui_outline_width=2;
+        accent_real(ui_accent_index,&r,&g,&b);
+        box_alpha(p,x+2,y+2,w-4,h-4,r,g,b,.85f*amount,radius);
+        ui_theme_enabled=old_theme;
+    }else{
+        ui_outline_width=2;
+        box_alpha(p,x+2,y+2,w-4,h-4,r,g,b,.85f*amount,radius);
+    }
     ui_outline_width=0;
 }
 

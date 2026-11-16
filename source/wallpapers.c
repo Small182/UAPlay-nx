@@ -3,255 +3,112 @@
 
 #include <SDL.h>
 #include <SDL_image.h>
-#include <curl/curl.h>
+#include <ctype.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
 #include <sys/stat.h>
-#include <errno.h>
 
-/* Source is a public GitHub-hosted JSON catalog; image files are fetched only
-   after the user selects one. Thumbnails reuse the existing poster cache. */
-#define WALLPAPER_JSON "https://raw.githubusercontent.com/AlexandrosLiaskos/Awesome_Wallpapers/main/wallpapers_database.json"
-#define WALLPAPER_RAW_PREFIX "https://raw.githubusercontent.com/AlexandrosLiaskos/Awesome_Wallpapers/main/images/"
+/* HDQWalls permits people to download wallpapers through their browsers,
+   but prohibits scraping/direct integration without written permission.
+   Accordingly UAPlay reads only files the user placed on their SD card. */
 #define WALLPAPER_HOME "sdmc:/switch/uaplay"
-#define WALLPAPER_CATALOG WALLPAPER_HOME "/wallpapers.json"
-#define WALLPAPER_CATALOG_TMP WALLPAPER_HOME "/wallpapers.json.part"
+#define WALLPAPER_DIR WALLPAPER_HOME "/wallpapers"
 #define WALLPAPER_FILE WALLPAPER_HOME "/wallpaper.bin"
 #define WALLPAPER_TEMP WALLPAPER_HOME "/wallpaper.part"
 #define WALLPAPER_BACKUP WALLPAPER_HOME "/wallpaper.bak"
 #define WALLPAPER_NAME WALLPAPER_HOME "/wallpaper.txt"
 #define WALLPAPER_NAME_TMP WALLPAPER_HOME "/wallpaper.txt.part"
 #define WALLPAPER_NAME_BACKUP WALLPAPER_HOME "/wallpaper.txt.bak"
-#define CATALOG_BYTES_LIMIT (768u * 1024u)
-/* The remote image service supplies a 1280x720 JPEG, avoiding large
-   decodes and GPU uploads on the Switch. The raw original is only used
-   as a fallback when its reported dimensions and size are safe. */
-#define IMAGE_BYTES_LIMIT (8u * 1024u * 1024u)
-#define IMAGE_PROXY "https://images.weserv.nl/?url=raw.githubusercontent.com/AlexandrosLiaskos/Awesome_Wallpapers/main/images/"
-#define IMAGE_PROXY_LIMIT (5u * 1024u * 1024u)
-#define IMAGE_PIXELS_LIMIT (12u * 1024u * 1024u)
+#define MAX_IMAGE_BYTES (24u * 1024u * 1024u)
+#define MAX_IMAGE_PIXELS (12u * 1024u * 1024u)
 
-enum { JOB_NONE, JOB_CATALOG, JOB_IMAGE };
-static WallpaperItem catalog[WALLPAPERS_MAX], pending[WALLPAPERS_MAX];
-static int count, pending_count, requested, busy, completed, result, result_job;
-static int result_index, requested_index, generation, requested_generation, result_generation;
+enum { JOB_NONE, JOB_SCAN, JOB_APPLY };
+static WallpaperItem items[WALLPAPERS_MAX], scanned[WALLPAPERS_MAX];
+static int count,scanned_count,request,busy,done,success,done_job,done_index;
+static int selected_index,sequence,request_sequence,done_sequence,revision;
 static SDL_mutex *mutex;
-static SDL_cond *condition;
-static SDL_Thread *thread;
+static SDL_cond *signal;
+static SDL_Thread *worker;
 static int quitting;
 static GLuint background;
-static char selected_name[128], notice[192];
+static char selected_name[128],notice[192];
 
-typedef struct {
-    unsigned char *data;
-    size_t used, capacity, limit;
-} Buffer;
-
-static size_t receive(char *data,size_t size,size_t n,void *opaque) {
-    Buffer *b=opaque;
-    if(size && n>b->limit/size)return 0;
-    size_t bytes=size*n;
-    if(bytes>b->limit-b->used)return 0;
-    if(b->used+bytes+1>b->capacity){
-        size_t cap=b->capacity?b->capacity*2:8192;
-        while(cap<b->used+bytes+1)cap*=2;
-        if(cap>b->limit+1)cap=b->limit+1;
-        unsigned char *next=realloc(b->data,cap);
-        if(!next)return 0;
-        b->data=next;b->capacity=cap;
+static int file_extension(const char *name){
+    const char *dot=strrchr(name,'.');
+    if(!dot || dot==name)return 0;
+    char ext[10]={0};size_t len=strlen(dot);
+    if(len>=sizeof(ext))return 0;
+    for(size_t i=0;i<len;i++)ext[i]=(char)tolower((unsigned char)dot[i]);
+    return !strcmp(ext,".jpg") || !strcmp(ext,".jpeg") ||
+           !strcmp(ext,".png") || !strcmp(ext,".webp");
+}
+static int compare_items(const void *a,const void *b){
+    return strcmp(((const WallpaperItem*)a)->name,
+                  ((const WallpaperItem*)b)->name);
+}
+static int scan_directory(void){
+    mkdir("sdmc:/switch",0777);
+    mkdir(WALLPAPER_HOME,0777);
+    mkdir(WALLPAPER_DIR,0777);
+    DIR *dir=opendir(WALLPAPER_DIR);
+    scanned_count=0;
+    if(!dir)return 0;
+    struct dirent *entry;
+    while((entry=readdir(dir)) && scanned_count<WALLPAPERS_MAX){
+        const char *name=entry->d_name;
+        size_t length=strlen(name);
+        if(!length || length>=sizeof(scanned[0].name) ||
+           name[0]=='.' || strchr(name,'/') || strchr(name,'\\') ||
+           !file_extension(name))continue;
+        WallpaperItem item={0};
+        int length_url=snprintf(item.url,sizeof(item.url),WALLPAPER_DIR "/%s",name);
+        if(length_url<=0 || (size_t)length_url>=sizeof(item.url))continue;
+        struct stat info;
+        if(stat(item.url,&info)!=0 || !S_ISREG(info.st_mode) ||
+           info.st_size<=0 || (unsigned long long)info.st_size>MAX_IMAGE_BYTES)continue;
+        snprintf(item.name,sizeof(item.name),"%s",name);
+        item.bytes=(unsigned)info.st_size;
+        scanned[scanned_count++]=item;
     }
-    memcpy(b->data+b->used,data,bytes);
-    b->used+=bytes;b->data[b->used]=0;
-    return bytes;
-}
-
-static void curl_setup(CURL *curl,const char *url) {
-    curl_easy_reset(curl);
-    curl_easy_setopt(curl,CURLOPT_URL,url);
-    curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);
-    curl_easy_setopt(curl,CURLOPT_USERAGENT,"UAPlay-nx/0.5");
-    curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,1L);
-    curl_easy_setopt(curl,CURLOPT_MAXREDIRS,3L);
-#if LIBCURL_VERSION_NUM >= 0x075500
-    curl_easy_setopt(curl,CURLOPT_REDIR_PROTOCOLS_STR,"https");
-#else
-    curl_easy_setopt(curl,CURLOPT_REDIR_PROTOCOLS,(long)CURLPROTO_HTTPS);
-#endif
-    curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT,12L);
-    curl_easy_setopt(curl,CURLOPT_TIMEOUT,45L);
-#ifdef __SWITCH__
-    curl_easy_setopt(curl,CURLOPT_IPRESOLVE,(long)CURL_IPRESOLVE_V4);
-#endif
-    curl_easy_setopt(curl,CURLOPT_FAILONERROR,1L);
-}
-
-static int fetch_data(CURL *curl,const char *url,Buffer *buffer) {
-    if(!curl)return 0;
-    curl_setup(curl,url);
-    curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,receive);
-    curl_easy_setopt(curl,CURLOPT_WRITEDATA,buffer);
-    CURLcode status=curl_easy_perform(curl);
-    long http=0;curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&http);
-    return status==CURLE_OK && http==200 && buffer->used>0;
-}
-
-/* The JSON catalog is generated by Awesome Wallpapers. Decode only the
-   string fields we need and reject any non-GitHub image URL. */
-static const char *find_field(const char *begin,const char *end,const char *name){
-    char key[48];snprintf(key,sizeof(key),"\"%s\"",name);
-    const char *hit=strstr(begin,key);
-    if(!hit || hit>=end)return NULL;
-    hit+=strlen(key);
-    while(hit<end && isspace((unsigned char)*hit))hit++;
-    if(hit>=end || *hit++!=':')return NULL;
-    while(hit<end && isspace((unsigned char)*hit))hit++;
-    return hit<end?hit:NULL;
-}
-static int json_string(const char *p,const char *end,char *out,size_t size){
-    if(!p || p>=end || *p!='"' || !size)return 0;
-    p++;size_t n=0;
-    while(p<end && *p!='"'){
-        unsigned char c=(unsigned char)*p++;
-        if(c=='\\'){
-            if(p>=end)return 0;
-            c=(unsigned char)*p++;
-            if(c=='n'||c=='r'||c=='t')c=' ';
-            else if(c=='u')return 0; /* no escaped Unicode in filenames/URLs */
-        }
-        if(c<32 || n+1>=size)return 0;
-        out[n++]=(char)c;
-    }
-    if(p>=end || *p!='"')return 0;
-    out[n]=0;
-    return n>0;
-}
-static int number_field(const char *begin,const char *end,const char *field,unsigned *out){
-    const char *p=find_field(begin,end,field);
-    if(!p || p>=end || !isdigit((unsigned char)*p))return 0;
-    unsigned long n=strtoul(p,NULL,10);
-    if(n>0xffffffffUL)return 0;
-    *out=(unsigned)n;
+    closedir(dir);
+    qsort(scanned,(size_t)scanned_count,sizeof(scanned[0]),compare_items);
     return 1;
 }
-static void tag_field(const char *begin,const char *end,char *out,size_t size){
-    const char *p=find_field(begin,end,"tags");size_t n=0;
-    out[0]=0;
-    if(!p || *p!='[')return;
-    for(p++;p<end && *p!=']';p++){
-        if(*p!='"')continue;
-        char tag[48];
-        if(!json_string(p,end,tag,sizeof(tag)))break;
-        size_t length=strlen(tag);
-        if(length && n+length+3<size){
-            if(n)out[n++]=',';
-            memcpy(out+n,tag,length);n+=length;out[n]=0;
-        }
-        p=strchr(p+1,'"');
-        if(!p)return;
+/* Keep the original source file untouched. The selected copy survives
+   removal/renaming of imported files and can be used offline. */
+static int copy_file(const char *source){
+    if(strncmp(source,WALLPAPER_DIR "/",sizeof(WALLPAPER_DIR)) ||
+       strstr(source,".."))return 0;
+    FILE *in=fopen(source,"rb");
+    if(!in)return 0;
+    FILE *out=fopen(WALLPAPER_TEMP,"wb");
+    int ok=out!=NULL;
+    unsigned char chunk[64*1024];
+    size_t total=0,used;
+    while(ok && (used=fread(chunk,1,sizeof(chunk),in))>0){
+        if(used>MAX_IMAGE_BYTES-total ||
+           fwrite(chunk,1,used,out)!=used){ok=0;break;}
+        total+=used;
     }
-}
-static int parse_catalog(const char *json,WallpaperItem *out) {
-    if(!json || *json!='{')return 0;
-    int used=0;const char *p=json;
-    while((p=strstr(p,"\"filename\""))!=NULL && used<WALLPAPERS_MAX){
-        const char *end=strstr(p+10,"\"filename\"");
-        if(!end)end=p+strlen(p);
-        WallpaperItem item={0};
-        const char *name=find_field(p,end,"filename");
-        const char *url=find_field(p,end,"github_raw_url");
-        unsigned w=0,h=0,bytes=0;
-        if(json_string(name,end,item.name,sizeof(item.name)) &&
-           json_string(url,end,item.url,sizeof(item.url)) &&
-           number_field(p,end,"width",&w) &&
-           number_field(p,end,"height",&h) &&
-           number_field(p,end,"file_size",&bytes) &&
-           !strncmp(item.url,WALLPAPER_RAW_PREFIX,strlen(WALLPAPER_RAW_PREFIX)) &&
-           !strstr(item.url,"..") && w>0 && h>0 &&
-           bytes>0 && w<=16000 && h<=16000 &&
-           strchr(item.name,'/')==NULL && strchr(item.name,'\\')==NULL){
-            item.width=(int)w;item.height=(int)h;item.bytes=bytes;
-            tag_field(p,end,item.tags,sizeof(item.tags));
-            out[used++]=item;
-        }
-        p=end;
-    }
-    return used;
-}
-static int load_json_file(const char *path,Buffer *buffer){
-    FILE *f=fopen(path,"rb");
-    if(!f)return 0;
-    unsigned char chunk[4096];
-    size_t n;
-    while((n=fread(chunk,1,sizeof(chunk),f))>0){
-        if(receive((char*)chunk,1,n,buffer)!=n)break;
-    }
-    int ok=feof(f) && !ferror(f) && buffer->used>0;
-    fclose(f);return ok;
-}
-static void save_json(const Buffer *buffer){
-    FILE *f=fopen(WALLPAPER_CATALOG_TMP,"wb");
-    if(!f)return;
-    int ok=fwrite(buffer->data,1,buffer->used,f)==buffer->used;
-    if(fclose(f)!=0)ok=0;
-    if(ok){
-        char backup[160];snprintf(backup,sizeof(backup),"%s.bak",WALLPAPER_CATALOG);
-        remove(backup);
-        int old=rename(WALLPAPER_CATALOG,backup)==0;
-        if(rename(WALLPAPER_CATALOG_TMP,WALLPAPER_CATALOG)!=0 && old)
-            rename(backup,WALLPAPER_CATALOG);
-        else remove(backup);
-    }
-    remove(WALLPAPER_CATALOG_TMP);
-}
-static int load_catalog(CURL *curl){
-    Buffer data={.limit=CATALOG_BYTES_LIMIT};
-    int online=fetch_data(curl,WALLPAPER_JSON,&data);
-    pending_count=online?parse_catalog((const char*)data.data,pending):0;
-    if(pending_count)save_json(&data);
-    free(data.data);
-    if(!pending_count){
-        Buffer cache={.limit=CATALOG_BYTES_LIMIT};
-        if(load_json_file(WALLPAPER_CATALOG,&cache))
-            pending_count=parse_catalog((const char*)cache.data,pending);
-        free(cache.data);
-    }
-    return pending_count>0;
-}
-static int save_image(CURL *curl,const WallpaperItem *item){
-    if(!item)return 0;
-    char resized[640];
-    int length=snprintf(resized,sizeof(resized),
-        IMAGE_PROXY "%s&w=1280&h=720&fit=cover&output=jpg&q=85",item->name);
-    Buffer bytes={.limit=IMAGE_PROXY_LIMIT};
-    int ok=length>0 && (size_t)length<sizeof(resized) &&
-           fetch_data(curl,resized,&bytes);
-    if(!ok && item->bytes<=IMAGE_BYTES_LIMIT &&
-       (unsigned long long)item->width*(unsigned)item->height<=IMAGE_PIXELS_LIMIT){
-        free(bytes.data);
-        bytes=(Buffer){.limit=IMAGE_BYTES_LIMIT};
-        ok=fetch_data(curl,item->url,&bytes);
-    }
-    if(ok){
-        FILE *f=fopen(WALLPAPER_TEMP,"wb");
-        ok=f && fwrite(bytes.data,1,bytes.used,f)==bytes.used;
-        if(f && fclose(f)!=0)ok=0;
-    }
-    free(bytes.data);
+    if(ferror(in) || !total)ok=0;
+    fclose(in);
+    if(out && fclose(out)!=0)ok=0;
     if(!ok)remove(WALLPAPER_TEMP);
     return ok;
 }
-
-static int background_load(const char *path,GLuint *output){
+/* Decoding is bounded: the full-size image never becomes a GL texture.
+   A centered, aspect-preserving crop is scaled to Switch resolution. */
+static int image_texture(const char *path,GLuint *texture_out){
     FILE *file=fopen(path,"rb");
     if(!file)return 0;
     SDL_RWops *rw=SDL_RWFromFP(file,1);
     if(!rw){fclose(file);return 0;}
     SDL_Surface *original=IMG_Load_RW(rw,1);
     if(!original)return 0;
-    unsigned long long pixels=(unsigned long long)original->w*(unsigned)original->h;
-    if(original->w<1 || original->h<1 || pixels>IMAGE_PIXELS_LIMIT){
+    if(original->w<1 || original->h<1 ||
+       (unsigned long long)original->w*(unsigned)original->h>MAX_IMAGE_PIXELS){
         SDL_FreeSurface(original);return 0;
     }
     SDL_Surface *rgba=SDL_ConvertSurfaceFormat(original,SDL_PIXELFORMAT_ABGR8888,0);
@@ -259,7 +116,6 @@ static int background_load(const char *path,GLuint *output){
     if(!rgba)return 0;
     SDL_Surface *scaled=SDL_CreateRGBSurfaceWithFormat(0,1280,720,32,SDL_PIXELFORMAT_ABGR8888);
     if(!scaled){SDL_FreeSurface(rgba);return 0;}
-    /* Fill the 16:9 Switch display without distorting portraits or squares. */
     SDL_Rect crop={0,0,rgba->w,rgba->h};
     if((long long)crop.w*720>=(long long)crop.h*1280){
         crop.w=(int)((long long)crop.h*1280/720);
@@ -272,10 +128,9 @@ static int background_load(const char *path,GLuint *output){
     int ok=SDL_BlitScaled(rgba,&crop,scaled,NULL)==0;
     SDL_FreeSurface(rgba);
     if(!ok){SDL_FreeSurface(scaled);return 0;}
-    GLuint texture=0;
-    glGenTextures(1,&texture);
-    if(texture){
-        glBindTexture(GL_TEXTURE_2D,texture);
+    GLuint tex=0;glGenTextures(1,&tex);
+    if(tex){
+        glBindTexture(GL_TEXTURE_2D,tex);
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
@@ -283,15 +138,14 @@ static int background_load(const char *path,GLuint *output){
         glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,1280,720,0,GL_RGBA,GL_UNSIGNED_BYTE,scaled->pixels);
     }
     SDL_FreeSurface(scaled);
-    *output=texture;
-    return texture!=0;
+    *texture_out=tex;
+    return tex!=0;
 }
-
-static int commit_selection(const char *name){
-    FILE *config=fopen(WALLPAPER_NAME_TMP,"wb");
-    if(!config)return 0;
-    int ok=fprintf(config,"%s\n",name)>0;
-    if(fclose(config)!=0)ok=0;
+static int commit_image(const char *name){
+    FILE *f=fopen(WALLPAPER_NAME_TMP,"wb");
+    if(!f)return 0;
+    int ok=fprintf(f,"%s\n",name)>0;
+    if(fclose(f)!=0)ok=0;
     if(!ok){remove(WALLPAPER_NAME_TMP);return 0;}
     remove(WALLPAPER_BACKUP);
     int had_image=rename(WALLPAPER_FILE,WALLPAPER_BACKUP)==0;
@@ -307,118 +161,128 @@ static int commit_selection(const char *name){
         if(had_name)rename(WALLPAPER_NAME_BACKUP,WALLPAPER_NAME);
         remove(WALLPAPER_NAME_TMP);return 0;
     }
-    remove(WALLPAPER_BACKUP);
     remove(WALLPAPER_NAME_BACKUP);
+    remove(WALLPAPER_BACKUP);
     return 1;
 }
-
-static int worker_main(void *opaque){
-    (void)opaque;
-    CURL *curl=curl_easy_init();
+static int run_worker(void *context){
+    (void)context;
     for(;;){
         SDL_LockMutex(mutex);
-        while(!quitting && !requested)SDL_CondWait(condition,mutex);
+        while(!quitting && !request)SDL_CondWait(signal,mutex);
         if(quitting){SDL_UnlockMutex(mutex);break;}
-        int job=requested,index=requested_index,serial=requested_generation;
-        requested=0;busy=job;
-        WallpaperItem selected={0};
-        if(job==JOB_IMAGE && index>=0 && index<count)
-            selected=catalog[index];
+        int job=request,index=selected_index,seq=request_sequence;
+        request=0;busy=job;
+        char path[384]={0};
+        if(job==JOB_APPLY && index>=0 && index<count)
+            snprintf(path,sizeof(path),"%s",items[index].url);
         SDL_UnlockMutex(mutex);
-        int ok=job==JOB_CATALOG?load_catalog(curl):
-            job==JOB_IMAGE && selected.url[0]?save_image(curl,&selected):0;
+        int ok=job==JOB_SCAN?scan_directory() :
+               job==JOB_APPLY && path[0]?copy_file(path):0;
         SDL_LockMutex(mutex);
-        result=ok;result_job=job;result_index=index;result_generation=serial;
-        completed=1;busy=0;
+        done=1;success=ok;done_job=job;done_index=index;done_sequence=seq;
+        busy=0;
         SDL_UnlockMutex(mutex);
     }
-    if(curl)curl_easy_cleanup(curl);
     return 0;
 }
-
 void wallpapers_init(void){
     mkdir("sdmc:/switch",0777);
     mkdir(WALLPAPER_HOME,0777);
+    mkdir(WALLPAPER_DIR,0777);
     FILE *f=fopen(WALLPAPER_NAME,"rb");
     if(!f)f=fopen(WALLPAPER_NAME_BACKUP,"rb");
     if(f){
         if(fgets(selected_name,sizeof(selected_name),f)){
             selected_name[strcspn(selected_name,"\r\n")]=0;
-            if(!background_load(WALLPAPER_FILE,&background))
-                selected_name[0]=0;
+            if(!image_texture(WALLPAPER_FILE,&background))selected_name[0]=0;
         }
         fclose(f);
     }
     mutex=SDL_CreateMutex();
-    condition=SDL_CreateCond();
-    if(mutex && condition)thread=SDL_CreateThread(worker_main,"wallpapers",NULL);
+    signal=SDL_CreateCond();
+    if(mutex && signal)worker=SDL_CreateThread(run_worker,"wallpapers",NULL);
     notice[0]=0;
 }
 void wallpapers_open(void){
-    if(!mutex || !thread || count || requested || busy)return;
+    if(!mutex || !worker)return;
     SDL_LockMutex(mutex);
-    requested=JOB_CATALOG;requested_generation=++generation;
-    snprintf(notice,sizeof(notice),"%s",TR("Завантаження галереї…","Loading gallery…"));
-    SDL_CondSignal(condition);SDL_UnlockMutex(mutex);
+    if(!request && !busy && !done){
+        request=JOB_SCAN;
+        request_sequence=++sequence;
+        SDL_CondSignal(signal);
+        snprintf(notice,sizeof(notice),"%s",
+                 TR("Пошук шпалер на SD-карті…","Scanning wallpapers on the SD card…"));
+    }
+    SDL_UnlockMutex(mutex);
 }
 void wallpapers_poll(void){
     if(!mutex)return;
     SDL_LockMutex(mutex);
-    int done=completed,job=result_job,ok=result,index=result_index,serial=result_generation;
-    if(done){
-        completed=0;
-        if(job==JOB_CATALOG && ok){
-            count=pending_count;
-            memcpy(catalog,pending,(size_t)count*sizeof(catalog[0]));
+    int finished=done,job=done_job,ok=success,index=done_index,seq=done_sequence;
+    if(finished){
+        done=0;
+        if(job==JOB_SCAN){
+            count=ok?scanned_count:0;
+            if(count)memcpy(items,scanned,(size_t)count*sizeof(items[0]));
+            revision++;
         }
     }
     SDL_UnlockMutex(mutex);
-    if(!done)return;
-    if(job==JOB_CATALOG){
+    if(!finished)return;
+    if(job==JOB_SCAN){
         snprintf(notice,sizeof(notice),"%s",ok?
-                 TR("Оберіть зображення й натисніть A.","Choose a wallpaper and press A."):
-                 TR("Не вдалося завантажити галерею.","Could not load the gallery."));
-    }else if(job==JOB_IMAGE){
-        if(serial!=generation){remove(WALLPAPER_TEMP);return;}
-        GLuint new_texture=0;
-        int valid=ok && background_load(WALLPAPER_TEMP,&new_texture);
-        if(valid && commit_selection(catalog[index].name)){
+            (count?TR("A: застосувати · X: пошук · Y: стандартний фон",
+                      "A: Apply · X: Search · Y: Default"):
+                   TR("Скопіюйте JPG/PNG до switch/uaplay/wallpapers/",
+                      "Copy JPG/PNG into switch/uaplay/wallpapers/")):
+            TR("Не вдалося прочитати папку шпалер.","Could not read wallpaper directory."));
+    }else if(job==JOB_APPLY){
+        if(seq!=sequence){remove(WALLPAPER_TEMP);return;}
+        GLuint tex=0;
+        int valid=ok && image_texture(WALLPAPER_TEMP,&tex);
+        if(valid && index>=0 && index<count && commit_image(items[index].name)){
             if(background)glDeleteTextures(1,&background);
-            background=new_texture;
-            snprintf(selected_name,sizeof(selected_name),"%s",catalog[index].name);
+            background=tex;
+            snprintf(selected_name,sizeof(selected_name),"%s",items[index].name);
             snprintf(notice,sizeof(notice),"%s",
                      TR("Шпалери застосовано й збережено.","Wallpaper saved and applied."));
         }else{
-            if(new_texture)glDeleteTextures(1,&new_texture);
+            if(tex)glDeleteTextures(1,&tex);
             remove(WALLPAPER_TEMP);
             snprintf(notice,sizeof(notice),"%s",
-                     TR("Не вдалося зберегти шпалери. Спробуйте інші.","Could not save wallpaper. Try another image."));
+                     TR("Не вдалося відкрити зображення. Спробуйте 1280×720 JPG.",
+                        "Could not open image. Try a 1280x720 JPG."));
         }
     }
 }
 int wallpapers_count(void){return count;}
-const WallpaperItem *wallpapers_item(int i){return i>=0 && i<count?&catalog[i]:NULL;}
+int wallpapers_revision(void){return revision;}
+const WallpaperItem *wallpapers_item(int index){return index>=0 && index<count?&items[index]:NULL;}
 int wallpapers_busy(void){
     if(!mutex)return 0;
-    SDL_LockMutex(mutex);int pending_work=requested||busy;
-    SDL_UnlockMutex(mutex);return pending_work;
+    SDL_LockMutex(mutex);
+    int working=request || busy;
+    SDL_UnlockMutex(mutex);
+    return working;
 }
 int wallpapers_apply(int index){
     if(!mutex || index<0 || index>=count || wallpapers_busy())return 0;
-    /* Every catalog image, including large 4K/8K originals, is requested
-       as a Switch-sized image. The worker bounds both download and decode. */
     SDL_LockMutex(mutex);
-    requested=JOB_IMAGE;requested_index=index;requested_generation=++generation;
-    snprintf(notice,sizeof(notice),"%s",TR("Завантаження шпалер…","Downloading wallpaper…"));
-    SDL_CondSignal(condition);SDL_UnlockMutex(mutex);
+    request=JOB_APPLY;selected_index=index;request_sequence=++sequence;
+    SDL_CondSignal(signal);
+    snprintf(notice,sizeof(notice),"%s",
+             TR("Застосування шпалер…","Applying wallpaper…"));
+    SDL_UnlockMutex(mutex);
     return 1;
 }
 void wallpapers_reset(void){
-    if(mutex){SDL_LockMutex(mutex);generation++;SDL_UnlockMutex(mutex);}
+    if(mutex){SDL_LockMutex(mutex);++sequence;SDL_UnlockMutex(mutex);}
     if(background)glDeleteTextures(1,&background);
-    background=0;selected_name[0]=0;
-    remove(WALLPAPER_NAME);remove(WALLPAPER_NAME_BACKUP);
+    background=0;
+    selected_name[0]=0;
     remove(WALLPAPER_FILE);remove(WALLPAPER_BACKUP);
+    remove(WALLPAPER_NAME);remove(WALLPAPER_NAME_BACKUP);
     snprintf(notice,sizeof(notice),"%s",
              TR("Відновлено стандартний фон.","Default background restored."));
 }
@@ -428,13 +292,13 @@ const char *wallpapers_message(void){return notice;}
 void wallpapers_shutdown(void){
     if(mutex){
         SDL_LockMutex(mutex);quitting=1;
-        if(condition)SDL_CondSignal(condition);
+        if(signal)SDL_CondSignal(signal);
         SDL_UnlockMutex(mutex);
     }
-    if(thread)SDL_WaitThread(thread,NULL);
-    if(condition)SDL_DestroyCond(condition);
+    if(worker)SDL_WaitThread(worker,NULL);
+    if(signal)SDL_DestroyCond(signal);
     if(mutex)SDL_DestroyMutex(mutex);
-    condition=NULL;mutex=NULL;thread=NULL;
+    signal=NULL;mutex=NULL;worker=NULL;
     if(background)glDeleteTextures(1,&background);
     background=0;
     remove(WALLPAPER_TEMP);

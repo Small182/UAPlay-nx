@@ -670,7 +670,7 @@ static int load_category(int category,const char *query,Movie *movies,char *mess
 }
 typedef struct {
     GLuint program, vbo, tex, solid_tex;
-    GLint tint, shape, gradient, outline, sampler;
+    GLint tint, shape, gradient, outline, sampler, uv_crop;
     SDL_Rect clip;
     TTF_Font *font;
     TTF_Font *font_big;
@@ -726,7 +726,7 @@ static TTF_Font *choose_font(Paint *p,const char *s){
 static const char *vs = "attribute vec2 pos;attribute vec2 uv;varying vec2 tc;"
                         "void main(){gl_Position=vec4(pos,0.,1.);tc=uv;}";
 static const char *fs = "precision mediump float;varying vec2 tc;"
-                        "uniform vec4 tint;uniform sampler2D image;uniform vec3 shape;"
+                        "uniform vec4 tint;uniform vec4 uv_crop;uniform sampler2D image;uniform vec3 shape;"
                         "uniform float gradient;uniform float outline;"
                         "void main(){vec2 p=tc*shape.xy;vec2 q=abs(p-shape.xy*.5)"
                         "-shape.xy*.5+shape.z;float d=length(max(q,0.0))"
@@ -741,7 +741,7 @@ static const char *fs = "precision mediump float;varying vec2 tc;"
                         "vec3(.902,.907,.914),tc.y);"
                         "else if(gradient>.5)rgb=mix(vec3(.205,.208,.213),"
                         "vec3(.135,.139,.145),tc.y);"
-                        "gl_FragColor=texture2D(image,tc)*vec4(rgb,tint.a)*a;}";
+                        "gl_FragColor=texture2D(image,uv_crop.xy+tc*uv_crop.zw)*vec4(rgb,tint.a)*a;}";
 static void *proc(void *ctx, const char *name) {
     (void)ctx; return SDL_GL_GetProcAddress(name);
 }
@@ -769,8 +769,10 @@ static int paint_init(Paint *p) {
     p->gradient=glGetUniformLocation(p->program,"gradient");
     p->outline=glGetUniformLocation(p->program,"outline");
     p->sampler=glGetUniformLocation(p->program,"image");
+    p->uv_crop=glGetUniformLocation(p->program,"uv_crop");
     glUseProgram(p->program);
     glUniform1i(p->sampler,0);
+    glUniform4f(p->uv_crop,0.f,0.f,1.f,1.f);
     glGenBuffers(1,&p->vbo);
     glGenTextures(1,&p->tex);
     p->solid_tex=p->tex;
@@ -824,6 +826,11 @@ static void box_alpha(Paint *p,int x,int y,int w,int h,float r,float g,float b,f
             r=g=b=.19f+.52f*v;
         }
     }
+    /* Panels become translucent when a wallpaper is selected. The test for
+       solid_tex deliberately leaves text glyphs, posters, and previews opaque. */
+    if(ui_theme_enabled && wallpapers_texture() && p->tex==p->solid_tex &&
+       !ui_gradient_pass && !ui_outline_width && w>=65 && h>=30)
+        a*=ui_light_theme?.77f:.66f;
     glUniform4f(p->tint,r,g,b,a);
     glUniform3f(p->shape,(float)w,(float)h,(float)radius);
     glUniform1f(p->gradient,ui_gradient_pass?(ui_light_theme?2.f:1.f):0.f);
@@ -847,6 +854,27 @@ static void box_alpha(Paint *p,int x,int y,int w,int h,float r,float g,float b,f
         glUniform4f(p->tint,.27f,.28f,.30f,.46f);
         glDrawArrays(GL_TRIANGLES,0,6);
     }
+}
+/* Center-crop wallpaper thumbnails with texture coordinates while keeping
+   rounded card corners in local quad coordinates (no aspect distortion). */
+static void wallpaper_image_cover(Paint *p,GLuint image,int image_w,int image_h,
+                                  int x,int y,int w,int h){
+    if(!image || image_w<1 || image_h<1 || w<1 || h<1)return;
+    float u=0.f,v=0.f,uw=1.f,vh=1.f;
+    if((long long)image_w*h>(long long)image_h*w){
+        uw=(float)((double)image_h*w/((double)image_w*h));
+        u=(1.f-uw)*.5f;
+    }else{
+        vh=(float)((double)image_w*h/((double)image_h*w));
+        v=(1.f-vh)*.5f;
+    }
+    GLuint old=p->tex;
+    p->tex=image;
+    glUseProgram(p->program);
+    glUniform4f(p->uv_crop,u,v,uw,vh);
+    box_alpha(p,x,y,w,h,1.f,1.f,1.f,1.f,8);
+    glUniform4f(p->uv_crop,0.f,0.f,1.f,1.f);
+    p->tex=old;
 }
 static void box(Paint *p,int x,int y,int w,int h,float r,float g,float b) {
     box_alpha(p,x,y,w,h,r,g,b,1.f,w>100 && h>40?14:5);
@@ -1766,8 +1794,9 @@ static void draw_wallpapers(Paint *p){
         snprintf(thumb,sizeof(thumb),
           "https://images.weserv.nl/?url=raw.githubusercontent.com/AlexandrosLiaskos/Awesome_Wallpapers/main/images/%s&w=350&h=195&fit=cover&output=jpg&q=75",
           item->name);
-        GLuint tex=logo_texture(thumb,&budget,NULL,NULL);
-        if(tex){GLuint old=p->tex;p->tex=tex;box_alpha(p,x+4,y+4,WALL_W-8,105,1,1,1,1.f,8);p->tex=old;}
+        int image_w=0,image_h=0;
+        GLuint tex=logo_texture(thumb,&budget,&image_w,&image_h);
+        if(tex)wallpaper_image_cover(p,tex,image_w,image_h,x+4,y+4,WALL_W-8,105);
         else text_center_button(p,"UAPlay",x+8,y+32,WALL_W-16,38,p->font_small,.7f,.74f,.79f);
         if(n==wall_selected && !wall_focus)selection_frame(p,x,y,WALL_W,137);
         text_font(p,item->name,x+10,y+114,WALL_W-20,p->font_tiny,1,1,1);

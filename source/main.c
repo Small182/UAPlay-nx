@@ -1418,9 +1418,10 @@ static void press_preview(Paint *p,int x,int y,int w,int h,int radius){
     ui_outline_width=0;
 }
 
-/* Only the central transport trio changes shape and location. Volume,
-   secondary controls, and the rest of the video overlay remain untouched. */
-static const int player_button_centers[]={540,640,740,832,954,1076};
+/* Central circular transport trio stays at 540/640/740. The three secondary
+   controls sit farther right with 20px gaps between their 76px buttons.
+   All button drawing, hit testing and pressed feedback share these centers. */
+static const int player_button_centers[]={540,640,740,960,1056,1152};
 static SDL_Rect player_button_rect(int index){
     int center=player_button_centers[index];
     if(index<3){
@@ -2899,8 +2900,10 @@ static void draw_player_controls(Paint *p,mpv_handle *player,double offset,const
             text_center(p,icons[i],rect.x,624,rect.w,p->font,.98f,.98f,.99f);
         }
         if(i==3)gear_icon(p,center,639,.18f,.22f,.26f);
-        text_center(p,labels[i],center-(i<3?62:72),i<3?689:678,
-                    i<3?124:144,p->font_tiny,.78f,.84f,.89f);
+        /* Narrower labels track the tighter secondary-control spacing
+           without touching the central transport group. */
+        text_center(p,labels[i],center-(i<3?62:55),i<3?689:678,
+                    i<3?124:110,p->font_tiny,.78f,.84f,.89f);
     }
 }
 static GLuint video_framebuffer(GLuint *texture){

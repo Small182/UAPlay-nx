@@ -3416,11 +3416,12 @@ int main(int argc,char **argv) {
                         selected_video_option=slot;
                         key=tx<640?SDL_CONTROLLER_BUTTON_DPAD_LEFT:SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
                     }else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
-                }else if(page==SETTINGS){
+                }else if(page==SETTINGS || page==APPEARANCE){
                     int row=ty-SETTINGS_Y;
-                    if(tx>=32 && tx<449 && row>=0 && row<SETTING_COUNT*SETTINGS_ROW_STEP &&
+                    if(tx>=32 && tx<449 && row>=0 && row<(page==APPEARANCE?APPEARANCE_COUNT:SETTING_COUNT)*SETTINGS_ROW_STEP &&
                        row%SETTINGS_ROW_STEP<SETTINGS_ROW_HEIGHT){
-                        settings_selected=row/SETTINGS_ROW_STEP;
+                        if(page==APPEARANCE)appearance_selected=row/SETTINGS_ROW_STEP;
+                        else settings_selected=row/SETTINGS_ROW_STEP;
                         key=SDL_CONTROLLER_BUTTON_A;
                     }else if(ty>=537 && ty<592 && tx>=515 && tx<773)key=SDL_CONTROLLER_BUTTON_A;
                     else if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
@@ -3833,7 +3834,7 @@ int main(int argc,char **argv) {
             }
             if(page==WALLPAPERS){
                 if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){
-                    page=SETTINGS;continue;
+                    page=APPEARANCE;continue;
                 }
                 if(key==SDL_CONTROLLER_BUTTON_X){
                     char search[sizeof(wall_query)];
@@ -3877,6 +3878,34 @@ int main(int argc,char **argv) {
                     wallpapers_apply(wall_rows[wall_selected]);
                 continue;
             }
+            if(page==APPEARANCE){
+                if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){
+                    page=SETTINGS;
+                    continue;
+                }
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && appearance_selected>0)
+                    appearance_selected--;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN &&
+                   appearance_selected<APPEARANCE_COUNT-1)appearance_selected++;
+                if(key==SDL_CONTROLLER_BUTTON_A){
+                    if(appearance_selected==APPEARANCE_THEME){
+                        ui_light_theme=!ui_light_theme;
+                        theme_save();
+                    }else if(appearance_selected==APPEARANCE_ACCENT){
+                        ui_accent_alt=!ui_accent_alt;
+                    }else if(appearance_selected==APPEARANCE_WALLPAPERS){
+                        wall_selected=0;wall_focus=0;
+                        wallpapers_open();
+                        wall_rebuild();
+                        page=WALLPAPERS;
+                    }else if(appearance_selected==APPEARANCE_DEFAULT){
+                        wallpapers_reset();
+                        snprintf(message,sizeof(message),"%s",
+                                 TR("Стандартний фон відновлено","Default background restored"));
+                    }
+                }
+                continue;
+            }
             if(page==SETTINGS){
                 if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){
                     if(catalog_language_changed){
@@ -3891,9 +3920,10 @@ int main(int argc,char **argv) {
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && settings_selected<SETTING_COUNT-1)
                     settings_selected++;
                 if(key==SDL_CONTROLLER_BUTTON_A){
-                    if(settings_selected==SETTING_THEME){ui_light_theme=!ui_light_theme;theme_save();}
-                    else if(settings_selected==SETTING_INTERFACE)ui_accent_alt=!ui_accent_alt;
-                    else if(settings_selected==SETTING_PLAYER){
+                    if(settings_selected==SETTING_APPEARANCE){
+                        appearance_selected=0;
+                        page=APPEARANCE;
+                    }else if(settings_selected==SETTING_PLAYER){
                         selected_video_option=0;
                         video_settings_from_menu=1;
                         page=VIDEO_SETTINGS;
@@ -3903,13 +3933,6 @@ int main(int argc,char **argv) {
                         provider_settings_selected=0;
                         message[0]=0;
                         page=PROVIDER_SETTINGS;
-                    }else if(settings_selected==SETTING_WALLPAPERS){
-                        wall_selected=0;wall_focus=0;
-                        wallpapers_open();wall_rebuild();page=WALLPAPERS;
-                    }else if(settings_selected==SETTING_WALLPAPER_OFF){
-                        wallpapers_reset();
-                        snprintf(message,sizeof(message),"%s",
-                            TR("Стандартний фон відновлено","Default background restored"));
                     }else if(settings_selected==SETTING_LANGUAGE){
                         ui_set_language(ui_language()==UI_ENGLISH?UI_UKRAINIAN:UI_ENGLISH);
                         catalog_invalidate_language(category,query);

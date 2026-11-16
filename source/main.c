@@ -243,8 +243,8 @@ static int sort_button_for_mode(int mode){
 /* 0: Watch, 1: Add to favorites (details buttons). */
 static int details_button_focus=0;
 enum { SETTING_THEME, SETTING_INTERFACE, SETTING_PLAYER, SETTING_AUTOPLAY,
-       SETTING_PROVIDERS, SETTING_LANGUAGE, SETTING_WALLPAPERS, SETTING_COUNT };
-enum { SETTINGS_Y=109, SETTINGS_ROW_STEP=69, SETTINGS_ROW_HEIGHT=56 };
+       SETTING_PROVIDERS, SETTING_LANGUAGE, SETTING_WALLPAPERS, SETTING_WALLPAPER_OFF, SETTING_COUNT };
+enum { SETTINGS_Y=102, SETTINGS_ROW_STEP=66, SETTINGS_ROW_HEIGHT=52 };
 static int settings_selected=0,ui_accent_alt=0,source_mode=0;
 static int autoplay_episodes=1;
 #define NEXT_EPISODE_DELAY_MS 3000u
@@ -670,7 +670,7 @@ static int load_category(int category,const char *query,Movie *movies,char *mess
 }
 typedef struct {
     GLuint program, vbo, tex, solid_tex;
-    GLint tint, shape, gradient, outline, sampler, uv_crop;
+    GLint tint, shape, gradient, outline, sampler, uv_crop, panel_gradient;
     SDL_Rect clip;
     TTF_Font *font;
     TTF_Font *font_big;
@@ -727,6 +727,7 @@ static const char *vs = "attribute vec2 pos;attribute vec2 uv;varying vec2 tc;"
                         "void main(){gl_Position=vec4(pos,0.,1.);tc=uv;}";
 static const char *fs = "precision mediump float;varying vec2 tc;"
                         "uniform vec4 tint;uniform vec4 uv_crop;uniform sampler2D image;uniform vec3 shape;"
+                        "uniform float panel_gradient;"
                         "uniform float gradient;uniform float outline;"
                         "void main(){vec2 p=tc*shape.xy;vec2 q=abs(p-shape.xy*.5)"
                         "-shape.xy*.5+shape.z;float d=length(max(q,0.0))"
@@ -741,7 +742,10 @@ static const char *fs = "precision mediump float;varying vec2 tc;"
                         "vec3(.902,.907,.914),tc.y);"
                         "else if(gradient>.5)rgb=mix(vec3(.205,.208,.213),"
                         "vec3(.135,.139,.145),tc.y);"
-                        "gl_FragColor=texture2D(image,uv_crop.xy+tc*uv_crop.zw)*vec4(rgb,tint.a)*a;}";
+                        "float edge=smoothstep(0.0,0.40,min(tc.x,1.0-tc.x));"
+                        "float fade=mix(0.80,1.0,edge)*(0.91+0.09*tc.y);"
+                        "float opacity=mix(1.0,fade,panel_gradient);"
+                        "gl_FragColor=texture2D(image,uv_crop.xy+tc*uv_crop.zw)*vec4(rgb,tint.a*opacity)*a;}";
 static void *proc(void *ctx, const char *name) {
     (void)ctx; return SDL_GL_GetProcAddress(name);
 }
@@ -770,9 +774,11 @@ static int paint_init(Paint *p) {
     p->outline=glGetUniformLocation(p->program,"outline");
     p->sampler=glGetUniformLocation(p->program,"image");
     p->uv_crop=glGetUniformLocation(p->program,"uv_crop");
+    p->panel_gradient=glGetUniformLocation(p->program,"panel_gradient");
     glUseProgram(p->program);
     glUniform1i(p->sampler,0);
     glUniform4f(p->uv_crop,0.f,0.f,1.f,1.f);
+    glUniform1f(p->panel_gradient,0.f);
     glGenBuffers(1,&p->vbo);
     glGenTextures(1,&p->tex);
     p->solid_tex=p->tex;
@@ -828,9 +834,13 @@ static void box_alpha(Paint *p,int x,int y,int w,int h,float r,float g,float b,f
     }
     /* Panels become translucent when a wallpaper is selected. The test for
        solid_tex deliberately leaves text glyphs, posters, and previews opaque. */
-    if(ui_theme_enabled && wallpapers_texture() && p->tex==p->solid_tex &&
-       !ui_gradient_pass && !ui_outline_width && w>=65 && h>=30)
-        a*=ui_light_theme?.77f:.66f;
+    int soft_panel=ui_theme_enabled && wallpapers_texture() &&
+        p->tex==p->solid_tex && !ui_gradient_pass &&
+        !ui_outline_width && w>=65 && h>=30;
+    if(soft_panel)a*=ui_light_theme?.77f:.67f;
+    /* Opacity falls smoothly toward the sides and top; text, previews and
+       posters remain fully opaque because they use their own textures. */
+    glUniform1f(p->panel_gradient,soft_panel?1.f:0.f);
     glUniform4f(p->tint,r,g,b,a);
     glUniform3f(p->shape,(float)w,(float)h,(float)radius);
     glUniform1f(p->gradient,ui_gradient_pass?(ui_light_theme?2.f:1.f):0.f);
@@ -1742,26 +1752,31 @@ enum { WALL_COLS=4,WALL_PAGE=12,WALL_X=32,WALL_Y=165,WALL_W=290,WALL_STEP_X=308,
 static int wall_selected,wall_filter,wall_focus,wall_count,wall_rows[WALLPAPERS_MAX];
 static char wall_query[96];
 static const UiText wall_tags[]={{"Усі","All"},{"Темні","Dark"},{"Мінімалізм","Minimal"},{"Аніме","Anime"}};
-static int wall_match(const char *s,const char *needle){
-    if(!*needle)return 1;
-    for(;*s;s++){const unsigned char *a=(const unsigned char*)s,*b=(const unsigned char*)needle;
-        while(*a && *b && tolower(*a)==tolower(*b)){a++;b++;}
-        if(!*b)return 1;}
-    return 0;
-}
+/* Wallhaven performs text/category filtering on the server. */
 static void wall_rebuild(void){
-    wall_count=0;
-    for(int i=0;i<wallpapers_count();i++){
-        const WallpaperItem *it=wallpapers_item(i);
-        if(!it)continue;
-        const char *t=wall_filter==1?"dark":wall_filter==2?"minimal":"anime";
-        if(wall_filter && !wall_match(it->name,t) && !wall_match(it->tags,t) &&
-           !(wall_filter==2 && wall_match(it->name,"nord")) &&
-           !(wall_filter==3 && wall_match(it->name,"manga")))continue;
-        if(*wall_query && !wall_match(it->name,wall_query) && !wall_match(it->tags,wall_query))continue;
-        wall_rows[wall_count++]=i;
-    }
+    wall_count=wallpapers_count();
+    if(wall_count>WALLPAPERS_MAX)wall_count=WALLPAPERS_MAX;
+    for(int i=0;i<wall_count;i++)wall_rows[i]=i;
     if(wall_selected>=wall_count)wall_selected=wall_count?wall_count-1:0;
+}
+static void wall_load_filter(int next){
+    if(wallpapers_browse(next,wall_query,1)){
+        wall_filter=next;wall_selected=0;wall_focus=1;
+    }
+}
+static void wall_move_page(int direction){
+    if(wallpapers_busy())return;
+    int start=wall_selected/WALL_PAGE*WALL_PAGE;
+    if(direction<0 && start==0 && wallpapers_current_page()>1){
+        if(wallpapers_browse(wall_filter,wall_query,wallpapers_current_page()-1))
+            wall_selected=WALL_PAGE;
+    }else if(direction>0 && start+WALL_PAGE>=wall_count &&
+             wallpapers_current_page()<wallpapers_last_page()){
+        if(wallpapers_browse(wall_filter,wall_query,wallpapers_current_page()+1))
+            wall_selected=0;
+    }else{
+        wall_selected=swipe_page_selection(wall_selected,wall_count,WALL_PAGE,direction);
+    }
 }
 static int wall_hit(int x,int y){
     if(x<WALL_X || y<WALL_Y)return -1;
@@ -1772,7 +1787,7 @@ static int wall_hit(int x,int y){
     return i<wall_count?i:-1;
 }
 static void draw_wallpapers(Paint *p){
-    screen_header(p,TR("Шпалери","Wallpapers"),"Awesome Wallpapers");
+    screen_header(p,TR("Шпалери","Wallpapers"),"Wallhaven");
     for(int i=0;i<4;i++){
         int x=32+i*158;
         box_alpha(p,x,101,145,46,i==wall_filter?.20f:.09f,.19f,.25f,1.f,13);
@@ -1790,12 +1805,8 @@ static void draw_wallpapers(Paint *p){
         int x=WALL_X+((n-start)%WALL_COLS)*WALL_STEP_X;
         int y=WALL_Y+((n-start)/WALL_COLS)*WALL_STEP_Y;
         box_alpha(p,x,y,WALL_W,137,.13f,.16f,.19f,1.f,12);
-        char thumb[600];
-        snprintf(thumb,sizeof(thumb),
-          "https://images.weserv.nl/?url=raw.githubusercontent.com/AlexandrosLiaskos/Awesome_Wallpapers/main/images/%s&w=350&h=195&fit=cover&output=jpg&q=75",
-          item->name);
         int image_w=0,image_h=0;
-        GLuint tex=logo_texture(thumb,&budget,&image_w,&image_h);
+        GLuint tex=logo_texture(item->thumbnail,&budget,&image_w,&image_h);
         if(tex)wallpaper_image_cover(p,tex,image_w,image_h,x+4,y+4,WALL_W-8,105);
         else text_center_button(p,"UAPlay",x+8,y+32,WALL_W-16,38,p->font_small,.7f,.74f,.79f);
         if(n==wall_selected && !wall_focus)selection_frame(p,x,y,WALL_W,137);
@@ -1805,8 +1816,9 @@ static void draw_wallpapers(Paint *p){
         text_center_button(p,TR("Зображення не знайдено","No wallpapers found"),
                            50,330,1180,55,p->font_small,.8f,.85f,.9f);
     char status[120];
-    snprintf(status,sizeof(status),TR("Сторінка %d / %d · %d шпалер","Page %d / %d · %d wallpapers"),
-             wall_count?wall_selected/WALL_PAGE+1:0,(wall_count+WALL_PAGE-1)/WALL_PAGE,wall_count);
+    snprintf(status,sizeof(status),TR("Wallhaven %d/%d · Добірка %d/%d","Wallhaven %d/%d · Gallery %d/%d"),
+             wallpapers_current_page(),wallpapers_last_page(),
+             wall_count?wall_selected/WALL_PAGE+1:0,(wall_count+WALL_PAGE-1)/WALL_PAGE);
     text_small(p,status,46,641,410);
     if(*wallpapers_selected()){
         char applied[180];snprintf(applied,sizeof(applied),TR("Активні: %s","Selected: %s"),wallpapers_selected());
@@ -2878,9 +2890,9 @@ int main(int argc,char **argv) {
     Page update_return=CATALOG;
     while(running){
         Uint32 frame_started_at=SDL_GetTicks();
-        int old_wall_count=wallpapers_count();
+        int old_wall_revision=wallpapers_revision();
         wallpapers_poll();
-        if(old_wall_count!=wallpapers_count())wall_rebuild();
+        if(old_wall_revision!=wallpapers_revision())wall_rebuild();
         if(app_update.thread && SDL_AtomicGet(&app_update.done)){
             SDL_WaitThread(app_update.thread,NULL);
             app_update.thread=NULL;

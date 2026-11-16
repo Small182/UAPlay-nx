@@ -1346,20 +1346,20 @@ static void button(Paint *p,const char *label,int x,int y,int w,int h,int primar
     if(inset)ui_animating=1;
     x+=inset;y+=inset;w-=2*inset;h-=2*inset;
     float secondary=ui_light_theme?.11f:.15f;
-    /* The light-theme shader inverts neutral inputs. A dark input therefore
-       creates a light primary button; a white text input becomes black.
-       Primary actions remain opaque above wallpapers in BOTH themes. */
-    float primary_r=ui_light_theme?.07f:.89f;
-    float primary_g=ui_light_theme?.07f:.91f;
-    float primary_b=ui_light_theme?.07f:.94f;
+    /* Basic White inverts neutral RGB. Use a light shader input to create
+       a dark Watch button, with a dark glyph input for bright white text.
+       Primary actions remain fully opaque over wallpapers in both themes. */
+    float primary_r=ui_light_theme?.84f:.89f;
+    float primary_g=ui_light_theme?.84f:.91f;
+    float primary_b=ui_light_theme?.84f:.94f;
     ui_soft_primary_gradient=primary;
     box_alpha(p,x,y,w,h,primary?primary_r:secondary,primary?primary_g:secondary,
               primary?primary_b:secondary,1.f,14);
     ui_soft_primary_gradient=0;
     text_center_button(p,label,x,y,w,h,p->font_small,
-                       primary?(ui_light_theme?1.f:.08f):.95f,
-                       primary?(ui_light_theme?1.f:.10f):.96f,
-                       primary?(ui_light_theme?1.f:.13f):.98f);
+                       primary?(ui_light_theme?.04f:.08f):.95f,
+                       primary?(ui_light_theme?.04f:.10f):.96f,
+                       primary?(ui_light_theme?.04f:.13f):.98f);
 }
 /* Solid vector polygons for crisp icons, independent of font glyph support. */
 static void polygon(Paint *p,const float *points,int count,float r,float g,float b){

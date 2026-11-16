@@ -464,7 +464,7 @@ int wallpapers_browse(int filter,const char *query,int page){
     requested=JOB_CATALOG;
     requested_generation=++generation;
     api_last_request=SDL_GetTicks();
-    snprintf(notice,sizeof(notice),"%s",TR("Завантаження Wallhaven…","Loading Wallhaven…"));
+    notice[0]=0;
     SDL_CondSignal(condition);
     SDL_UnlockMutex(mutex);
     return 1;
@@ -518,9 +518,10 @@ void wallpapers_poll(void){
     }
     if(job==JOB_IMAGE)SDL_AtomicSet(&image_phase,PHASE_IDLE);
     if(job==JOB_CATALOG){
-        snprintf(notice,sizeof(notice),"%s",ok?
-            TR("Wallhaven: натисніть A для застосування.","Wallhaven: press A to apply."):
-            TR("Wallhaven недоступний або пошук порожній.","Wallhaven unavailable or no results."));
+        if(ok)notice[0]=0;
+        else snprintf(notice,sizeof(notice),"%s",
+             TR("Wallhaven недоступний або пошук порожній.",
+                "Wallhaven unavailable or no results."));
     }else if(job==JOB_IMAGE || job==JOB_RESTORE){
         if(serial!=generation){
             if(surface)SDL_FreeSurface(surface);
@@ -541,8 +542,7 @@ void wallpapers_poll(void){
                 background_width=surface->w;
                 background_height=surface->h;
                 snprintf(selected_name,sizeof(selected_name),"%s",catalog[index].name);
-                snprintf(notice,sizeof(notice),"%s",
-                         TR("Оригінальні шпалери встановлено.","Original wallpaper applied."));
+                notice[0]=0;
             }else{
                 if(texture)glDeleteTextures(1,&texture);
                 remove(WALLPAPER_TEMP);
@@ -583,7 +583,7 @@ int wallpapers_apply(int index){
     image_started_at=SDL_GetTicks();
     SDL_AtomicSet(&image_phase,PHASE_DOWNLOAD);
     requested=JOB_IMAGE;requested_index=index;requested_generation=++generation;
-    snprintf(notice,sizeof(notice),"%s",TR("Завантаження шпалер…","Downloading wallpaper…"));
+    notice[0]=0;
     SDL_CondSignal(condition);SDL_UnlockMutex(mutex);
     return 1;
 }
@@ -594,8 +594,7 @@ void wallpapers_reset(void){
     background=0;background_width=background_height=0;selected_name[0]=0;
     remove(WALLPAPER_NAME);remove(WALLPAPER_NAME_BACKUP);
     remove(WALLPAPER_FILE);remove(WALLPAPER_BACKUP);
-    snprintf(notice,sizeof(notice),"%s",
-             TR("Відновлено стандартний фон.","Default background restored."));
+    notice[0]=0;
 }
 GLuint wallpapers_texture(void){return background;}
 int wallpapers_width(void){return background_width;}

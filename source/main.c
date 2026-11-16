@@ -28,7 +28,7 @@
 
 typedef enum { CATALOG, DETAILS, PROVIDERS, SOURCES, PLAYER, SETTINGS,
                SEASONS, EPISODES, TRACK_PICKER, VIDEO_SETTINGS, DOWNLOADS,
-               PROVIDER_SETTINGS, SUBDL_PICKER, UPDATE_DIALOG, IPTV_CHANNELS, IPTV_COUNTRIES, IPTV_MORE_COUNTRIES, IPTV_GENRES, WALLPAPERS, APPEARANCE } Page;
+               PROVIDER_SETTINGS, SUBDL_PICKER, UPDATE_DIALOG, IPTV_CHANNELS, IPTV_COUNTRIES, IPTV_MORE_COUNTRIES, IPTV_GENRES, WALLPAPERS, APPEARANCE, ACCENT_PALETTE } Page;
 static int selected_provider=0;
 static int provider_settings_selected=0;
 static int download_selected=0;
@@ -248,7 +248,42 @@ enum { SETTING_APPEARANCE, SETTING_PLAYER,
 enum { APPEARANCE_THEME, APPEARANCE_ACCENT, APPEARANCE_WALLPAPERS,
        APPEARANCE_DEFAULT, APPEARANCE_COUNT };
 enum { SETTINGS_Y=138, SETTINGS_ROW_STEP=81, SETTINGS_ROW_HEIGHT=64 };
-static int settings_selected=0,appearance_selected=0,ui_accent_alt=0,source_mode=0;
+static int settings_selected=0,appearance_selected=0,source_mode=0;
+typedef struct {const char *uk,*en;unsigned rgb;} AccentPreset;
+/* Inspired by the Pantone swatch names in the reference screenshot. RGB
+   values are screen approximations, not official Pantone color conversions. */
+enum { ACCENT_SYSTEM, ACCENT_TURQUOISE, ACCENT_CYAN, ACCENT_YELLOW,
+       ACCENT_YELLOW_012, ACCENT_ORANGE_021, ACCENT_WARM_RED,
+       ACCENT_RED_032, ACCENT_RUBINE_RED, ACCENT_RHODAMINE_RED,
+       ACCENT_PURPLE, ACCENT_VIOLET, ACCENT_BLUE_072, ACCENT_REFLEX_BLUE,
+       ACCENT_PROCESS_BLUE, ACCENT_GREEN, ACCENT_BLACK, ACCENT_BRIGHT_RED,
+       ACCENT_PINK, ACCENT_MEDIUM_PURPLE, ACCENT_DARK_BLUE, ACCENT_WHITE };
+static const AccentPreset accent_presets[]={
+    {"Стандартний","Default",0},
+    {"Бірюзовий","Turquoise",0x3DD7BB},
+    {"Блакитний","Cyan",0x3BADE0},
+    {"Жовтий","Yellow",0xF5D100},
+    {"Жовтий 012","Yellow 012",0xFFD700},
+    {"Помаранчевий 021","Orange 021",0xFF6A00},
+    {"Теплий червоний","Warm Red",0xFF4438},
+    {"Червоний 032","Red 032",0xFF2247},
+    {"Рубіновий","Rubine Red",0xF50057},
+    {"Родаміновий","Rhodamine Red",0xF40CA7},
+    {"Пурпуровий","Purple",0xC72CC7},
+    {"Фіолетовий","Violet",0x6A0DAD},
+    {"Синій 072","Blue 072",0x100FB8},
+    {"Рефлекс синій","Reflex Blue",0x1326A8},
+    {"Блакитний CMYK","Process Blue",0x1490D7},
+    {"Зелений","Green",0x12B89A},
+    {"Чорний","Black",0x2B1B14},
+    {"Яскраво-червоний","Bright Red",0xFF3B1A},
+    {"Рожевий","Pink",0xF42A9A},
+    {"Середній пурпур","Medium Purple",0x6A00A8},
+    {"Темно-синій","Dark Blue",0x1230B8},
+    {"Білий","White",0xFFFFFF}
+};
+#define ACCENT_COUNT ((int)(sizeof(accent_presets)/sizeof(accent_presets[0])))
+static int ui_accent_index=ACCENT_SYSTEM,accent_selected=ACCENT_SYSTEM;
 static int autoplay_episodes=1;
 #define NEXT_EPISODE_DELAY_MS 3000u
 static int ui_light_theme=0,ui_theme_enabled=1,ui_gradient_pass=0;
@@ -274,6 +309,12 @@ static void theme_load(void){
                 char provider_version[8];
                 if(fscanf(f," %7s",provider_version)!=1 || strcmp(provider_version,"movy"))
                     enabled_providers&=~MOVY_PROVIDER_BIT;
+                /* Optional trailing field. Existing theme.txt files still load
+                   with their original system accent as the default. */
+                int stored_accent=ACCENT_SYSTEM;
+                if(fscanf(f," %d",&stored_accent)==1 &&
+                   stored_accent>=0 && stored_accent<ACCENT_COUNT)
+                    ui_accent_index=stored_accent;
             }
         }
         fclose(f);
@@ -284,8 +325,8 @@ static int theme_save(void){
     mkdir("sdmc:/switch/uaplay",0777);
     FILE *f=fopen(THEME_TMP,"w");
     if(!f)return 0;
-    int written=fprintf(f,"%d%d\n%u\n%s\nmovy\n",ui_light_theme,autoplay_episodes,
-                        enabled_providers,TR("uk","en"));
+    int written=fprintf(f,"%d%d\n%u\n%s\nmovy\n%d\n",ui_light_theme,autoplay_episodes,
+                        enabled_providers,TR("uk","en"),ui_accent_index);
     if(fclose(f)!=0 || written<0){
         remove(THEME_TMP);
         return 0;
@@ -1278,16 +1319,23 @@ static void summary(Paint *p,const char *description,int x,int y,int width){
 static void card_title(Paint *p,const char *title,int x,int y,int width){
     wrapped(p,title,x,y,width,2,24,p->font_small,.95f,.96f,.98f);
 }
+static void accent_real(int preset,float *r,float *g,float *b){
+    if(preset<0 || preset>=ACCENT_COUNT)preset=ACCENT_SYSTEM;
+    unsigned rgb=preset==ACCENT_SYSTEM?
+                 (ui_light_theme?0x4465D5:0x3DD7BB):accent_presets[preset].rgb;
+    *r=((rgb>>16)&255)/255.f;
+    *g=((rgb>>8)&255)/255.f;
+    *b=(rgb&255)/255.f;
+}
 static void accent(float *r,float *g,float *b){
-    if(ui_light_theme){
-        /* Pre-inverted Switch blue; actual output approximately #4465D5. */
-        *r=.73f;*g=.60f;*b=.16f;
-        return;
+    accent_real(ui_accent_index,r,g,b);
+    /* Neutral palette accents need dark text contrast on white panels.
+       The separate selection ring displays the actual white swatch. */
+    if(ui_light_theme && ui_accent_index==ACCENT_WHITE){
+        *r=*g=*b=.87f;
+    }else if(ui_light_theme){
+        *r=1.f-*r;*g=1.f-*g;*b=1.f-*b;
     }
-    /* Basic Black uses mint/turquoise for active items. */
-    *r=ui_accent_alt?.23f:.24f;
-    *g=ui_accent_alt?.68f:.84f;
-    *b=ui_accent_alt?.88f:.73f;
 }
 static SDL_Rect ui_focus_rect,ui_press_rect;
 static SDL_Point ui_press_point;
@@ -1330,16 +1378,27 @@ static int pressed_player_button(int key,SDL_Rect *rect){
 }
 
 static void selection_frame(Paint *p,int x,int y,int w,int h){
-    /* A single rounded SDF ring tracks the underlying button/card corners.
-       Separate rectangular strokes left square joints on the Switch UI. */
-    float r=ui_light_theme?.69f:.20f;
-    float g=ui_light_theme?.13f:.67f;
-    float b=ui_light_theme?.20f:.85f;
+    /* Match the selected accent, retaining a contrast outline around the
+       black/white presets on either background theme. */
+    float r,g,b;accent(&r,&g,&b);
     int radius=h>=60?18:h>=40?17:12;
-    ui_outline_width=3;
     float opacity=.94f+.06f*sinf(ui_now*.005f);
     ui_focus_rect=(SDL_Rect){x,y,w,h};
-    box_alpha(p,x-3,y-3,w+6,h+6,r,g,b,opacity,radius);
+    if(ui_accent_index==ACCENT_WHITE || ui_accent_index==ACCENT_BLACK){
+        int old_theme=ui_theme_enabled;
+        ui_theme_enabled=0;
+        int white=ui_accent_index==ACCENT_WHITE;
+        ui_outline_width=5;
+        float contrast=white?.15f:.96f;
+        box_alpha(p,x-4,y-4,w+8,h+8,contrast,contrast,contrast,.88f,radius);
+        ui_outline_width=3;
+        accent_real(ui_accent_index,&r,&g,&b);
+        box_alpha(p,x-3,y-3,w+6,h+6,r,g,b,opacity,radius);
+        ui_theme_enabled=old_theme;
+    }else{
+        ui_outline_width=3;
+        box_alpha(p,x-3,y-3,w+6,h+6,r,g,b,opacity,radius);
+    }
     ui_outline_width=0;
 }
 static void button(Paint *p,const char *label,int x,int y,int w,int h,int primary){

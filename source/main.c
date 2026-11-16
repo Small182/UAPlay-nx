@@ -283,6 +283,8 @@ static const AccentPreset accent_presets[]={
     {"Білий","White",0xFFFFFF}
 };
 #define ACCENT_COUNT ((int)(sizeof(accent_presets)/sizeof(accent_presets[0])))
+enum {ACCENT_COLS=6,ACCENT_GRID_X=32,ACCENT_GRID_Y=130,
+      ACCENT_STEP_X=204,ACCENT_STEP_Y=126,ACCENT_CARD_W=187,ACCENT_CARD_H=108};
 static int ui_accent_index=ACCENT_SYSTEM,accent_selected=ACCENT_SYSTEM;
 static int autoplay_episodes=1;
 #define NEXT_EPISODE_DELAY_MS 3000u
@@ -1697,6 +1699,9 @@ static void footer(Paint *p,const char *message) {
     }else if(footer_page==SETTINGS || footer_page==APPEARANCE){
         HINT("↑↓",TR("Пункт","Item"));HINT("A",TR("Вибрати","Select"));
         HINT("B",footer_page==APPEARANCE?TR("Назад","Back"):TR("Закрити","Close"));
+    }else if(footer_page==ACCENT_PALETTE){
+        HINT("←→↑↓",TR("Колір","Color"));HINT("A",TR("Застосувати","Apply"));
+        HINT("B",TR("Назад","Back"));
     }else if(footer_page==WALLPAPERS){
         HINT("L/R",TR("Сторінка","Page"));HINT("X",TR("Пошук","Search"));
         HINT("Y",TR("Стандартні","Default"));HINT("A",TR("Застосувати","Apply"));
@@ -2207,6 +2212,36 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
     footer_page=page;
     int poster_budget=1;
     if(page==WALLPAPERS){draw_wallpapers(p);return;}
+    if(page==ACCENT_PALETTE){
+        screen_header(p,TR("Колір акценту","Accent color"),NULL);
+        for(int i=0;i<ACCENT_COUNT;i++){
+            int x=ACCENT_GRID_X+(i%ACCENT_COLS)*ACCENT_STEP_X;
+            int y=ACCENT_GRID_Y+(i/ACCENT_COLS)*ACCENT_STEP_Y;
+            box_alpha(p,x,y,ACCENT_CARD_W,ACCENT_CARD_H,
+                      .11f,.14f,.18f,1.f,15);
+            if(i==accent_selected)
+                selection_frame(p,x,y,ACCENT_CARD_W,ACCENT_CARD_H);
+            float r,g,b;accent_real(i,&r,&g,&b);
+            /* Paint accurate swatches, bypassing the Basic White grayscale
+               inversion and the wallpaper panel translucency. A dark 2px
+               border keeps the white chip visible on either theme. */
+            int old_theme=ui_theme_enabled;
+            ui_theme_enabled=0;
+            box_alpha(p,x+8,y+8,ACCENT_CARD_W-16,59,
+                      .13f,.15f,.18f,1.f,10);
+            box_alpha(p,x+10,y+10,ACCENT_CARD_W-20,55,r,g,b,1.f,8);
+            ui_theme_enabled=old_theme;
+            const char *name=ui_language()==UI_ENGLISH?
+                             accent_presets[i].en:accent_presets[i].uk;
+            text_center(p,name,x+7,y+73,ACCENT_CARD_W-14,p->font_tiny,
+                        1.f,1.f,1.f);
+            if(i==ui_accent_index)
+                text_font(p,"✓",x+158,y+72,22,p->font_tiny,1.f,1.f,1.f);
+            press_preview(p,x,y,ACCENT_CARD_W,ACCENT_CARD_H,15);
+        }
+        footer(p,NULL);
+        return;
+    }
     if (page==CATALOG || page==IPTV_CHANNELS) {
         box_alpha(p,0,0,1280,80,.059f,.070f,.081f,1.f,0);
         headline(p,"UAPlay",25,18,166);
@@ -2434,12 +2469,14 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                             "Switch between light and dark themes. The choice is saved.");
                     break;
                 case APPEARANCE_ACCENT:
-                    snprintf(description,sizeof(description),"%s",
-                             ui_light_theme?TR("Акцент: синій Nintendo Switch","Accent: Nintendo Switch blue"):
-                             ui_accent_alt?TR("Акцент: блакитний","Accent: Light blue"):
-                                           TR("Акцент: бірюзовий","Accent: Turquoise"));
-                    help=TR("Змінює колір виділення на кнопках та інших елементах інтерфейсу.",
-                            "Change the highlight color of buttons and interface controls.");
+                    snprintf(description,sizeof(description),
+                             TR("Акцент: %s","Accent: %s"),
+                             ui_language()==UI_ENGLISH?
+                                 accent_presets[ui_accent_index].en:
+                                 accent_presets[ui_accent_index].uk);
+                    help=TR("Палітра із 22 кольорів. Колір рамок і виділень зберігається після перезапуску.",
+                            "Choose from 22 accent colors. Focus outlines and highlights are saved.");
+                    action=TR("Відкрити палітру","Open palette");
                     break;
                 case APPEARANCE_WALLPAPERS:
                     snprintf(description,sizeof(description),"%s",
@@ -3672,6 +3709,20 @@ int main(int argc,char **argv) {
                             key=SDL_CONTROLLER_BUTTON_A;
                         }
                     }
+                }else if(page==ACCENT_PALETTE){
+                    if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
+                    else if(tx>=ACCENT_GRID_X && ty>=ACCENT_GRID_Y){
+                        int col=(tx-ACCENT_GRID_X)/ACCENT_STEP_X;
+                        int row=(ty-ACCENT_GRID_Y)/ACCENT_STEP_Y;
+                        int i=row*ACCENT_COLS+col;
+                        if(col>=0 && col<ACCENT_COLS && row>=0 &&
+                           (tx-ACCENT_GRID_X)%ACCENT_STEP_X<ACCENT_CARD_W &&
+                           (ty-ACCENT_GRID_Y)%ACCENT_STEP_Y<ACCENT_CARD_H &&
+                           i<ACCENT_COUNT){
+                            accent_selected=i;
+                            key=SDL_CONTROLLER_BUTTON_A;
+                        }
+                    }
                 }else if(page==WALLPAPERS){
                     if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                     else if(ty>=101 && ty<147 && tx>=32 && tx<651){
@@ -4229,6 +4280,38 @@ int main(int argc,char **argv) {
                     wallpapers_apply(wall_rows[wall_selected]);
                 continue;
             }
+            if(page==ACCENT_PALETTE){
+                if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){
+                    page=APPEARANCE;
+                    continue;
+                }
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT && accent_selected>0)
+                    accent_selected--;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT &&
+                   accent_selected+1<ACCENT_COUNT)
+                    accent_selected++;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_UP &&
+                   accent_selected>=ACCENT_COLS)
+                    accent_selected-=ACCENT_COLS;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN &&
+                   accent_selected+ACCENT_COLS<ACCENT_COUNT)
+                    accent_selected+=ACCENT_COLS;
+                if(key==SDL_CONTROLLER_BUTTON_A){
+                    int previous=ui_accent_index;
+                    ui_accent_index=accent_selected;
+                    if(theme_save()){
+                        message[0]=0;
+                        appearance_selected=APPEARANCE_ACCENT;
+                        page=APPEARANCE;
+                    }else{
+                        ui_accent_index=previous;
+                        snprintf(message,sizeof(message),"%s",
+                                 TR("Не вдалося зберегти колір акценту.",
+                                    "Could not save the accent color."));
+                    }
+                }
+                continue;
+            }
             if(page==APPEARANCE){
                 if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){
                     page=SETTINGS;
@@ -4243,7 +4326,8 @@ int main(int argc,char **argv) {
                         ui_light_theme=!ui_light_theme;
                         theme_save();
                     }else if(appearance_selected==APPEARANCE_ACCENT){
-                        ui_accent_alt=!ui_accent_alt;
+                        accent_selected=ui_accent_index;
+                        page=ACCENT_PALETTE;
                     }else if(appearance_selected==APPEARANCE_WALLPAPERS){
                         wall_selected=0;wall_focus=0;
                         wallpapers_open();

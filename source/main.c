@@ -854,7 +854,7 @@ static void box_alpha(Paint *p,int x,int y,int w,int h,float r,float g,float b,f
        panel threshold. Include it explicitly so its background receives
        exactly the same transparency and gradient as other UI surfaces,
        while the separate arrow glyph remains fully opaque. */
-    int header_back=(x==UI_EDGE && y==23 && w==55 && h==48);
+    int header_back=(x==32 && y==23 && w==55 && h==48);
     int soft_panel=ui_theme_enabled && wallpapers_texture() &&
         p->tex==p->solid_tex && !ui_gradient_pass &&
         !ui_outline_width && !ui_soft_primary_gradient &&

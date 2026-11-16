@@ -1171,10 +1171,12 @@ static void text_small(Paint *p,const char *s,int x,int y,int limit){
     text_font(p,s,x,y,limit,p->font_small,1,1,1);
 }
 static void text_muted(Paint *p,const char *s,int x,int y,int limit){
-    text_font(p,s,x,y,limit,p->font_small,.70f,.75f,.81f);
+    text_font(p,s,x,y,limit,p->font_small,
+              ui_light_theme?1.f:.70f,ui_light_theme?1.f:.75f,ui_light_theme?1.f:.81f);
 }
 static void text_tiny(Paint *p,const char *s,int x,int y,int limit){
-    text_font(p,s,x,y,limit,p->font_tiny,.78f,.83f,.88f);
+    text_font(p,s,x,y,limit,p->font_tiny,
+              ui_light_theme?1.f:.78f,ui_light_theme?1.f:.83f,ui_light_theme?1.f:.88f);
 }
 /* Avoid repeated HarfBuzz shaping for identical labels every frame.
    Fixed capacity and bounded allocations prevent unbounded memory growth. */
@@ -1241,6 +1243,12 @@ static void wrapped(Paint *p,const char *s,int x,int y,int width,
                     int max_lines,int line_height,TTF_Font *font,
                     float r,float g,float b){
     if(!s || !*s)return;
+    /* Retain colored accents, but remove the mid-gray treatment from
+       neutral multi-line copy in the light theme. The text shader maps
+       white input to black output for Basic White. */
+    if(ui_theme_enabled && ui_light_theme &&
+       fmaxf(r,fmaxf(g,b))-fminf(r,fminf(g,b))<=.22f)
+        r=g=b=1.f;
     char copy[1024],line[512]={0};
     snprintf(copy,sizeof(copy),"%s",s);
     char *save=NULL,*word=strtok_r(copy," \n\t",&save);
@@ -1259,7 +1267,12 @@ static void wrapped(Paint *p,const char *s,int x,int y,int width,
     if(row<max_lines && line[0])text_font(p,line,x,y+row*line_height,width,font,r,g,b);
 }
 static void summary(Paint *p,const char *description,int x,int y,int width){
-    wrapped(p,description,x,y,width,3,28,p->font_small,.72f,.77f,.82f);
+    /* Light theme: description text must be solid black, never washed-out
+       gray over a translucent panel or a detailed wallpaper. */
+    float r=ui_light_theme?1.f:.72f;
+    float g=ui_light_theme?1.f:.77f;
+    float b=ui_light_theme?1.f:.82f;
+    wrapped(p,description,x,y,width,3,28,p->font_small,r,g,b);
 }
 static void card_title(Paint *p,const char *title,int x,int y,int width){
     wrapped(p,title,x,y,width,2,24,p->font_small,.95f,.96f,.98f);

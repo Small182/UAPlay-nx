@@ -1418,13 +1418,23 @@ static void press_preview(Paint *p,int x,int y,int w,int h,int radius){
     ui_outline_width=0;
 }
 
-static const int player_button_centers[]={354,476,598,832,954,1076};
+/* Only the central transport trio changes shape and location. Volume,
+   secondary controls, and the rest of the video overlay remain untouched. */
+static const int player_button_centers[]={540,640,740,832,954,1076};
+static SDL_Rect player_button_rect(int index){
+    int center=player_button_centers[index];
+    if(index<3){
+        int diameter=index==1?90:66;
+        return (SDL_Rect){center-diameter/2,641-diameter/2,diameter,diameter};
+    }
+    return (SDL_Rect){center-38,610,76,58};
+}
 static int pressed_player_button(int key,SDL_Rect *rect){
     const int keys[]={SDL_CONTROLLER_BUTTON_DPAD_LEFT,SDL_CONTROLLER_BUTTON_A,
                       SDL_CONTROLLER_BUTTON_DPAD_RIGHT,SDL_CONTROLLER_BUTTON_BACK,
                       SDL_CONTROLLER_BUTTON_Y,SDL_CONTROLLER_BUTTON_X};
     for(int i=0;i<6;i++)if(keys[i]==key){
-        *rect=(SDL_Rect){player_button_centers[i]-38,610,76,58};
+        *rect=player_button_rect(i);
         return 1;
     }
     return 0;
@@ -1563,19 +1573,12 @@ static void battery_status_horizontal(Paint *p,int x,int y){
     int old_theme=ui_theme_enabled;
     ui_theme_enabled=0;
     float r,g,b;battery_fill_color(&r,&g,&b);
-    /* Keep the horizontal player badge readable in either theme. */
-    box_alpha(p,x,y,57,43,
-              ui_light_theme?.91f:.047f,ui_light_theme?.92f:.067f,
-              ui_light_theme?.94f:.088f,.88f,12);
+    /* Match existing dark, rounded player overlay; icon only. */
+    box_alpha(p,x,y,57,43,.047f,.067f,.088f,.88f,12);
     int bx=x+11,by=y+13;
-    float br=ui_light_theme?.10f:.96f;
-    float bg=ui_light_theme?.12f:.97f;
-    float bb=ui_light_theme?.15f:.98f;
-    box_alpha(p,bx,by,28,16,br,bg,bb,1.f,3);
-    box_alpha(p,bx+2,by+2,24,12,
-              ui_light_theme?.94f:.055f,ui_light_theme?.95f:.074f,
-              ui_light_theme?.97f:.092f,1.f,2);
-    box_alpha(p,bx+28,by+5,4,6,br,bg,bb,1.f,2);
+    box_alpha(p,bx,by,28,16,.96f,.97f,.98f,1.f,3);
+    box_alpha(p,bx+2,by+2,24,12,.055f,.074f,.092f,1.f,2);
+    box_alpha(p,bx+28,by+5,4,6,.96f,.97f,.98f,1.f,2);
     if(battery_percentage>=0){
         int filled=(24*battery_percentage+99)/100;
         if(filled>24)filled=24;
@@ -2856,7 +2859,8 @@ static void draw_player_controls(Paint *p,mpv_handle *player,double offset,const
         int filled=duration>0?(int)(1028.0*pos/duration):0;
         if(filled<0)filled=0;if(filled>1028)filled=1028;
         if(filled>0)box_alpha(p,126,566,filled,6,.92f,.94f,.97f,1.f,3);
-        box_alpha(p,126+filled-8,559,16,20,.95f,.96f,.98f,1.f,8);
+        /* Circular seek thumb centered on the existing progress track. */
+        box_alpha(p,126+filled-9,560,18,18,.95f,.96f,.98f,1.f,9);
         char left[24],right[24];
         snprintf(left,sizeof(left),"%02d:%02d",(int)pos/60,(int)pos%60);
         snprintf(right,sizeof(right),"%02d:%02d",(int)duration/60,(int)duration%60);
@@ -2868,7 +2872,8 @@ static void draw_player_controls(Paint *p,mpv_handle *player,double offset,const
     int volume=(int)video_options[1];
     if(volume<0)volume=0;if(volume>130)volume=130;
     if(volume>0)box_alpha(p,70,649,volume*178/130,5,.92f,.94f,.97f,1.f,3);
-    box_alpha(p,70+volume*178/130-7,641,14,20,.96f,.97f,.98f,1.f,7);
+    /* Circular volume thumb; slider range and response are unchanged. */
+    box_alpha(p,70+volume*178/130-9,642,18,18,.96f,.97f,.98f,1.f,9);
     char volume_label[24];snprintf(volume_label,sizeof(volume_label),"%d%%",volume);
     text_tiny(p,volume_label,122,672,100);
     const char *icons[]={"−10",paused?"▶":"Ⅱ","+10","","♪","CC"};
@@ -2880,14 +2885,22 @@ static void draw_player_controls(Paint *p,mpv_handle *player,double offset,const
         labels[2]=TR("Наступний канал","Next channel");
     }
     for(int i=0;i<6;i++){
-        const int w=76;
+        SDL_Rect rect=player_button_rect(i);
         int center=player_button_centers[i];
-        int inset=(int)lroundf(3.f*press_amount(center-w/2,610,w,58));
-        box_alpha(p,center-w/2+inset,610+inset,w-2*inset,58-2*inset,.18f,.22f,.26f,.94f,15);
-        text_center(p,icons[i],center-w/2,624,w,
-                    i==0||i==2?p->font_small:p->font,.98f,.98f,.99f);
+        int inset=(int)lroundf(3.f*press_amount(rect.x,rect.y,rect.w,rect.h));
+        int round=i<3?(rect.w-2*inset)/2:15;
+        box_alpha(p,rect.x+inset,rect.y+inset,rect.w-2*inset,
+                  rect.h-2*inset,.18f,.22f,.26f,.94f,round);
+        if(i<3){
+            TTF_Font *icon_font=i==1?p->font_big:p->font_small;
+            int icon_y=rect.y+(rect.h-text_height(p,icons[i],icon_font))/2;
+            text_center(p,icons[i],rect.x,icon_y,rect.w,icon_font,.98f,.98f,.99f);
+        }else{
+            text_center(p,icons[i],rect.x,624,rect.w,p->font,.98f,.98f,.99f);
+        }
         if(i==3)gear_icon(p,center,639,.18f,.22f,.26f);
-        text_center(p,labels[i],center-72,678,144,p->font_tiny,.78f,.84f,.89f);
+        text_center(p,labels[i],center-(i<3?62:72),i<3?689:678,
+                    i<3?124:144,p->font_tiny,.78f,.84f,.89f);
     }
 }
 static GLuint video_framebuffer(GLuint *texture){
@@ -3633,12 +3646,21 @@ int main(int argc,char **argv) {
                             playback_set_value(player,"volume",volume);
                             continue;
                         }
-                        if(tx>=307 && tx<401)key=SDL_CONTROLLER_BUTTON_DPAD_LEFT;
-                        else if(tx>=429 && tx<523)key=SDL_CONTROLLER_BUTTON_A;
-                        else if(tx>=551 && tx<645)key=SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
-                        else if(tx>=785 && tx<879)key=SDL_CONTROLLER_BUTTON_BACK;
-                        else if(tx>=907 && tx<1001)key=SDL_CONTROLLER_BUTTON_Y;
-                        else if(tx>=1029 && tx<1123)key=SDL_CONTROLLER_BUTTON_X;
+                        /* Match the touch hit regions to the same control
+                           geometry used for drawing and press animations. */
+                        const int control_keys[]={
+                            SDL_CONTROLLER_BUTTON_DPAD_LEFT,SDL_CONTROLLER_BUTTON_A,
+                            SDL_CONTROLLER_BUTTON_DPAD_RIGHT,SDL_CONTROLLER_BUTTON_BACK,
+                            SDL_CONTROLLER_BUTTON_Y,SDL_CONTROLLER_BUTTON_X
+                        };
+                        for(int i=0;i<6;i++){
+                            SDL_Rect hit=player_button_rect(i);
+                            if(tx>=hit.x && tx<hit.x+hit.w &&
+                               ty>=hit.y && ty<hit.y+hit.h){
+                                key=control_keys[i];
+                                break;
+                            }
+                        }
                     }else continue;
                 }else if(page==CATALOG){
                     int tab=ty<78?main_tab_at(tx):0;

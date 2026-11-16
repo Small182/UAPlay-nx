@@ -12,8 +12,6 @@
 /* Reduce GPU memory from up to roughly 80 MB to about 30 MB. */
 #define POSTER_CACHE_MAX 48
 #define MAX_POSTER_BYTES (1024 * 1024)
-#define MAX_LOCAL_WALLPAPER_BYTES (24u * 1024u * 1024u)
-#define WALLPAPER_DIRECTORY "sdmc:/switch/uaplay/wallpapers/"
 /* Eden's SSL implementation becomes unreliable under sustained concurrent
    HTTPS handshakes. A persistent single downloader is safer and can still
    warm the disk cache in the background without blocking the interface. */
@@ -123,25 +121,6 @@ static void disk_write(const char *path,const ImageData *image){
 static ImageData download_image(const char *path,CURL *curl,int *ssl_failed){
     ImageData data={0};
     *ssl_failed=0;
-    int local=!strncmp(path,WALLPAPER_DIRECTORY,strlen(WALLPAPER_DIRECTORY));
-    if(local){
-        /* These are user-imported images, never network requests. */
-        if(strstr(path,"..") || strchr(path+strlen(WALLPAPER_DIRECTORY),'/') ||
-           strchr(path+strlen(WALLPAPER_DIRECTORY),'\\'))return data;
-        FILE *file=fopen(path,"rb");
-        if(!file)return data;
-        struct stat info;
-        if(fstat(fileno(file),&info)==0 && info.st_size>0 &&
-           (unsigned long long)info.st_size<=MAX_LOCAL_WALLPAPER_BYTES){
-            size_t length=(size_t)info.st_size;
-            data.data=malloc(length);
-            if(data.data && fread(data.data,1,length,file)==length)
-                data.used=length;
-            else{free(data.data);data.data=NULL;data.used=0;}
-        }
-        fclose(file);
-        return data;
-    }
     int external=!strncmp(path,"https://",8) || !strncmp(path,"http://",7);
     if(!external && (path[0]!='/' || strstr(path,"..")))return data;
     data=disk_read(path);
@@ -243,12 +222,6 @@ static GLuint image_texture(const ImageData *data,int *width,int *height){
     SDL_RWops *rw=SDL_RWFromConstMem(data->data,(int)data->used);
     SDL_Surface *image=rw?IMG_Load_RW(rw,1):NULL;
     if(!image)return 0;
-    /* A malicious or accidentally gigantic local image must not exhaust
-       the UI's RAM before conversion or texture upload. */
-    if(image->w<1 || image->h<1 ||
-       (unsigned long long)image->w*(unsigned)image->h>12u*1024u*1024u){
-        SDL_FreeSurface(image);return 0;
-    }
     SDL_Surface *rgba=SDL_ConvertSurfaceFormat(image,SDL_PIXELFORMAT_ABGR8888,0);
     SDL_FreeSurface(image);
     if(!rgba)return 0;

@@ -1808,21 +1808,22 @@ static int wall_hit(int x,int y){
     int i=wall_selected/WALL_PAGE*WALL_PAGE+row*WALL_COLS+col;
     return i<wall_count?i:-1;
 }
-static void wall_draw_grid(Paint *p,int start,int offset_x,int *budget,int focused){
+static void wall_draw_grid(Paint *p,int start,int offset_y,int *budget,int focused){
     for(int n=start;n<wall_count && n<start+WALL_PAGE;n++){
         const WallpaperItem *item=wallpapers_item(wall_rows[n]);
         if(!item)continue;
-        int x=WALL_X+((n-start)%WALL_COLS)*WALL_STEP_X+offset_x;
-        int y=WALL_Y+((n-start)/WALL_COLS)*WALL_STEP_Y;
-        box_alpha(p,x,y,WALL_W,137,.13f,.16f,.19f,1.f,12);
+        int x=WALL_X+((n-start)%WALL_COLS)*WALL_STEP_X;
+        int y=WALL_Y+((n-start)/WALL_COLS)*WALL_STEP_Y+offset_y;
+        box_alpha(p,x,y,WALL_W,WALL_CARD_H,.13f,.16f,.19f,1.f,14);
         int image_w=0,image_h=0;
         GLuint tex=logo_texture(item->thumbnail,budget,&image_w,&image_h);
-        if(tex)wallpaper_image_cover(p,tex,image_w,image_h,x+4,y+4,WALL_W-8,105,8);
-        else text_center_button(p,"UAPlay",x+8,y+32,WALL_W-16,38,
+        if(tex)wallpaper_image_cover(p,tex,image_w,image_h,
+                                      x+5,y+5,WALL_W-10,174,11);
+        else text_center_button(p,"UAPlay",x+8,y+75,WALL_W-16,38,
                                 p->font_small,.7f,.74f,.79f);
         if(focused && n==wall_selected && !wall_focus)
-            selection_frame(p,x,y,WALL_W,137);
-        text_font(p,item->name,x+10,y+114,WALL_W-20,p->font_tiny,1,1,1);
+            selection_frame(p,x,y,WALL_W,WALL_CARD_H);
+        text_font(p,item->name,x+14,y+185,WALL_W-28,p->font_small,1,1,1);
     }
 }
 static void draw_wallpapers(Paint *p){
@@ -1838,7 +1839,7 @@ static void draw_wallpapers(Paint *p){
     box_alpha(p,1050,101,196,46,.13f,.17f,.20f,1.f,12);
     text_center_button(p,TR("Y: Стандартні","Y: Default"),1050,101,196,46,p->font_small,1,1,1);
     int budget=1,start=wall_selected/WALL_PAGE*WALL_PAGE;
-    paint_clip(p,WALL_X,WALL_Y,1216,3*WALL_STEP_Y);
+    paint_clip(p,WALL_X,WALL_Y,1216,455);
     Uint32 elapsed=ui_now-wall_anim_started;
     if(wall_anim_to==start && elapsed<WALL_ANIM_MS){
         float t=elapsed/(float)WALL_ANIM_MS;
@@ -1846,10 +1847,8 @@ static void draw_wallpapers(Paint *p){
         float eased=1.f-remain*remain*remain;
         if(wall_anim_from>=0)
             wall_draw_grid(p,wall_anim_from,
-                           -(int)(wall_anim_dir*1240.f*eased),&budget,0);
-        /* The previous remote API page isn't in memory. Animate the
-           freshly loaded page sliding in from the appropriate edge. */
-        int distance=wall_anim_from>=0?1240:210;
+                           -(int)(wall_anim_dir*WALL_PAGE_SHIFT*eased),&budget,0);
+        int distance=wall_anim_from>=0?WALL_PAGE_SHIFT:140;
         wall_draw_grid(p,start,
                        (int)(wall_anim_dir*distance*(1.f-eased)),&budget,1);
         ui_animating=1;
@@ -1860,20 +1859,16 @@ static void draw_wallpapers(Paint *p){
     paint_clip(p,0,0,0,0);
     if(!wall_count && !wallpapers_busy())
         text_center_button(p,TR("Зображення не знайдено","No wallpapers found"),
-                           50,330,1180,55,p->font_small,.8f,.85f,.9f);
-    char status[120];
-    snprintf(status,sizeof(status),
-             TR("Wallhaven %d/%d · Добірка %d/%d","Wallhaven %d/%d · Gallery %d/%d"),
+                           50,340,1180,55,p->font_small,.8f,.85f,.9f);
+    char page_label[120];
+    snprintf(page_label,sizeof(page_label),
+             TR("Wallhaven %d/%d · Сторінка %d/%d","Wallhaven %d/%d · Page %d/%d"),
              wallpapers_current_page(),wallpapers_last_page(),
              wall_count?wall_selected/WALL_PAGE+1:0,
              (wall_count+WALL_PAGE-1)/WALL_PAGE);
-    text_small(p,status,46,641,410);
-    if(*wallpapers_selected()){
-        char applied[180];
-        snprintf(applied,sizeof(applied),TR("Активні: %s","Selected: %s"),wallpapers_selected());
-        text_small(p,applied,590,641,630);
-    }
-    footer(p,wallpapers_message());
+    text_small(p,page_label,46,632,700);
+    /* Only show actual errors, never service success or progress messages. */
+    footer(p,wallpapers_busy()?"":wallpapers_message());
 }
 static void draw_iptv(Paint *p,Page page,const char *status){
     int country_count,genre_count;

@@ -2900,10 +2900,11 @@ static void draw_player_controls(Paint *p,mpv_handle *player,double offset,const
             text_center(p,icons[i],rect.x,624,rect.w,p->font,.98f,.98f,.99f);
         }
         if(i==3)gear_icon(p,center,639,.18f,.22f,.26f);
-        /* Narrower labels track the tighter secondary-control spacing
-           without touching the central transport group. */
-        text_center(p,labels[i],center-(i<3?62:55),i<3?689:678,
-                    i<3?124:110,p->font_tiny,.78f,.84f,.89f);
+        /* Transport buttons are self-explanatory icons; only the three
+           secondary controls keep their captions. */
+        if(i>=3)
+            text_center(p,labels[i],center-55,678,110,p->font_tiny,
+                        .78f,.84f,.89f);
     }
 }
 static GLuint video_framebuffer(GLuint *texture){

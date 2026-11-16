@@ -21,12 +21,14 @@
 #include "subdl.h"
 #include "movy_stream.h"
 #include "iptv.h"
+#include "wallpapers.h"
+#include <ctype.h>
 #include "update.h"
 #include "version.h"
 
 typedef enum { CATALOG, DETAILS, PROVIDERS, SOURCES, PLAYER, SETTINGS,
                SEASONS, EPISODES, TRACK_PICKER, VIDEO_SETTINGS, DOWNLOADS,
-               PROVIDER_SETTINGS, SUBDL_PICKER, UPDATE_DIALOG, IPTV_CHANNELS, IPTV_COUNTRIES, IPTV_MORE_COUNTRIES, IPTV_GENRES } Page;
+               PROVIDER_SETTINGS, SUBDL_PICKER, UPDATE_DIALOG, IPTV_CHANNELS, IPTV_COUNTRIES, IPTV_MORE_COUNTRIES, IPTV_GENRES, WALLPAPERS } Page;
 static int selected_provider=0;
 static int provider_settings_selected=0;
 static int download_selected=0;
@@ -241,8 +243,8 @@ static int sort_button_for_mode(int mode){
 /* 0: Watch, 1: Add to favorites (details buttons). */
 static int details_button_focus=0;
 enum { SETTING_THEME, SETTING_INTERFACE, SETTING_PLAYER, SETTING_AUTOPLAY,
-       SETTING_PROVIDERS, SETTING_LANGUAGE, SETTING_COUNT };
-enum { SETTINGS_Y=136, SETTINGS_ROW_STEP=80, SETTINGS_ROW_HEIGHT=64 };
+       SETTING_PROVIDERS, SETTING_LANGUAGE, SETTING_WALLPAPERS, SETTING_COUNT };
+enum { SETTINGS_Y=109, SETTINGS_ROW_STEP=69, SETTINGS_ROW_HEIGHT=56 };
 static int settings_selected=0,ui_accent_alt=0,source_mode=0;
 static int autoplay_episodes=1;
 #define NEXT_EPISODE_DELAY_MS 3000u
@@ -1544,6 +1546,10 @@ static void footer(Paint *p,const char *message) {
         HINT("A",TR("Натиснути","Select"));HINT("B",TR("Назад","Back"));
     }else if(footer_page==SETTINGS){
         HINT("↑↓",TR("Пункт","Item"));HINT("A",TR("Змінити","Change"));HINT("B",TR("Закрити","Close"));
+    }else if(footer_page==WALLPAPERS){
+        HINT("L/R",TR("Сторінка","Page"));HINT("X",TR("Пошук","Search"));
+        HINT("Y",TR("Стандартні","Default"));HINT("A",TR("Застосувати","Apply"));
+        HINT("B",TR("Назад","Back"));
     }else if(footer_page==PROVIDER_SETTINGS){
         HINT("↑↓",TR("Джерело","Provider"));HINT("A",TR("Перемкнути","Toggle"));HINT("B",TR("Назад","Back"));
     }else if(footer_page==TRACK_PICKER || footer_page==SUBDL_PICKER){
@@ -1703,6 +1709,49 @@ static int iptv_touched_card(int x,int y){
     return row<tv.count?row:-1;
 }
 
+
+static void draw_wallpapers(Paint *p){
+    screen_header(p,TR("Шпалери","Wallpapers"),"Awesome Wallpapers");
+    for(int i=0;i<4;i++){
+        int x=32+i*158;
+        box_alpha(p,x,101,145,46,i==wall_filter?.20f:.09f,.19f,.25f,1.f,13);
+        if(wall_focus && wall_filter==i)selection_frame(p,x,101,145,46);
+        text_center_button(p,ui_text(wall_tags[i]),x,101,145,46,p->font_small,1,1,1);
+    }
+    box_alpha(p,674,101,360,46,.09f,.13f,.16f,1.f,12);
+    text_small(p,*wall_query?wall_query:TR("X: Пошук","X: Search"),690,109,330);
+    box_alpha(p,1050,101,196,46,.13f,.17f,.20f,1.f,12);
+    text_center_button(p,TR("Y: Стандартні","Y: Default"),1050,101,196,46,p->font_small,1,1,1);
+    int budget=1,start=wall_selected/WALL_PAGE*WALL_PAGE;
+    for(int n=start;n<wall_count && n<start+WALL_PAGE;n++){
+        const WallpaperItem *item=wallpapers_item(wall_rows[n]);
+        if(!item)continue;
+        int x=WALL_X+((n-start)%WALL_COLS)*WALL_STEP_X;
+        int y=WALL_Y+((n-start)/WALL_COLS)*WALL_STEP_Y;
+        box_alpha(p,x,y,WALL_W,137,.13f,.16f,.19f,1.f,12);
+        char thumb[600];
+        snprintf(thumb,sizeof(thumb),
+          "https://images.weserv.nl/?url=raw.githubusercontent.com/AlexandrosLiaskos/Awesome_Wallpapers/main/images/%s&w=350&h=195&fit=cover&output=jpg&q=75",
+          item->name);
+        GLuint tex=logo_texture(thumb,&budget,NULL,NULL);
+        if(tex){GLuint old=p->tex;p->tex=tex;box_alpha(p,x+4,y+4,WALL_W-8,105,1,1,1,1.f,8);p->tex=old;}
+        else text_center_button(p,"UAPlay",x+8,y+32,WALL_W-16,38,p->font_small,.7f,.74f,.79f);
+        if(n==wall_selected && !wall_focus)selection_frame(p,x,y,WALL_W,137);
+        text_font(p,item->name,x+10,y+114,WALL_W-20,p->font_tiny,1,1,1);
+    }
+    if(!wall_count && !wallpapers_busy())
+        text_center_button(p,TR("Зображення не знайдено","No wallpapers found"),
+                           50,330,1180,55,p->font_small,.8f,.85f,.9f);
+    char status[120];
+    snprintf(status,sizeof(status),TR("Сторінка %d / %d · %d шпалер","Page %d / %d · %d wallpapers"),
+             wall_count?wall_selected/WALL_PAGE+1:0,(wall_count+WALL_PAGE-1)/WALL_PAGE,wall_count);
+    text_small(p,status,46,641,410);
+    if(*wallpapers_selected()){
+        char applied[180];snprintf(applied,sizeof(applied),TR("Активні: %s","Selected: %s"),wallpapers_selected());
+        text_small(p,applied,590,641,630);
+    }
+    footer(p,wallpapers_message());
+}
 static void draw_iptv(Paint *p,Page page,const char *status){
     int country_count,genre_count;
     const IptvCountry *countries=iptv_countries(&country_count);
@@ -1827,6 +1876,15 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
     ui_gradient_pass=1;
     box_alpha(p,0,0,1280,720,.034f,.042f,.054f,1.f,0);
     ui_gradient_pass=0;
+    GLuint wall=wallpapers_texture();
+    if(wall && page!=PLAYER){
+        GLuint old=p->tex;int theme=ui_theme_enabled;
+        ui_theme_enabled=0;p->tex=wall;
+        box_alpha(p,0,0,1280,720,1,1,1,1.f,0);
+        p->tex=old;
+        box_alpha(p,0,0,1280,720,.02f,.025f,.03f,ui_light_theme?.38f:.64f,0);
+        ui_theme_enabled=theme;
+    }
     static int previous_page=-1,previous_category=-1,previous_expanded=-1;
     static int previous_sort=-1,painted_shelf=-1,old_shelf_offset=0;
     static Uint32 transition_at=0;
@@ -1850,6 +1908,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                     episodes_in_season(season_ids[selected_season]):0;
     footer_page=page;
     int poster_budget=1;
+    if(page==WALLPAPERS){draw_wallpapers(p);return;}
     if (page==CATALOG || page==IPTV_CHANNELS) {
         box_alpha(p,0,0,1280,80,.059f,.070f,.081f,1.f,0);
         headline(p,"UAPlay",25,18,166);
@@ -2036,7 +2095,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         screen_header(p,TR("Налаштування","Settings"),"UAPlay");
         const char *items[]={TR("Тема","Theme"),TR("Інтерфейс","Appearance"),
             TR("Плеєр","Player"),TR("Автовідтворення","Autoplay"),TR("Джерела","Providers"),
-            TR("Мова / Language","Language / Мова")};
+            TR("Мова / Language","Language / Мова"),TR("Шпалери","Wallpapers")};
         for(int i=0;i<SETTING_COUNT;i++){
             int y=SETTINGS_Y+i*SETTINGS_ROW_STEP;
             box_alpha(p,32,y,417,SETTINGS_ROW_HEIGHT,i==settings_selected?.20f:.09f,
@@ -2052,7 +2111,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             }else text(p,items[i],55,label_y,372);
             press_preview(p,32,y,417,SETTINGS_ROW_HEIGHT,16);
         }
-        box_alpha(p,475,136,773,480,.10f,.12f,.15f,1.f,20);
+        box_alpha(p,475,109,773,507,.10f,.12f,.15f,1.f,20);
         headline(p,items[settings_selected],513,174,685);
         char description[240];
         if(settings_selected==SETTING_THEME)snprintf(description,sizeof(description),TR("Оформлення: %s","Theme: %s"),ui_light_theme?TR("Світла тема","Light"):TR("Темна тема","Dark"));
@@ -2065,6 +2124,9 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             snprintf(description,sizeof(description),TR("Наступна серія: %s","Next episode: %s"),autoplay_episodes?TR("Автоматично","Automatic"):TR("Вручну","Manual"));
         else if(settings_selected==SETTING_LANGUAGE)
             snprintf(description,sizeof(description),"%s",TR("Українська","English"));
+         else if(settings_selected==SETTING_WALLPAPERS)
+             snprintf(description,sizeof(description),"%s",
+                      *wallpapers_selected()?wallpapers_selected():TR("Стандартний фон","Default background"));
         else description[0]=0;
         text(p,description,516,255,682);
         const char *help[]={TR("Перемикає темну та світлу теми. Вибір зберігається на SD-карті.","Switch between dark and light themes. Your choice is saved to the SD card."),
@@ -2072,11 +2134,13 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             TR("Налаштуйте відео, гучність та субтитри.","Adjust playback, volume, and subtitles."),
             TR("Після завершення серії пропонує наступну через 3 секунди. Кнопка B скасовує перехід. Вибір зберігається.","Start the next episode after 3 seconds. Press B to cancel. Your choice is saved."),
             TR("Виберіть джерела, у яких UAPlay може шукати відео. Вибір зберігається на SD-карті.","Choose which providers UAPlay can search. Your choices are saved to the SD card."),
-            TR("Змінює мову інтерфейсу, назв і описів TMDb.","Changes the language of the interface and TMDb titles and descriptions.")};
+            TR("Змінює мову інтерфейсу, назв і описів TMDb.","Changes the language of the interface and TMDb titles and descriptions."),
+             TR("Оберіть фон із галереї Awesome Wallpapers.","Choose a background from Awesome Wallpapers.")};
         wrapped(p,help[settings_selected],517,315,675,3,29,p->font_small,.73f,.78f,.84f);
         button(p,settings_selected==SETTING_PLAYER?TR("Відкрити параметри","Open player settings"):
                settings_selected==SETTING_PROVIDERS?TR("Відкрити джерела","Manage providers"):
-               settings_selected==SETTING_LANGUAGE?TR("English","Українська"):TR("Змінити","Change"),
+               settings_selected==SETTING_LANGUAGE?TR("English","Українська"):
+                settings_selected==SETTING_WALLPAPERS?TR("Відкрити галерею","Open gallery"):TR("Змінити","Change"),
                515,537,258,55,1);
         footer(p,status);
     } else if (page==DETAILS) {
@@ -2503,6 +2567,40 @@ static void draw_update(Paint *p){
     }
 }
 
+
+enum { WALL_COLS=4,WALL_PAGE=12,WALL_X=32,WALL_Y=165,WALL_W=290,WALL_STEP_X=308,WALL_STEP_Y=158 };
+static int wall_selected,wall_filter,wall_focus,wall_count,wall_rows[WALLPAPERS_MAX];
+static char wall_query[96];
+static const UiText wall_tags[]={{"Усі","All"},{"Темні","Dark"},{"Мінімалізм","Minimal"},{"Аніме","Anime"}};
+static int wall_match(const char *s,const char *needle){
+    if(!*needle)return 1;
+    for(;*s;s++){const unsigned char *a=(const unsigned char*)s,*b=(const unsigned char*)needle;
+        while(*a && *b && tolower(*a)==tolower(*b)){a++;b++;}
+        if(!*b)return 1;}
+    return 0;
+}
+static void wall_rebuild(void){
+    wall_count=0;
+    for(int i=0;i<wallpapers_count();i++){
+        const WallpaperItem *it=wallpapers_item(i);
+        if(!it)continue;
+        const char *t=wall_filter==1?"dark":wall_filter==2?"minimal":"anime";
+        if(wall_filter && !wall_match(it->name,t) && !wall_match(it->tags,t) &&
+           !(wall_filter==2 && wall_match(it->name,"nord")) &&
+           !(wall_filter==3 && wall_match(it->name,"manga")))continue;
+        if(*wall_query && !wall_match(it->name,wall_query) && !wall_match(it->tags,wall_query))continue;
+        wall_rows[wall_count++]=i;
+    }
+    if(wall_selected>=wall_count)wall_selected=wall_count?wall_count-1:0;
+}
+static int wall_hit(int x,int y){
+    if(x<WALL_X || y<WALL_Y)return -1;
+    int col=(x-WALL_X)/WALL_STEP_X,row=(y-WALL_Y)/WALL_STEP_Y;
+    if(col>=WALL_COLS || row>=3 || (x-WALL_X)%WALL_STEP_X>=WALL_W ||
+       (y-WALL_Y)%WALL_STEP_Y>=137)return -1;
+    int i=wall_selected/WALL_PAGE*WALL_PAGE+row*WALL_COLS+col;
+    return i<wall_count?i:-1;
+}
 static int native_button(int button) {
     /* SDL uses Xbox-style face button names; Switch prints the opposite labels. */
     switch(button) {
@@ -2680,6 +2778,7 @@ int main(int argc,char **argv) {
     int install_update=0;
     if(!paint_init(&paint)) goto cleanup;
     posters_init();
+    wallpapers_init();
     SDL_GameController *pad=NULL;
     for(int i=0;i<SDL_NumJoysticks();i++)
         if(SDL_IsGameController(i)){pad=SDL_GameControllerOpen(i);break;}
@@ -2750,6 +2849,9 @@ int main(int argc,char **argv) {
     Page update_return=CATALOG;
     while(running){
         Uint32 frame_started_at=SDL_GetTicks();
+        int old_wall_count=wallpapers_count();
+        wallpapers_poll();
+        if(old_wall_count!=wallpapers_count())wall_rebuild();
         if(app_update.thread && SDL_AtomicGet(&app_update.done)){
             SDL_WaitThread(app_update.thread,NULL);
             app_update.thread=NULL;
@@ -4528,6 +4630,7 @@ int main(int argc,char **argv) {
     if(player)mpv_terminate_destroy(player);
     movy_stream_close();
     if(pad)SDL_GameControllerClose(pad);
+    wallpapers_shutdown();
     posters_destroy();
     catalog_http_cleanup();
     text_cache_destroy();

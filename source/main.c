@@ -1346,12 +1346,20 @@ static void button(Paint *p,const char *label,int x,int y,int w,int h,int primar
     if(inset)ui_animating=1;
     x+=inset;y+=inset;w-=2*inset;h-=2*inset;
     float secondary=ui_light_theme?.11f:.15f;
-    ui_soft_primary_gradient=primary && !ui_light_theme;
-    box_alpha(p,x,y,w,h,primary?.89f:secondary,primary?.91f:secondary,
-              primary?.94f:secondary,1.f,14);
+    /* The light-theme shader inverts neutral inputs. A dark input therefore
+       creates a light primary button; a white text input becomes black.
+       Primary actions remain opaque above wallpapers in BOTH themes. */
+    float primary_r=ui_light_theme?.07f:.89f;
+    float primary_g=ui_light_theme?.07f:.91f;
+    float primary_b=ui_light_theme?.07f:.94f;
+    ui_soft_primary_gradient=primary;
+    box_alpha(p,x,y,w,h,primary?primary_r:secondary,primary?primary_g:secondary,
+              primary?primary_b:secondary,1.f,14);
     ui_soft_primary_gradient=0;
     text_center_button(p,label,x,y,w,h,p->font_small,
-                       primary?.08f:.95f,primary?.10f:.96f,primary?.13f:.98f);
+                       primary?(ui_light_theme?1.f:.08f):.95f,
+                       primary?(ui_light_theme?1.f:.10f):.96f,
+                       primary?(ui_light_theme?1.f:.13f):.98f);
 }
 /* Solid vector polygons for crisp icons, independent of font glyph support. */
 static void polygon(Paint *p,const float *points,int count,float r,float g,float b){
@@ -1594,9 +1602,15 @@ static int offline_catalog_status(const char *message){
 
 static void footer(Paint *p,const char *message) {
     box_alpha(p,0,UI_FOOTER_TOP,1280,720-UI_FOOTER_TOP,.047f,.057f,.070f,1.f,0);
-    /* Monochrome Switch-style controller legend, independent of UI accent. */
-    float ar=.62f,ag=.64f,ab=.66f;
-    box_alpha(p,UI_EDGE,UI_FOOTER_TOP,1216,2,ar,ag,ab,.78f,0);
+    /* High-contrast controller legend: black copy in Basic White, white
+       copy in Basic Black. Both use near-white keycap backgrounds with
+       solid black letters, never the old mid-gray keycaps or captions. */
+    float ar=1.f,ag=1.f,ab=1.f;
+    float keycap=ui_light_theme?.10f:.96f;
+    float glyph=ui_light_theme?1.f:.07f;
+    box_alpha(p,UI_EDGE,UI_FOOTER_TOP,1216,2,
+              ui_light_theme?.88f:.66f,ui_light_theme?.88f:.66f,
+              ui_light_theme?.88f:.66f,.78f,0);
     char position[30];
     snprintf(position,sizeof(position),"%d / %d",footer_position,footer_total);
     text_font(p,footer_total && !(footer_page==CATALOG && expanded_catalog)?position:"UAPLAY",43,682,140,
@@ -1660,8 +1674,8 @@ static void footer(Paint *p,const char *message) {
         if(badge_width<30)badge_width=30;
         int round=(!strcmp(keys[i],"A")||!strcmp(keys[i],"B")||
                    !strcmp(keys[i],"X")||!strcmp(keys[i],"Y"));
-        box_alpha(p,x,681,badge_width,28,ar,ag,ab,1.f,round?14:5);
-        text_center(p,keys[i],x,682,badge_width,p->font_small,.09f,.11f,.13f);
+        box_alpha(p,x,681,badge_width,28,keycap,keycap,keycap,1.f,round?14:5);
+        text_center(p,keys[i],x,682,badge_width,p->font_small,glyph,glyph,glyph);
         text_font(p,labels[i],x+badge_width+8,681,widths[i]-badge_width-8,
                   p->font_small,ar,ag,ab);
         x+=widths[i]+12;

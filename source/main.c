@@ -3142,11 +3142,15 @@ int main(int argc,char **argv) {
                     case SDLK_ESCAPE:key=SDL_CONTROLLER_BUTTON_START;break;
                 }
             }
-            if(touch.page!=page || key>=0 || e.type==SDL_APP_WILLENTERBACKGROUND ||
-               (e.type==SDL_WINDOWEVENT && e.window.event==SDL_WINDOWEVENT_FOCUS_LOST)){
-                touch.active=0;
-                wall_drag_active=0;
-                wall_drag_offset=0;
+            int cancel_pointer_drag=key>=0 ||
+                e.type==SDL_APP_WILLENTERBACKGROUND ||
+                (e.type==SDL_WINDOWEVENT && e.window.event==SDL_WINDOWEVENT_FOCUS_LOST);
+            if(touch.page!=page || cancel_pointer_drag)touch.active=0;
+            /* Eden mouse drags must not be cancelled merely because an
+               unrelated SDL touch gesture belongs to a different page. */
+            if(cancel_pointer_drag){
+                wall_drag_active=0;wall_drag_offset=0;
+                wall_mouse_active=0;
             }
             if(page==UPDATE_DIALOG){
                 if(e.type==SDL_FINGERUP || (e.type==SDL_MOUSEBUTTONUP && e.button.which!=SDL_TOUCH_MOUSEID)){

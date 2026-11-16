@@ -116,7 +116,8 @@ static void subdl_start(int downloading){
 static int selected_video_option;
 /* Only player controls useful on the console: speed, volume, subtitle size,
    subtitle delay and HLS quality. Keep mpv's existing option storage intact. */
-static const int visible_video_options[]={0,1,4,5,6};
+enum { VIDEO_OPTION_AUTOPLAY=7 };
+static const int visible_video_options[]={0,1,4,5,6,VIDEO_OPTION_AUTOPLAY};
 #define VIDEO_OPTION_COUNT ((int)(sizeof(visible_video_options)/sizeof(visible_video_options[0])))
 static double video_options[]={1.0,100.0,0.0,0.0,48.0,0.0,0.0};
 static const char *video_props[]={"speed","volume","brightness","contrast",
@@ -242,7 +243,7 @@ static int sort_button_for_mode(int mode){
 }
 /* 0: Watch, 1: Add to favorites (details buttons). */
 static int details_button_focus=0;
-enum { SETTING_APPEARANCE, SETTING_PLAYER, SETTING_AUTOPLAY,
+enum { SETTING_APPEARANCE, SETTING_PLAYER,
        SETTING_PROVIDERS, SETTING_LANGUAGE, SETTING_COUNT };
 enum { APPEARANCE_THEME, APPEARANCE_ACCENT, APPEARANCE_WALLPAPERS,
        APPEARANCE_DEFAULT, APPEARANCE_COUNT };
@@ -1602,12 +1603,12 @@ static int offline_catalog_status(const char *message){
 
 static void footer(Paint *p,const char *message) {
     box_alpha(p,0,UI_FOOTER_TOP,1280,720-UI_FOOTER_TOP,.047f,.057f,.070f,1.f,0);
-    /* High-contrast controller legend: black copy in Basic White, white
-       copy in Basic Black. Both use near-white keycap backgrounds with
-       solid black letters, never the old mid-gray keycaps or captions. */
+    /* Controller legend: black keycaps with white glyphs in Basic White,
+       white keycaps with black glyphs in Basic Black. Neutral colors invert
+       in the light theme shader. Labels remain black/white for readability. */
     float ar=1.f,ag=1.f,ab=1.f;
-    float keycap=ui_light_theme?.10f:.96f;
-    float glyph=ui_light_theme?1.f:.07f;
+    float keycap=ui_light_theme?.90f:.96f;
+    float glyph=ui_light_theme?.04f:.07f;
     box_alpha(p,UI_EDGE,UI_FOOTER_TOP,1216,2,
               ui_light_theme?.88f:.66f,ui_light_theme?.88f:.66f,
               ui_light_theme?.88f:.66f,.78f,0);
@@ -2335,8 +2336,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                       TR("Налаштування","Settings"),"UAPlay");
         const char *main_items[]={
             TR("Зовнішній вигляд","Appearance"),TR("Плеєр","Player"),
-            TR("Автовідтворення","Autoplay"),TR("Джерела","Providers"),
-            TR("Мова / Language","Language / Мова")
+            TR("Джерела","Providers"),TR("Мова / Language","Language / Мова")
         };
         const char *appearance_items[]={
             TR("Тема","Theme"),TR("Колір акценту","Accent color"),
@@ -2414,15 +2414,9 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                     snprintf(description,sizeof(description),
                              TR("Швидкість: %.2f · гучність: %.0f","Speed: %.2f · Volume: %.0f"),
                              video_options[0],video_options[1]);
-                    help=TR("Налаштуйте відео, гучність та субтитри.",
-                            "Adjust playback, volume, and subtitles.");
+                    help=TR("Налаштуйте відео, гучність, субтитри й автовідтворення.",
+                            "Adjust playback, volume, subtitles, and autoplay.");
                     action=TR("Відкрити параметри","Open player settings");
-                    break;
-                case SETTING_AUTOPLAY:
-                    snprintf(description,sizeof(description),TR("Наступна серія: %s","Next episode: %s"),
-                             autoplay_episodes?TR("Автоматично","Automatic"):TR("Вручну","Manual"));
-                    help=TR("Автоматично пропонує наступну серію після завершення поточної.",
-                            "Automatically queue the next episode after playback.");
                     break;
                 case SETTING_PROVIDERS:
                     help=TR("Виберіть джерела, у яких UAPlay може шукати відео.",
@@ -4201,8 +4195,6 @@ int main(int argc,char **argv) {
                         selected_video_option=0;
                         video_settings_from_menu=1;
                         page=VIDEO_SETTINGS;
-                    }else if(settings_selected==SETTING_AUTOPLAY){
-                        autoplay_episodes=!autoplay_episodes;theme_save();
                     }else if(settings_selected==SETTING_PROVIDERS){
                         provider_settings_selected=0;
                         message[0]=0;

@@ -1760,6 +1760,8 @@ enum { WALL_ANIM_MS=250 };
 static int wall_anim_from=-1,wall_anim_to=-1,wall_anim_dir=1,wall_api_dir;
 static int wall_api_column;
 static Uint32 wall_anim_started;
+static int wall_anim_origin,wall_anim_rebound;
+static int wall_drag_active,wall_drag_offset;
 static int wall_mouse_active,wall_mouse_x,wall_mouse_y;
 static const UiText wall_tags[]={{"Усі","All"},{"Темні","Dark"},{"Мінімалізм","Minimal"},{"Аніме","Anime"}};
 /* Wallhaven performs text/category filtering on the server. */
@@ -1773,33 +1775,77 @@ static void wall_load_filter(int next){
     if(wallpapers_browse(next,wall_query,1)){
         wall_filter=next;wall_selected=0;wall_focus=1;
         wall_anim_from=-1;wall_anim_to=-1;
+        wall_drag_active=0;wall_drag_offset=0;
     }
 }
-/* Vertically scroll one six-item screen and preserve the selected column. */
-static void wall_start_animation(int from,int to,int direction){
+/* Interactive vertical scrolling. Keep a pointer-linked offset while dragging,
+   then ease from that *same offset* to the next page or back to rest. */
+static void wall_start_animation(int from,int to,int direction,int origin){
     wall_anim_from=from;wall_anim_to=to;wall_anim_dir=direction;
+    wall_anim_origin=origin;wall_anim_rebound=0;
     wall_anim_started=SDL_GetTicks();ui_animating=1;
 }
-static void wall_move_page(int direction){
-    if(wallpapers_busy() || !wall_count)return;
+static void wall_bounce(int origin){
+    int first=wall_selected/WALL_PAGE*WALL_PAGE;
+    wall_start_animation(first,first,0,origin);
+    wall_anim_rebound=1;
+}
+static int wall_move_page_from(int direction,int origin){
+    if(wallpapers_busy() || !wall_count)return 0;
     int first=wall_selected/WALL_PAGE*WALL_PAGE;
     int column=wall_selected%WALL_COLS;
     if(direction<0 && first==0 && wallpapers_current_page()>1){
         if(wallpapers_browse(wall_filter,wall_query,wallpapers_current_page()-1)){
             wall_api_dir=direction;wall_api_column=column;
+            return 2; /* Remote page: bounce until its thumbnails arrive. */
         }
+        return 0;
     }else if(direction>0 && first+WALL_PAGE>=wall_count &&
              wallpapers_current_page()<wallpapers_last_page()){
         if(wallpapers_browse(wall_filter,wall_query,wallpapers_current_page()+1)){
             wall_api_dir=direction;wall_api_column=column;
+            return 2;
         }
+        return 0;
     }else{
         int next=first+direction*WALL_PAGE;
-        if(next<0 || next>=wall_count)return;
+        if(next<0 || next>=wall_count)return 0;
         int target=next+(direction<0?WALL_COLS:0)+column;
         wall_selected=target<wall_count?target:wall_count-1;
-        wall_start_animation(first,next,direction);
+        wall_start_animation(first,next,direction,origin);
+        return 1;
     }
+}
+static void wall_move_page(int direction){
+    (void)wall_move_page_from(direction,0);
+}
+static void wall_update_drag(int pixels){
+    if(!wall_drag_active)return;
+    int first=wall_selected/WALL_PAGE*WALL_PAGE;
+    int direction=pixels<0?1:-1;
+    int next=first+direction*WALL_PAGE;
+    if(next>=0 && next<wall_count){
+        if(pixels>WALL_PAGE_SHIFT)pixels=WALL_PAGE_SHIFT;
+        if(pixels<-WALL_PAGE_SHIFT)pixels=-WALL_PAGE_SHIFT;
+    }else{
+        /* Elastic edge for an unloaded/absent page, without exposing empty
+           screen space during a network fetch. */
+        pixels/=3;
+        if(pixels>108)pixels=108;
+        if(pixels< -108)pixels=-108;
+    }
+    wall_drag_offset=pixels;
+    ui_animating=1;
+}
+static void wall_release_drag(int raw_dy){
+    if(!wall_drag_active)return;
+    int origin=wall_drag_offset;
+    wall_drag_active=0;wall_drag_offset=0;
+    int direction=raw_dy<0?1:-1;
+    if(abs(raw_dy)>=52 && wall_move_page_from(direction,origin)==1)
+        return;
+    /* Not enough movement, unsupported edge, or remote API paging. */
+    if(origin)wall_bounce(origin);
 }
 static int wall_hit(int x,int y){
     if(x<WALL_X || y<WALL_Y)return -1;
@@ -1849,19 +1895,32 @@ static void draw_wallpapers(Paint *p){
                WALL_GRID_CLIP_W+2*WALL_CLIP_PAD,
                WALL_GRID_CLIP_H+2*WALL_CLIP_PAD);
     Uint32 elapsed=ui_now-wall_anim_started;
-    if(wall_anim_to==start && elapsed<WALL_ANIM_MS){
+    if(wall_drag_active){
+        int offset=wall_drag_offset;
+        int direction=offset<0?1:-1;
+        int next=start+direction*WALL_PAGE;
+        wall_draw_grid(p,start,offset,&budget,1);
+        if(offset && next>=0 && next<wall_count)
+            wall_draw_grid(p,next,offset+direction*WALL_PAGE_SHIFT,&budget,0);
+        ui_animating=1;
+    }else if(wall_anim_to==start && elapsed<WALL_ANIM_MS){
         float t=elapsed/(float)WALL_ANIM_MS;
         float remain=1.f-t;
         float eased=1.f-remain*remain*remain;
-        if(wall_anim_from>=0)
-            wall_draw_grid(p,wall_anim_from,
-                           -(int)(wall_anim_dir*WALL_PAGE_SHIFT*eased),&budget,0);
-        int distance=wall_anim_from>=0?WALL_PAGE_SHIFT:140;
-        wall_draw_grid(p,start,
-                       (int)(wall_anim_dir*distance*(1.f-eased)),&budget,1);
+        if(wall_anim_rebound){
+            wall_draw_grid(p,start,(int)(wall_anim_origin*(1.f-eased)),&budget,1);
+        }else if(wall_anim_from>=0){
+            int outgoing=(int)(wall_anim_origin+
+                (-wall_anim_dir*WALL_PAGE_SHIFT-wall_anim_origin)*eased);
+            wall_draw_grid(p,wall_anim_from,outgoing,&budget,0);
+            wall_draw_grid(p,start,outgoing+wall_anim_dir*WALL_PAGE_SHIFT,&budget,1);
+        }else{
+            /* Newly fetched API page: ease its cards in from below/above. */
+            wall_draw_grid(p,start,(int)(wall_anim_dir*140.f*(1.f-eased)),&budget,1);
+        }
         ui_animating=1;
     }else{
-        wall_anim_from=-1;wall_anim_to=-1;
+        wall_anim_from=-1;wall_anim_to=-1;wall_anim_rebound=0;
         wall_draw_grid(p,start,0,&budget,1);
     }
     paint_clip(p,0,0,0,0);
@@ -3025,7 +3084,7 @@ int main(int argc,char **argv) {
             }
             wall_rebuild();
             if(wall_api_dir){
-                wall_start_animation(-1,wall_selected/WALL_PAGE*WALL_PAGE,wall_api_dir);
+                wall_start_animation(-1,wall_selected/WALL_PAGE*WALL_PAGE,wall_api_dir,0);
                 wall_api_dir=0;
             }
         }
@@ -3982,7 +4041,7 @@ int main(int argc,char **argv) {
                         int from=wall_selected/WALL_PAGE*WALL_PAGE;
                         --wall_selected;
                         int to=wall_selected/WALL_PAGE*WALL_PAGE;
-                        if(from!=to)wall_start_animation(from,to,-1);
+                        if(from!=to)wall_start_animation(from,to,-1,0);
                     }else wall_move_page(-1);
                 }
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT){
@@ -3991,7 +4050,7 @@ int main(int argc,char **argv) {
                         int from=wall_selected/WALL_PAGE*WALL_PAGE;
                         ++wall_selected;
                         int to=wall_selected/WALL_PAGE*WALL_PAGE;
-                        if(from!=to)wall_start_animation(from,to,1);
+                        if(from!=to)wall_start_animation(from,to,1,0);
                     }else wall_move_page(1);
                 }
                 if(key==SDL_CONTROLLER_BUTTON_A && !wall_focus &&

@@ -3202,6 +3202,36 @@ int main(int argc,char **argv) {
                         }
                     }
                 }
+            }else if(page==WALLPAPERS && e.type==SDL_MOUSEBUTTONDOWN &&
+                     e.button.button==SDL_BUTTON_LEFT && e.button.which!=SDL_TOUCH_MOUSEID){
+                touch.active=0;
+                int ww=1280,hh=720;
+                SDL_GetWindowSize(window,&ww,&hh);
+                wall_mouse_x=e.button.x*1280/(ww?ww:1280);
+                wall_mouse_y=e.button.y*720/(hh?hh:720);
+                wall_mouse_active=1;
+            }else if(page==WALLPAPERS && e.type==SDL_MOUSEBUTTONUP &&
+                     e.button.button==SDL_BUTTON_LEFT && e.button.which!=SDL_TOUCH_MOUSEID){
+                if(wall_mouse_active){
+                    wall_mouse_active=0;
+                    int ww=1280,hh=720;
+                    SDL_GetWindowSize(window,&ww,&hh);
+                    int end_x=e.button.x*1280/(ww?ww:1280);
+                    int end_y=e.button.y*720/(hh?hh:720);
+                    int dx=end_x-wall_mouse_x,dy=end_y-wall_mouse_y;
+                    int ax=abs(dx),ay=abs(dy);
+                    if(wall_mouse_y>=WALL_Y && wall_mouse_y<640 &&
+                       wall_mouse_x>=WALL_X && wall_mouse_x<1248 &&
+                       (ax>=52 || ay>=52) &&
+                       (4*ax>=5*ay || 4*ay>=5*ax)){
+                        wall_focus=0;
+                        wall_move_page(ax>=ay?(dx<0?1:-1):(dy<0?1:-1));
+                        continue;
+                    }
+                    if(ax<=20 && ay<=20){
+                        tx=wall_mouse_x;ty=wall_mouse_y;
+                    }
+                }
             }else if(e.type==SDL_MOUSEBUTTONDOWN &&
                      e.button.button==SDL_BUTTON_LEFT && e.button.which!=SDL_TOUCH_MOUSEID){
                 touch.active=0;

@@ -1796,7 +1796,8 @@ static void wall_move_page(int direction){
     }else{
         int next=first+direction*WALL_PAGE;
         if(next<0 || next>=wall_count)return;
-        wall_selected=next+column<wall_count?next+column:wall_count-1;
+        int target=next+(direction<0?WALL_COLS:0)+column;
+        wall_selected=target<wall_count?target:wall_count-1;
         wall_start_animation(first,next,direction);
     }
 }
@@ -3000,7 +3001,11 @@ int main(int argc,char **argv) {
         int old_wall_revision=wallpapers_revision();
         wallpapers_poll();
         if(old_wall_revision!=wallpapers_revision()){
-            if(wall_api_dir)wall_selected=wall_api_dir<0?WALL_PAGE:0;
+            if(wall_api_dir){
+                wall_selected=wall_api_dir<0?
+                    ((wallpapers_count()-1)/WALL_PAGE)*WALL_PAGE+
+                       WALL_COLS+wall_api_column:wall_api_column;
+            }
             wall_rebuild();
             if(wall_api_dir){
                 wall_start_animation(-1,wall_selected/WALL_PAGE*WALL_PAGE,wall_api_dir);
@@ -3163,11 +3168,9 @@ int main(int argc,char **argv) {
                                     catalog_hero_focus=0;
                                 }
                             }
-                        }else if(page==WALLPAPERS &&
-                                  touch.y>=WALL_Y && touch.y<640){
-                            /* Mirror the catalog: both horizontal and vertical
-                               swipes turn gallery pages; fetch the next API
-                               page when its current two-page grid ends. */
+                        }else if(page==WALLPAPERS && vertical &&
+                                  touch.y>=WALL_Y && touch.y<618){
+                            /* Vertical swipe like the film grid. */
                             wall_focus=0;
                             wall_move_page(direction);
                         }else if(page==IPTV_CHANNELS && vertical &&
@@ -3222,12 +3225,11 @@ int main(int argc,char **argv) {
                     int end_y=e.button.y*720/(hh?hh:720);
                     int dx=end_x-wall_mouse_x,dy=end_y-wall_mouse_y;
                     int ax=abs(dx),ay=abs(dy);
-                    if(wall_mouse_y>=WALL_Y && wall_mouse_y<640 &&
+                    if(wall_mouse_y>=WALL_Y && wall_mouse_y<618 &&
                        wall_mouse_x>=WALL_X && wall_mouse_x<1248 &&
-                       (ax>=52 || ay>=52) &&
-                       (4*ax>=5*ay || 4*ay>=5*ax)){
+                       ay>=52 && 4*ay>=5*ax){
                         wall_focus=0;
-                        wall_move_page(ax>=ay?(dx<0?1:-1):(dy<0?1:-1));
+                        wall_move_page(dy<0?1:-1);
                         continue;
                     }
                     if(ax<=20 && ay<=20){
@@ -3936,23 +3938,44 @@ int main(int argc,char **argv) {
                 if(key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER){
                     wall_focus=0;wall_move_page(1);
                 }
+                /* Match film-grid navigation with D-pad or analog stick. */
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP){
-                    if(!wall_focus && wall_selected%WALL_PAGE<WALL_COLS)wall_focus=1;
-                    else if(!wall_focus)wall_selected-=WALL_COLS;
+                    if(!wall_focus){
+                        int first=wall_selected/WALL_PAGE*WALL_PAGE;
+                        if(wall_selected>=first+WALL_COLS)
+                            wall_selected-=WALL_COLS;
+                        else if(first || wallpapers_current_page()>1)
+                            wall_move_page(-1);
+                        else wall_focus=1;
+                    }
                 }
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN){
                     if(wall_focus)wall_focus=0;
-                    else if(wall_selected+WALL_COLS<wall_count &&
-                            (wall_selected+WALL_COLS)/WALL_PAGE==wall_selected/WALL_PAGE)
-                        wall_selected+=WALL_COLS;
+                    else{
+                        int first=wall_selected/WALL_PAGE*WALL_PAGE;
+                        int next=wall_selected+WALL_COLS;
+                        if(next<wall_count && next<first+WALL_PAGE)
+                            wall_selected=next;
+                        else wall_move_page(1);
+                    }
                 }
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT){
                     if(wall_focus)wall_load_filter((wall_filter+3)%4);
-                    else if(wall_selected>0)wall_selected--;
+                    else if(wall_selected>0){
+                        int from=wall_selected/WALL_PAGE*WALL_PAGE;
+                        --wall_selected;
+                        int to=wall_selected/WALL_PAGE*WALL_PAGE;
+                        if(from!=to)wall_start_animation(from,to,-1);
+                    }else wall_move_page(-1);
                 }
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT){
                     if(wall_focus)wall_load_filter((wall_filter+1)%4);
-                    else if(wall_selected+1<wall_count)wall_selected++;
+                    else if(wall_selected+1<wall_count){
+                        int from=wall_selected/WALL_PAGE*WALL_PAGE;
+                        ++wall_selected;
+                        int to=wall_selected/WALL_PAGE*WALL_PAGE;
+                        if(from!=to)wall_start_animation(from,to,1);
+                    }else wall_move_page(1);
                 }
                 if(key==SDL_CONTROLLER_BUTTON_A && !wall_focus &&
                    wall_count && wall_selected<wall_count)

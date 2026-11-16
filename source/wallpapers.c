@@ -13,8 +13,9 @@
 
 /* Source is a public GitHub-hosted JSON catalog; image files are fetched only
    after the user selects one. Thumbnails reuse the existing poster cache. */
-#define WALLPAPER_JSON "https://raw.githubusercontent.com/AlexandrosLiaskos/Awesome_Wallpapers/main/wallpapers_database.json"
-#define WALLPAPER_RAW_PREFIX "https://raw.githubusercontent.com/AlexandrosLiaskos/Awesome_Wallpapers/main/images/"
+#define WALLPAPER_API "https://wallhaven.cc/api/v1/search"
+#define WALLPAPER_RAW_PREFIX "https://w.wallhaven.cc/full/"
+#define WALLPAPER_THUMB_PREFIX "https://th.wallhaven.cc/"
 #define WALLPAPER_HOME "sdmc:/switch/uaplay"
 #define WALLPAPER_CATALOG WALLPAPER_HOME "/wallpapers.json"
 #define WALLPAPER_CATALOG_TMP WALLPAPER_HOME "/wallpapers.json.part"
@@ -29,7 +30,7 @@
    decodes and GPU uploads on the Switch. The raw original is only used
    as a fallback when its reported dimensions and size are safe. */
 #define IMAGE_BYTES_LIMIT (8u * 1024u * 1024u)
-#define IMAGE_PROXY "https://images.weserv.nl/?url=raw.githubusercontent.com/AlexandrosLiaskos/Awesome_Wallpapers/main/images/"
+#define IMAGE_PROXY "https://images.weserv.nl/?url="
 #define IMAGE_PROXY_LIMIT (5u * 1024u * 1024u)
 #define IMAGE_PIXELS_LIMIT (12u * 1024u * 1024u)
 
@@ -37,6 +38,10 @@ enum { JOB_NONE, JOB_CATALOG, JOB_IMAGE };
 static WallpaperItem catalog[WALLPAPERS_MAX], pending[WALLPAPERS_MAX];
 static int count, pending_count, requested, busy, completed, result, result_job;
 static int result_index, requested_index, generation, requested_generation, result_generation;
+static int api_page=1,api_last_page=1,pending_page=1,pending_last_page=1,revision;
+static int current_filter,requested_filter,requested_page=1;
+static char current_query[96],requested_query[96];
+static Uint32 api_last_request;
 static SDL_mutex *mutex;
 static SDL_cond *condition;
 static SDL_Thread *thread;
@@ -152,27 +157,60 @@ static void tag_field(const char *begin,const char *end,char *out,size_t size){
         if(!p)return;
     }
 }
-static int parse_catalog(const char *json,WallpaperItem *out) {
+
+static const char *object_end(const char *p){
+    int depth=0,quoted=0,escaped=0;
+    for(;*p;p++){
+        if(escaped){escaped=0;continue;}
+        if(quoted && *p=='\\'){escaped=1;continue;}
+        if(*p=='"'){quoted=!quoted;continue;}
+        if(quoted)continue;
+        if(*p=='{')depth++;
+        else if(*p=='}' && --depth==0)return p+1;
+    }
+    return NULL;
+}
+static int parse_catalog(const char *json,WallpaperItem *out,int *last){
     if(!json || *json!='{')return 0;
-    int used=0;const char *p=json;
-    while((p=strstr(p,"\"filename\""))!=NULL && used<WALLPAPERS_MAX){
-        const char *end=strstr(p+10,"\"filename\"");
-        if(!end)end=p+strlen(p);
+    const char *meta=strstr(json,"\"meta\"");
+    *last=1;
+    if(meta){
+        unsigned total=1;
+        if(number_field(meta,meta+strlen(meta),"last_page",&total))
+            *last=total>1000?1000:total?total:1;
+    }
+    const char *data=strstr(json,"\"data\"");
+    if(!data || !(data=strchr(data,'[')))return 0;
+    const char *p=data+1;
+    int used=0;
+    while(*p && used<WALLPAPERS_MAX){
+        while(isspace((unsigned char)*p) || *p==',')p++;
+        if(*p==']')break;
+        if(*p!='{')return 0;
+        const char *end=object_end(p);
+        if(!end)return 0;
         WallpaperItem item={0};
-        const char *name=find_field(p,end,"filename");
-        const char *url=find_field(p,end,"github_raw_url");
+        char purity[12]={0}, category[48]={0};
         unsigned w=0,h=0,bytes=0;
-        if(json_string(name,end,item.name,sizeof(item.name)) &&
-           json_string(url,end,item.url,sizeof(item.url)) &&
-           number_field(p,end,"width",&w) &&
-           number_field(p,end,"height",&h) &&
+        json_string(find_field(p,end,"purity"),end,purity,sizeof(purity));
+        json_string(find_field(p,end,"category"),end,category,sizeof(category));
+        if(!strcmp(purity,"sfw") &&
+           json_string(find_field(p,end,"id"),end,item.id,sizeof(item.id)) &&
+           json_string(find_field(p,end,"path"),end,item.url,sizeof(item.url)) &&
+           json_string(find_field(p,end,"large"),end,item.thumbnail,sizeof(item.thumbnail)) &&
+           number_field(p,end,"dimension_x",&w) &&
+           number_field(p,end,"dimension_y",&h) &&
            number_field(p,end,"file_size",&bytes) &&
+           strlen(item.id)==6 &&
+           strspn(item.id,"0123456789abcdefghijklmnopqrstuvwxyz")==6 &&
            !strncmp(item.url,WALLPAPER_RAW_PREFIX,strlen(WALLPAPER_RAW_PREFIX)) &&
-           !strstr(item.url,"..") && w>0 && h>0 &&
-           bytes>0 && w<=16000 && h<=16000 &&
-           strchr(item.name,'/')==NULL && strchr(item.name,'\\')==NULL){
+           !strncmp(item.thumbnail,WALLPAPER_THUMB_PREFIX,strlen(WALLPAPER_THUMB_PREFIX)) &&
+           !strstr(item.url,"..") && !strchr(item.url,'?') &&
+           !strstr(item.thumbnail,"..") && !strchr(item.thumbnail,'?') &&
+           w>=1280 && h>=720 && w<=16384 && h<=16384){
+            snprintf(item.name,sizeof(item.name),"Wallhaven %s",item.id);
+            snprintf(item.tags,sizeof(item.tags),"%s",category);
             item.width=(int)w;item.height=(int)h;item.bytes=bytes;
-            tag_field(p,end,item.tags,sizeof(item.tags));
             out[used++]=item;
         }
         p=end;
@@ -205,44 +243,62 @@ static void save_json(const Buffer *buffer){
     }
     remove(WALLPAPER_CATALOG_TMP);
 }
-static int load_catalog(CURL *curl){
+
+static int load_catalog(CURL *curl,int filter,const char *user_query,int page){
+    char keywords[200]={0};
+    const char *preset=filter==1?"dark":filter==2?"minimal":"";
+    if(*preset && *user_query)snprintf(keywords,sizeof(keywords),"%s %s",preset,user_query);
+    else snprintf(keywords,sizeof(keywords),"%s",*preset?preset:user_query);
+    char *escaped=curl?curl_easy_escape(curl,keywords,0):NULL;
+    if(!escaped)return 0;
+    char url[850];
+    int size=snprintf(url,sizeof(url),
+        WALLPAPER_API "?purity=100&categories=%s&ratios=16x9&atleast=1280x720"
+        "&sorting=%s&page=%d&q=%s",
+        filter==3?"010":"110",*keywords?"relevance":"toplist",page,escaped);
+    curl_free(escaped);
+    if(size<=0 || (size_t)size>=sizeof(url))return 0;
     Buffer data={.limit=CATALOG_BYTES_LIMIT};
-    int online=fetch_data(curl,WALLPAPER_JSON,&data);
-    pending_count=online?parse_catalog((const char*)data.data,pending):0;
-    if(pending_count)save_json(&data);
+    int ok=fetch_data(curl,url,&data);
+    pending_last_page=1;
+    pending_count=ok?parse_catalog((const char*)data.data,pending,&pending_last_page):0;
+    if(pending_count && !filter && !*user_query && page==1)save_json(&data);
     free(data.data);
-    if(!pending_count){
-        Buffer cache={.limit=CATALOG_BYTES_LIMIT};
-        if(load_json_file(WALLPAPER_CATALOG,&cache))
-            pending_count=parse_catalog((const char*)cache.data,pending);
-        free(cache.data);
+    if(!pending_count && !filter && !*user_query && page==1){
+        Buffer cached={.limit=CATALOG_BYTES_LIMIT};
+        if(load_json_file(WALLPAPER_CATALOG,&cached))
+            pending_count=parse_catalog((const char*)cached.data,pending,&pending_last_page);
+        free(cached.data);
     }
+    pending_page=page;
     return pending_count>0;
 }
+
 static int save_image(CURL *curl,const WallpaperItem *item){
-    if(!item)return 0;
+    if(!item || strncmp(item->url,WALLPAPER_RAW_PREFIX,strlen(WALLPAPER_RAW_PREFIX)))return 0;
     char resized[640];
-    int length=snprintf(resized,sizeof(resized),
-        IMAGE_PROXY "%s&w=1280&h=720&fit=cover&output=jpg&q=85",item->name);
-    Buffer bytes={.limit=IMAGE_PROXY_LIMIT};
-    int ok=length>0 && (size_t)length<sizeof(resized) &&
-           fetch_data(curl,resized,&bytes);
-    if(!ok && item->bytes<=IMAGE_BYTES_LIMIT &&
-       (unsigned long long)item->width*(unsigned)item->height<=IMAGE_PIXELS_LIMIT){
-        free(bytes.data);
-        bytes=(Buffer){.limit=IMAGE_BYTES_LIMIT};
-        ok=fetch_data(curl,item->url,&bytes);
+    int len=snprintf(resized,sizeof(resized),
+        IMAGE_PROXY "%s&w=1280&h=720&fit=cover&output=jpg&q=84",
+        item->url+strlen("https://"));
+    Buffer image={.limit=IMAGE_PROXY_LIMIT};
+    int ok=len>0 && (size_t)len<sizeof(resized) &&
+           fetch_data(curl,resized,&image) &&
+           image.used>128 && image.data[0]==0xff && image.data[1]==0xd8;
+    if(!ok && item->width==1280 && item->height==720 &&
+       item->bytes<=IMAGE_BYTES_LIMIT){
+        free(image.data);
+        image=(Buffer){.limit=IMAGE_BYTES_LIMIT};
+        ok=fetch_data(curl,item->url,&image);
     }
     if(ok){
         FILE *f=fopen(WALLPAPER_TEMP,"wb");
-        ok=f && fwrite(bytes.data,1,bytes.used,f)==bytes.used;
+        ok=f && fwrite(image.data,1,image.used,f)==image.used;
         if(f && fclose(f)!=0)ok=0;
     }
-    free(bytes.data);
+    free(image.data);
     if(!ok)remove(WALLPAPER_TEMP);
     return ok;
 }
-
 static int background_load(const char *path,GLuint *output){
     FILE *file=fopen(path,"rb");
     if(!file)return 0;
@@ -312,20 +368,23 @@ static int commit_selection(const char *name){
     return 1;
 }
 
+
 static int worker_main(void *opaque){
     (void)opaque;
     CURL *curl=curl_easy_init();
     for(;;){
         SDL_LockMutex(mutex);
-        while(!quitting && !requested)SDL_CondWait(condition,mutex);
+        while(!quitting && (!requested || completed))SDL_CondWait(condition,mutex);
         if(quitting){SDL_UnlockMutex(mutex);break;}
         int job=requested,index=requested_index,serial=requested_generation;
+        int filter=requested_filter,page=requested_page;
+        char query[96];
+        snprintf(query,sizeof(query),"%s",requested_query);
         requested=0;busy=job;
         WallpaperItem selected={0};
-        if(job==JOB_IMAGE && index>=0 && index<count)
-            selected=catalog[index];
+        if(job==JOB_IMAGE && index>=0 && index<count)selected=catalog[index];
         SDL_UnlockMutex(mutex);
-        int ok=job==JOB_CATALOG?load_catalog(curl):
+        int ok=job==JOB_CATALOG?load_catalog(curl,filter,query,page):
             job==JOB_IMAGE && selected.url[0]?save_image(curl,&selected):0;
         SDL_LockMutex(mutex);
         result=ok;result_job=job;result_index=index;result_generation=serial;
@@ -335,7 +394,6 @@ static int worker_main(void *opaque){
     if(curl)curl_easy_cleanup(curl);
     return 0;
 }
-
 void wallpapers_init(void){
     mkdir("sdmc:/switch",0777);
     mkdir(WALLPAPER_HOME,0777);
@@ -354,45 +412,67 @@ void wallpapers_init(void){
     if(mutex && condition)thread=SDL_CreateThread(worker_main,"wallpapers",NULL);
     notice[0]=0;
 }
-void wallpapers_open(void){
-    if(!mutex || !thread || count || requested || busy)return;
+
+int wallpapers_browse(int filter,const char *query,int page){
+    if(!mutex || !thread || page<1 || page>1000 || filter<0 || filter>3)return 0;
+    if(!query)query="";
     SDL_LockMutex(mutex);
-    requested=JOB_CATALOG;requested_generation=++generation;
-    snprintf(notice,sizeof(notice),"%s",TR("Завантаження галереї…","Loading gallery…"));
-    SDL_CondSignal(condition);SDL_UnlockMutex(mutex);
+    int blocked=requested || busy || completed ||
+                (api_last_request && SDL_GetTicks()-api_last_request<1250u);
+    if(blocked){SDL_UnlockMutex(mutex);return 0;}
+    requested_filter=filter;requested_page=page;
+    snprintf(requested_query,sizeof(requested_query),"%s",query);
+    requested=JOB_CATALOG;
+    requested_generation=++generation;
+    api_last_request=SDL_GetTicks();
+    snprintf(notice,sizeof(notice),"%s",TR("Завантаження Wallhaven…","Loading Wallhaven…"));
+    SDL_CondSignal(condition);
+    SDL_UnlockMutex(mutex);
+    return 1;
 }
+void wallpapers_open(void){
+    if(!count)wallpapers_browse(current_filter,current_query,api_page);
+}
+int wallpapers_current_page(void){return api_page;}
+int wallpapers_last_page(void){return api_last_page;}
+int wallpapers_revision(void){return revision;}
+
 void wallpapers_poll(void){
     if(!mutex)return;
     SDL_LockMutex(mutex);
     int done=completed,job=result_job,ok=result,index=result_index,serial=result_generation;
     if(done){
-        completed=0;
+        completed=0;SDL_CondSignal(condition);
         if(job==JOB_CATALOG && ok){
             count=pending_count;
             memcpy(catalog,pending,(size_t)count*sizeof(catalog[0]));
+            api_page=pending_page;api_last_page=pending_last_page;
+            current_filter=requested_filter;
+            snprintf(current_query,sizeof(current_query),"%s",requested_query);
+            revision++;
         }
     }
     SDL_UnlockMutex(mutex);
     if(!done)return;
     if(job==JOB_CATALOG){
         snprintf(notice,sizeof(notice),"%s",ok?
-                 TR("Оберіть зображення й натисніть A.","Choose a wallpaper and press A."):
-                 TR("Не вдалося завантажити галерею.","Could not load the gallery."));
+            TR("Wallhaven: натисніть A для застосування.","Wallhaven: press A to apply."):
+            TR("Wallhaven недоступний або пошук порожній.","Wallhaven unavailable or no results."));
     }else if(job==JOB_IMAGE){
         if(serial!=generation){remove(WALLPAPER_TEMP);return;}
-        GLuint new_texture=0;
-        int valid=ok && background_load(WALLPAPER_TEMP,&new_texture);
-        if(valid && commit_selection(catalog[index].name)){
+        GLuint texture=0;
+        int valid=ok && background_load(WALLPAPER_TEMP,&texture);
+        if(valid && index>=0 && index<count && commit_selection(catalog[index].name)){
             if(background)glDeleteTextures(1,&background);
-            background=new_texture;
+            background=texture;
             snprintf(selected_name,sizeof(selected_name),"%s",catalog[index].name);
             snprintf(notice,sizeof(notice),"%s",
                      TR("Шпалери застосовано й збережено.","Wallpaper saved and applied."));
         }else{
-            if(new_texture)glDeleteTextures(1,&new_texture);
+            if(texture)glDeleteTextures(1,&texture);
             remove(WALLPAPER_TEMP);
             snprintf(notice,sizeof(notice),"%s",
-                     TR("Не вдалося зберегти шпалери. Спробуйте інші.","Could not save wallpaper. Try another image."));
+                     TR("Не вдалося отримати зображення 720p.","Could not fetch 720p image."));
         }
     }
 }
@@ -400,7 +480,7 @@ int wallpapers_count(void){return count;}
 const WallpaperItem *wallpapers_item(int i){return i>=0 && i<count?&catalog[i]:NULL;}
 int wallpapers_busy(void){
     if(!mutex)return 0;
-    SDL_LockMutex(mutex);int pending_work=requested||busy;
+    SDL_LockMutex(mutex);int pending_work=requested||busy||completed;
     SDL_UnlockMutex(mutex);return pending_work;
 }
 int wallpapers_apply(int index){

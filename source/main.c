@@ -3143,8 +3143,11 @@ int main(int argc,char **argv) {
                 }
             }
             if(touch.page!=page || key>=0 || e.type==SDL_APP_WILLENTERBACKGROUND ||
-               (e.type==SDL_WINDOWEVENT && e.window.event==SDL_WINDOWEVENT_FOCUS_LOST))
+               (e.type==SDL_WINDOWEVENT && e.window.event==SDL_WINDOWEVENT_FOCUS_LOST)){
                 touch.active=0;
+                wall_drag_active=0;
+                wall_drag_offset=0;
+            }
             if(page==UPDATE_DIALOG){
                 if(e.type==SDL_FINGERUP || (e.type==SDL_MOUSEBUTTONUP && e.button.which!=SDL_TOUCH_MOUSEID)){
                     int x=e.type==SDL_FINGERUP?(int)(e.tfinger.x*1280):e.button.x;
@@ -3208,6 +3211,26 @@ int main(int argc,char **argv) {
                 }else{
                     /* Activate the existing touch targets only after a tap is released. */
                     TouchAction action=touch_gesture(&touch,&e.tfinger,page,x,y);
+                    if(page==WALLPAPERS){
+                        if(e.type==SDL_FINGERDOWN){
+                            wall_drag_active=x>=WALL_X && x<1248 &&
+                                             y>=WALL_Y && y<618;
+                            wall_drag_offset=0;
+                            if(wall_drag_active){
+                                wall_anim_from=-1;wall_anim_to=-1;
+                            }
+                        }else if(e.type==SDL_FINGERMOTION &&
+                                 wall_drag_active && touch.axis==2){
+                            wall_update_drag(touch.dy);
+                        }else if(e.type==SDL_FINGERUP && wall_drag_active){
+                            if(touch.axis==2){
+                                wall_release_drag(touch.dy);
+                                action=TOUCH_NONE;
+                            }else{
+                                wall_drag_active=0;wall_drag_offset=0;
+                            }
+                        }
+                    }
                     if(action==TOUCH_TAP){
                         tx=touch.x;ty=touch.y;
                     }else if(action!=TOUCH_NONE && touch.x>=UI_EDGE && touch.x<1280-UI_EDGE){
@@ -3291,6 +3314,21 @@ int main(int argc,char **argv) {
                 wall_mouse_x=e.button.x*1280/(ww?ww:1280);
                 wall_mouse_y=e.button.y*720/(hh?hh:720);
                 wall_mouse_active=1;
+                wall_drag_active=wall_mouse_x>=WALL_X && wall_mouse_x<1248 &&
+                                 wall_mouse_y>=WALL_Y && wall_mouse_y<618;
+                wall_drag_offset=0;
+                if(wall_drag_active){
+                    wall_anim_from=-1;wall_anim_to=-1;
+                }
+            }else if(page==WALLPAPERS && e.type==SDL_MOUSEMOTION &&
+                     e.motion.which!=SDL_TOUCH_MOUSEID &&
+                     wall_mouse_active && (e.motion.state&SDL_BUTTON_LMASK)){
+                int ww=1280,hh=720;
+                SDL_GetWindowSize(window,&ww,&hh);
+                int dx=e.motion.x*1280/(ww?ww:1280)-wall_mouse_x;
+                int dy=e.motion.y*720/(hh?hh:720)-wall_mouse_y;
+                if(wall_drag_active && 4*abs(dy)>=5*abs(dx))
+                    wall_update_drag(dy);
             }else if(page==WALLPAPERS && e.type==SDL_MOUSEBUTTONUP &&
                      e.button.button==SDL_BUTTON_LEFT && e.button.which!=SDL_TOUCH_MOUSEID){
                 if(wall_mouse_active){
@@ -3301,12 +3339,13 @@ int main(int argc,char **argv) {
                     int end_y=e.button.y*720/(hh?hh:720);
                     int dx=end_x-wall_mouse_x,dy=end_y-wall_mouse_y;
                     int ax=abs(dx),ay=abs(dy);
-                    if(wall_mouse_y>=WALL_Y && wall_mouse_y<618 &&
-                       wall_mouse_x>=WALL_X && wall_mouse_x<1248 &&
-                       ay>=52 && 4*ay>=5*ax){
+                    if(wall_drag_active && 4*ay>=5*ax){
                         wall_focus=0;
-                        wall_move_page(dy<0?1:-1);
-                        continue;
+                        wall_release_drag(dy);
+                        if(ay>16)continue;
+                    }else{
+                        wall_drag_active=0;
+                        wall_drag_offset=0;
                     }
                     if(ax<=20 && ay<=20){
                         tx=wall_mouse_x;ty=wall_mouse_y;

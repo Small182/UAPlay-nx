@@ -740,7 +740,11 @@ static const char *fs = "precision mediump float;varying vec2 tc;"
                         "vec3 rgb=tint.rgb;"
                         /* Switch Basic White / Basic Black: gently shaded,
                            neutral surfaces rather than blue-black or beige. */
-                        "if(gradient>1.5)rgb=mix(vec3(.957,.960,.965),"
+                        /* A separate, barely visible highlight for bright
+                           primary buttons in dark mode (about 2% tonal swing).
+                           Panel transparency gradients remain unchanged. */
+                        "if(gradient>2.5)rgb=tint.rgb*(1.012-0.024*tc.y);"
+                        "else if(gradient>1.5)rgb=mix(vec3(.957,.960,.965),"
                         "vec3(.902,.907,.914),tc.y);"
                         "else if(gradient>.5)rgb=mix(vec3(.205,.208,.213),"
                         "vec3(.135,.139,.145),tc.y);"
@@ -815,6 +819,8 @@ static int paint_init(Paint *p) {
     return p->font != NULL;
 }
 static int ui_outline_width=0;
+/* Only bright primary buttons request the subtle dark-theme highlight. */
+static int ui_soft_primary_gradient=0;
 static void box_alpha(Paint *p,int x,int y,int w,int h,float r,float g,float b,float a,int radius) {
     float x0=x/640.f-1.f,x1=(x+w)/640.f-1.f;
     float y0=1.f-y/360.f,y1=1.f-(y+h)/360.f;
@@ -849,7 +855,8 @@ static void box_alpha(Paint *p,int x,int y,int w,int h,float r,float g,float b,f
     glUniform1f(p->panel_gradient,soft_panel?(ui_light_theme?1.f:2.f):0.f);
     glUniform4f(p->tint,r,g,b,a);
     glUniform3f(p->shape,(float)w,(float)h,(float)radius);
-    glUniform1f(p->gradient,ui_gradient_pass?(ui_light_theme?2.f:1.f):0.f);
+    glUniform1f(p->gradient,ui_soft_primary_gradient?3.f:
+                ui_gradient_pass?(ui_light_theme?2.f:1.f):0.f);
     glUniform1f(p->outline,(float)ui_outline_width);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D,p->tex);
@@ -1316,8 +1323,10 @@ static void button(Paint *p,const char *label,int x,int y,int w,int h,int primar
     if(inset)ui_animating=1;
     x+=inset;y+=inset;w-=2*inset;h-=2*inset;
     float secondary=ui_light_theme?.11f:.15f;
+    ui_soft_primary_gradient=primary && !ui_light_theme;
     box_alpha(p,x,y,w,h,primary?.89f:secondary,primary?.91f:secondary,
               primary?.94f:secondary,1.f,14);
+    ui_soft_primary_gradient=0;
     text_center_button(p,label,x,y,w,h,p->font_small,
                        primary?.08f:.95f,primary?.10f:.96f,primary?.13f:.98f);
 }

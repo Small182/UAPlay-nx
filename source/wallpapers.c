@@ -50,6 +50,11 @@ static int quitting;
 static GLuint background;
 static char selected_name[128], notice[192];
 static char download_diagnostic[96];
+/* Phase is atomic so network / image-processing progress can be rendered
+   without taking the worker mutex. GL upload remains on the UI thread. */
+enum { PHASE_IDLE, PHASE_DOWNLOAD, PHASE_RESIZE };
+static SDL_atomic_t image_phase;
+static Uint32 image_started_at;
 
 typedef struct {
     unsigned char *data;
@@ -329,20 +334,25 @@ static int save_image(CURL *curl,const WallpaperItem *item){
     if(!ok)remove(WALLPAPER_TEMP);
     return ok;
 }
-static int background_load(const char *path,GLuint *output,const char *save_path){
-    FILE *file=fopen(path,"rb");
+/* Worker-thread only. Decode and scale the downloaded image *before*
+   notifying the UI: expensive 4K JPEG/PNG decode and JPG encoding must
+   never run in Eden's OpenGL event loop. No OpenGL calls here. */
+static int prepare_720p(const char *source,const char *target){
+    FILE *file=fopen(source,"rb");
     if(!file)return 0;
     SDL_RWops *rw=SDL_RWFromFP(file,1);
     if(!rw){fclose(file);return 0;}
     SDL_Surface *original=IMG_Load_RW(rw,1);
     if(!original)return 0;
-    unsigned long long pixels=(unsigned long long)original->w*(unsigned)original->h;
+    const unsigned long long pixels=(unsigned long long)original->w*
+                                    (unsigned long long)original->h;
     if(original->w<1 || original->h<1 || pixels>IMAGE_PIXELS_LIMIT){
         SDL_FreeSurface(original);return 0;
     }
-    /* Avoid a second full-size RGBA copy; the 4K source is already decoded. */
-    SDL_Surface *scaled=SDL_CreateRGBSurfaceWithFormat(0,1280,720,32,SDL_PIXELFORMAT_ABGR8888);
+    SDL_Surface *scaled=SDL_CreateRGBSurfaceWithFormat(
+        0,1280,720,32,SDL_PIXELFORMAT_ABGR8888);
     if(!scaled){SDL_FreeSurface(original);return 0;}
+    /* Aspect-preserving center crop, then a single 1280x720 software blit. */
     SDL_Rect crop={0,0,original->w,original->h};
     if((long long)crop.w*720>=(long long)crop.h*1280){
         crop.w=(int)((long long)crop.h*1280/720);
@@ -354,14 +364,30 @@ static int background_load(const char *path,GLuint *output,const char *save_path
     SDL_SetSurfaceBlendMode(original,SDL_BLENDMODE_NONE);
     int ok=SDL_BlitScaled(original,&crop,scaled,NULL)==0;
     SDL_FreeSurface(original);
-    if(!ok){SDL_FreeSurface(scaled);return 0;}
-    /* Persist the *720p* image, not a huge original that must be decoded
-       again on every startup. SDL_image saves JPEG; BMP is a safe fallback. */
-    if(save_path && IMG_SaveJPG(scaled,save_path,85)!=0 &&
-       SDL_SaveBMP(scaled,save_path)!=0){
-        SDL_FreeSurface(scaled);
-        return 0;
+    if(ok){
+        /* SaveJPG output can use any extension; IMG_Load_RW sniffs bytes. */
+        ok=IMG_SaveJPG(scaled,target,82)==0;
+        if(!ok)ok=SDL_SaveBMP(scaled,target)==0;
     }
+    SDL_FreeSurface(scaled);
+    if(!ok)remove(target);
+    return ok;
+}
+/* UI-thread only. This function never handles images larger than 1280x720
+   and never scales, re-encodes or performs network / filesystem writes. */
+static int load_720p_texture(const char *path,GLuint *output){
+    FILE *file=fopen(path,"rb");
+    if(!file)return 0;
+    SDL_RWops *rw=SDL_RWFromFP(file,1);
+    if(!rw){fclose(file);return 0;}
+    SDL_Surface *image=IMG_Load_RW(rw,1);
+    if(!image)return 0;
+    if(image->w!=1280 || image->h!=720){
+        SDL_FreeSurface(image);return 0;
+    }
+    SDL_Surface *rgba=SDL_ConvertSurfaceFormat(image,SDL_PIXELFORMAT_ABGR8888,0);
+    SDL_FreeSurface(image);
+    if(!rgba)return 0;
     GLuint texture=0;
     glGenTextures(1,&texture);
     if(texture){
@@ -370,9 +396,13 @@ static int background_load(const char *path,GLuint *output,const char *save_path
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,1280,720,0,GL_RGBA,GL_UNSIGNED_BYTE,scaled->pixels);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,1280,720,0,GL_RGBA,
+                     GL_UNSIGNED_BYTE,rgba->pixels);
+        if(glGetError()!=GL_NO_ERROR){
+            glDeleteTextures(1,&texture);texture=0;
+        }
     }
-    SDL_FreeSurface(scaled);
+    SDL_FreeSurface(rgba);
     *output=texture;
     return texture!=0;
 }
@@ -418,8 +448,17 @@ static int worker_main(void *opaque){
         WallpaperItem selected={0};
         if(job==JOB_IMAGE && index>=0 && index<count)selected=catalog[index];
         SDL_UnlockMutex(mutex);
-        int ok=job==JOB_CATALOG?load_catalog(curl,filter,query,page):
-            job==JOB_IMAGE && selected.url[0]?save_image(curl,&selected):0;
+        int ok=0;
+        if(job==JOB_CATALOG)ok=load_catalog(curl,filter,query,page);
+        else if(job==JOB_IMAGE && selected.url[0]){
+            SDL_AtomicSet(&image_phase,PHASE_DOWNLOAD);
+            ok=save_image(curl,&selected);
+            if(ok){
+                SDL_AtomicSet(&image_phase,PHASE_RESIZE);
+                ok=prepare_720p(WALLPAPER_TEMP,WALLPAPER_SCALED);
+                remove(WALLPAPER_TEMP);
+            }
+        }
         SDL_LockMutex(mutex);
         result=ok;result_job=job;result_index=index;result_generation=serial;
         completed=1;busy=0;
@@ -436,7 +475,7 @@ void wallpapers_init(void){
     if(f){
         if(fgets(selected_name,sizeof(selected_name),f)){
             selected_name[strcspn(selected_name,"\r\n")]=0;
-            if(!background_load(WALLPAPER_FILE,&background,NULL))
+            if(!load_720p_texture(WALLPAPER_FILE,&background))
                 selected_name[0]=0;
         }
         fclose(f);
@@ -487,7 +526,19 @@ void wallpapers_poll(void){
         }
     }
     SDL_UnlockMutex(mutex);
-    if(!done)return;
+    if(!done){
+        int phase=SDL_AtomicGet(&image_phase);
+        if(phase==PHASE_DOWNLOAD || phase==PHASE_RESIZE){
+            unsigned seconds=(SDL_GetTicks()-image_started_at)/1000u;
+            snprintf(notice,sizeof(notice),
+                phase==PHASE_DOWNLOAD?
+                TR("Отримання зображення… %u с","Downloading image… %u s"):
+                TR("Підготовка 720p… %u с","Preparing 720p… %u s"),
+                seconds);
+        }
+        return;
+    }
+    if(job==JOB_IMAGE)SDL_AtomicSet(&image_phase,PHASE_IDLE);
     if(job==JOB_CATALOG){
         snprintf(notice,sizeof(notice),"%s",ok?
             TR("Wallhaven: натисніть A для застосування.","Wallhaven: press A to apply."):
@@ -495,7 +546,7 @@ void wallpapers_poll(void){
     }else if(job==JOB_IMAGE){
         if(serial!=generation){remove(WALLPAPER_TEMP);return;}
         GLuint texture=0;
-        int valid=ok && background_load(WALLPAPER_TEMP,&texture,WALLPAPER_SCALED);
+        int valid=ok && load_720p_texture(WALLPAPER_SCALED,&texture);
         if(valid && index>=0 && index<count && commit_selection(catalog[index].name)){
             if(background)glDeleteTextures(1,&background);
             background=texture;
@@ -527,6 +578,8 @@ int wallpapers_apply(int index){
        as a Switch-sized image. The worker bounds both download and decode. */
     SDL_LockMutex(mutex);
     download_diagnostic[0]=0;
+    image_started_at=SDL_GetTicks();
+    SDL_AtomicSet(&image_phase,PHASE_DOWNLOAD);
     requested=JOB_IMAGE;requested_index=index;requested_generation=++generation;
     snprintf(notice,sizeof(notice),"%s",TR("Завантаження шпалер…","Downloading wallpaper…"));
     SDL_CondSignal(condition);SDL_UnlockMutex(mutex);
@@ -534,6 +587,7 @@ int wallpapers_apply(int index){
 }
 void wallpapers_reset(void){
     if(mutex){SDL_LockMutex(mutex);generation++;SDL_UnlockMutex(mutex);}
+    SDL_AtomicSet(&image_phase,PHASE_IDLE);
     if(background)glDeleteTextures(1,&background);
     background=0;selected_name[0]=0;
     remove(WALLPAPER_NAME);remove(WALLPAPER_NAME_BACKUP);

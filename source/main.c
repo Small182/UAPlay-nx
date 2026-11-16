@@ -2593,11 +2593,18 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             box_alpha(p,UI_EDGE,y,1216,60,i==selected_video_option?.20f:.09f,
                       i==selected_video_option?.30f:.11f,
                       i==selected_video_option?.38f:.14f,1.f,13);
-            text_font(p,ui_text(video_titles[option]),55,
-                      y+(60-text_height(p,ui_text(video_titles[option]),p->font))/2,
+            const char *label=option==VIDEO_OPTION_AUTOPLAY?
+                              TR("Автовідтворення","Autoplay"):
+                              ui_text(video_titles[option]);
+            text_font(p,label,55,
+                      y+(60-text_height(p,label,p->font))/2,
                       830,p->font,.96f,.97f,.98f);
             char value[48];
-            if(option==6){
+            if(option==VIDEO_OPTION_AUTOPLAY){
+                snprintf(value,sizeof(value),"%s",
+                         autoplay_episodes?TR("Увімкнено","Enabled"):
+                                           TR("Вимкнено","Disabled"));
+            }else if(option==6){
                 int quality=(int)video_options[option];
                 snprintf(value,sizeof(value),"%s",quality?hls_labels[quality]:TR("Авто","Auto"));
             }
@@ -2609,7 +2616,12 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                 box_alpha(p,UI_EDGE,y+12,4,36,r,g,b,1.f,2);}
             press_preview(p,UI_EDGE,y,1216,60,13);
         }
-        text_tiny(p,TR("Якість HLS визначається потоками, які надає джерело.","HLS quality depends on the streams offered by the provider."),50,626,1150);
+        text_tiny(p,visible_video_options[selected_video_option]==VIDEO_OPTION_AUTOPLAY?
+                  TR("Запуск наступної серії після поточної. A або ←/→ — перемкнути.",
+                     "Play the next episode automatically. Press A or left/right to toggle."):
+                  TR("Якість HLS визначається потоками, які надає джерело.",
+                     "HLS quality depends on the streams offered by the provider."),
+                  50,626,1150);
         footer(p,NULL);
     }
     /* Short ease-out fade after a screen/section transition; fully drawn
@@ -3941,8 +3953,21 @@ int main(int argc,char **argv) {
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && selected_video_option>0)selected_video_option--;
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && selected_video_option<VIDEO_OPTION_COUNT-1)selected_video_option++;
                 int direction=(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT)-(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT);
+                if(key==SDL_CONTROLLER_BUTTON_A &&
+                   visible_video_options[selected_video_option]==VIDEO_OPTION_AUTOPLAY)
+                    direction=1;
                 if(direction){
                     int i=visible_video_options[selected_video_option];
+                    if(i==VIDEO_OPTION_AUTOPLAY){
+                        autoplay_episodes=!autoplay_episodes;
+                        if(!theme_save()){
+                            autoplay_episodes=!autoplay_episodes;
+                            snprintf(message,sizeof(message),"%s",
+                                     TR("Не вдалося зберегти автовідтворення.",
+                                        "Could not save autoplay setting."));
+                        }
+                        continue;
+                    }
                     video_options[i]+=direction*video_steps[i];
                     if(video_options[i]<video_min[i])video_options[i]=video_min[i];
                     if(video_options[i]>video_max[i])video_options[i]=video_max[i];

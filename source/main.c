@@ -680,6 +680,8 @@ typedef struct {
     TTF_Font *font_clock;
     TTF_Font *font_small;
     TTF_Font *font_tiny;
+    /* Inter is retained only for pictograms/symbols not in Nimbus Sans. */
+    TTF_Font *inter_fallback[5];
     TTF_Font *scripts[7];
     TTF_Font *scripts_small[7];
     TTF_Font *scripts_big[7];
@@ -721,6 +723,19 @@ static TTF_Font *choose_font(Paint *p,const char *s){
                 p->font==p->font_small?p->scripts_small[idx]:
                 p->font==p->font_tiny?p->scripts_tiny[idx]:p->scripts[idx];
             if(fallback)return fallback;
+        }
+        /* Nimbus Sans 2.0 covers Ukrainian Cyrillic, but not every symbol
+           used in UI labels (e.g. ▶, ★, ✓, ₴). For a mixed label select
+           the same-size Inter face only if a symbol glyph is missing. */
+        if(cp>=0x2000 && cp<=0xffff && p->font &&
+           !TTF_GlyphIsProvided(p->font,(Uint16)cp)){
+            int size=p->font==p->font_big?2:
+                     p->font==p->font_small?1:
+                     p->font==p->font_tiny?3:
+                     p->font==p->font_clock?4:0;
+            TTF_Font *fallback=p->inter_fallback[size];
+            if(fallback && TTF_GlyphIsProvided(fallback,(Uint16)cp))
+                return fallback;
         }
     }
     return p->font;
@@ -801,12 +816,17 @@ static int paint_init(Paint *p) {
     unsigned char white[4]={255,255,255,255};
     glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,white);
     if (TTF_Init()) return 0;
-    /* Inter has SF/Helvetica-like proportions and includes Ukrainian glyphs. */
-    p->font=TTF_OpenFont("romfs:/InterVariable.ttf",22);
-    p->font_big=TTF_OpenFont("romfs:/InterVariable.ttf",31);
-    p->font_clock=TTF_OpenFont("romfs:/InterVariable.ttf",34);
-    p->font_small=TTF_OpenFont("romfs:/InterVariable.ttf",19);
-    p->font_tiny=TTF_OpenFont("romfs:/InterVariable.ttf",15);
+    /* Nimbus Sans (URW Core 35 v2.0, SIL OFL 1.1) replaces Inter for
+       normal interface copy. Bold is reserved for large page headings.
+       See romfs/NimbusSans-LICENSE.txt for attribution and full license. */
+    p->font=TTF_OpenFont("romfs:/NimbusSans-Regular.ttf",22);
+    p->font_big=TTF_OpenFont("romfs:/NimbusSans-Bold.ttf",31);
+    p->font_clock=TTF_OpenFont("romfs:/NimbusSans-Regular.ttf",34);
+    p->font_small=TTF_OpenFont("romfs:/NimbusSans-Regular.ttf",19);
+    p->font_tiny=TTF_OpenFont("romfs:/NimbusSans-Regular.ttf",15);
+    const int fallback_sizes[]={22,19,31,15,34};
+    for(int i=0;i<5;i++)
+        p->inter_fallback[i]=TTF_OpenFont("romfs:/InterVariable.ttf",fallback_sizes[i]);
     for(int i=0;i<7;i++){
         char path[96];snprintf(path,sizeof(path),"romfs:/NotoSans%s.ttf",script_fonts[i]);
         p->scripts[i]=TTF_OpenFont(path,22);
@@ -5133,6 +5153,7 @@ int main(int argc,char **argv) {
         if(paint.scripts_tiny[i])TTF_CloseFont(paint.scripts_tiny[i]);
     }
     for(int i=0;i<4;i++)if(paint.japanese[i])TTF_CloseFont(paint.japanese[i]);
+    for(int i=0;i<5;i++)if(paint.inter_fallback[i])TTF_CloseFont(paint.inter_fallback[i]);
     if(paint.font_tiny)TTF_CloseFont(paint.font_tiny);
     if(paint.font_small)TTF_CloseFont(paint.font_small);
     if(paint.font_big)TTF_CloseFont(paint.font_big);

@@ -744,9 +744,13 @@ static const char *fs = "precision mediump float;varying vec2 tc;"
                         "vec3(.902,.907,.914),tc.y);"
                         "else if(gradient>.5)rgb=mix(vec3(.205,.208,.213),"
                         "vec3(.135,.139,.145),tc.y);"
-                        "float edge=smoothstep(0.0,0.40,min(tc.x,1.0-tc.x));"
-                        "float fade=mix(0.80,1.0,edge)*(0.91+0.09*tc.y);"
-                        "float opacity=mix(1.0,fade,panel_gradient);"
+                        /* A stronger alpha gradient on dark wallpaper panels:
+                           the wallpaper shows through the sides and top. */
+                        "float edge=smoothstep(0.0,0.43,min(tc.x,1.0-tc.x));"
+                        "float light_fade=mix(0.80,1.0,edge)*(0.91+0.09*tc.y);"
+                        "float dark_fade=mix(0.50,1.0,edge)*(0.67+0.33*smoothstep(0.0,1.0,tc.y));"
+                        "float fade=panel_gradient>1.5?dark_fade:light_fade;"
+                        "float opacity=panel_gradient>0.5?fade:1.0;"
                         "gl_FragColor=texture2D(image,uv_crop.xy+tc*uv_crop.zw)*vec4(rgb,tint.a*opacity)*a;}";
 static void *proc(void *ctx, const char *name) {
     (void)ctx; return SDL_GL_GetProcAddress(name);
@@ -839,10 +843,10 @@ static void box_alpha(Paint *p,int x,int y,int w,int h,float r,float g,float b,f
     int soft_panel=ui_theme_enabled && wallpapers_texture() &&
         p->tex==p->solid_tex && !ui_gradient_pass &&
         !ui_outline_width && w>=65 && h>=30;
-    if(soft_panel)a*=ui_light_theme?.43f:.67f;
-    /* Opacity falls smoothly toward the sides and top; text, previews and
-       posters remain fully opaque because they use their own textures. */
-    glUniform1f(p->panel_gradient,soft_panel?1.f:0.f);
+    if(soft_panel)a*=ui_light_theme?.43f:.46f;
+    /* 0=no gradient; 1=light subtle; 2=dark stronger.
+       Text, selection frames, previews, and posters stay fully opaque. */
+    glUniform1f(p->panel_gradient,soft_panel?(ui_light_theme?1.f:2.f):0.f);
     glUniform4f(p->tint,r,g,b,a);
     glUniform3f(p->shape,(float)w,(float)h,(float)radius);
     glUniform1f(p->gradient,ui_gradient_pass?(ui_light_theme?2.f:1.f):0.f);
@@ -2070,7 +2074,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         wallpaper_image_cover(p,wall,wallpapers_width(),wallpapers_height(),
                               0,0,1280,720,0);
         box_alpha(p,0,0,1280,720,.02f,.025f,.03f,
-                  ui_light_theme?.20f:.64f,0);
+                  ui_light_theme?.20f:.48f,0);
         ui_theme_enabled=theme;
     }
     static int previous_page=-1,previous_category=-1,previous_expanded=-1;

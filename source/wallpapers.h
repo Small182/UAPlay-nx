@@ -31,6 +31,8 @@ int wallpapers_busy(void);
 int wallpapers_apply(int index);
 void wallpapers_reset(void);
 GLuint wallpapers_texture(void);
+int wallpapers_width(void);
+int wallpapers_height(void);
 const char *wallpapers_selected(void);
 const char *wallpapers_message(void);
 

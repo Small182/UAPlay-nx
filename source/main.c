@@ -2169,14 +2169,15 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         screen_header(p,TR("Налаштування","Settings"),"UAPlay");
         const char *items[]={TR("Тема","Theme"),TR("Інтерфейс","Appearance"),
             TR("Плеєр","Player"),TR("Автовідтворення","Autoplay"),TR("Джерела","Providers"),
-            TR("Мова / Language","Language / Мова"),TR("Шпалери","Wallpapers")};
+            TR("Мова / Language","Language / Мова"),TR("Шпалери","Wallpapers"),
+            TR("Вимкнути шпалери","Disable wallpapers")};
         for(int i=0;i<SETTING_COUNT;i++){
             int y=SETTINGS_Y+i*SETTINGS_ROW_STEP;
             box_alpha(p,32,y,417,SETTINGS_ROW_HEIGHT,i==settings_selected?.20f:.09f,
                       i==settings_selected?.29f:.11f,
                       i==settings_selected?.37f:.14f,1.f,16);
             if(i==settings_selected){float r,g,b;accent(&r,&g,&b);
-                box_alpha(p,32,y+11,5,42,r,g,b,1.f,2);}
+                box_alpha(p,32,y+8,5,36,r,g,b,1.f,2);}
             int label_y=y+(SETTINGS_ROW_HEIGHT-text_height(p,items[i],p->font))/2;
             if(i==settings_selected){
                 float r,g,b;accent(&r,&g,&b);
@@ -2201,6 +2202,10 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
          else if(settings_selected==SETTING_WALLPAPERS)
              snprintf(description,sizeof(description),"%s",
                       *wallpapers_selected()?wallpapers_selected():TR("Стандартний фон","Default background"));
+        else if(settings_selected==SETTING_WALLPAPER_OFF)
+             snprintf(description,sizeof(description),"%s",
+                      *wallpapers_selected()?TR("Обрано фонове зображення","Custom wallpaper active"):
+                          TR("Шпалери вже вимкнено","Wallpapers already disabled"));
         else description[0]=0;
         text(p,description,516,255,682);
         const char *help[]={TR("Перемикає темну та світлу теми. Вибір зберігається на SD-карті.","Switch between dark and light themes. Your choice is saved to the SD card."),
@@ -2209,12 +2214,14 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             TR("Після завершення серії пропонує наступну через 3 секунди. Кнопка B скасовує перехід. Вибір зберігається.","Start the next episode after 3 seconds. Press B to cancel. Your choice is saved."),
             TR("Виберіть джерела, у яких UAPlay може шукати відео. Вибір зберігається на SD-карті.","Choose which providers UAPlay can search. Your choices are saved to the SD card."),
             TR("Змінює мову інтерфейсу, назв і описів TMDb.","Changes the language of the interface and TMDb titles and descriptions."),
-             TR("Оберіть фон із галереї Awesome Wallpapers.","Choose a background from Awesome Wallpapers.")};
+             TR("Оберіть фон із галереї Wallhaven.","Choose a background from Wallhaven."),
+             TR("Повертає стандартний фон UAPlay і зберігає вибір після перезапуску.","Restore the default UAPlay background, including after restart.")};
         wrapped(p,help[settings_selected],517,315,675,3,29,p->font_small,.73f,.78f,.84f);
         button(p,settings_selected==SETTING_PLAYER?TR("Відкрити параметри","Open player settings"):
                settings_selected==SETTING_PROVIDERS?TR("Відкрити джерела","Manage providers"):
                settings_selected==SETTING_LANGUAGE?TR("English","Українська"):
-                settings_selected==SETTING_WALLPAPERS?TR("Відкрити галерею","Open gallery"):TR("Змінити","Change"),
+                settings_selected==SETTING_WALLPAPERS?TR("Відкрити галерею","Open gallery"):
+                settings_selected==SETTING_WALLPAPER_OFF?TR("Стандартний фон","Restore default"):TR("Змінити","Change"),
                515,537,258,55,1);
         footer(p,status);
     } else if (page==DETAILS) {
@@ -3049,9 +3056,13 @@ int main(int argc,char **argv) {
                                     catalog_hero_focus=0;
                                 }
                             }
-                        }else if(page==WALLPAPERS && vertical &&
+                        }else if(page==WALLPAPERS &&
                                   touch.y>=WALL_Y && touch.y<640){
-                            wall_selected=swipe_page_selection(wall_selected,wall_count,WALL_PAGE,direction);
+                            /* Mirror the catalog: both horizontal and vertical
+                               swipes turn gallery pages; fetch the next API
+                               page when its current two-page grid ends. */
+                            wall_focus=0;
+                            wall_move_page(direction);
                         }else if(page==IPTV_CHANNELS && vertical &&
                                  touch.y>=IPTV_GRID_Y && touch.y<IPTV_GRID_BOTTOM){
                             tv.focus=IPTV_FOCUS_GRID;
@@ -3292,9 +3303,7 @@ int main(int argc,char **argv) {
                     if(ty<92 && tx<100)key=SDL_CONTROLLER_BUTTON_B;
                     else if(ty>=101 && ty<147 && tx>=32 && tx<651){
                         int filter=(tx-32)/158;
-                        if(filter>=0 && filter<4){
-                            wall_filter=filter;wall_focus=1;wall_selected=0;wall_rebuild();
-                        }
+                        if(filter>=0 && filter<4)wall_load_filter(filter);
                         continue;
                     }else if(ty>=101 && ty<147 && tx>=674 && tx<1034){
                         key=SDL_CONTROLLER_BUTTON_X;
@@ -3774,15 +3783,21 @@ int main(int argc,char **argv) {
                     char search[sizeof(wall_query)];
                     snprintf(search,sizeof(search),"%s",wall_query);
                     if(keyboard(search,sizeof(search))){
-                        snprintf(wall_query,sizeof(wall_query),"%s",search);
-                        wall_selected=0;wall_rebuild();
-                    }else if(wall_query[0]){wall_query[0]=0;wall_selected=0;wall_rebuild();}
+                        if(wallpapers_browse(wall_filter,search,1)){
+                            snprintf(wall_query,sizeof(wall_query),"%s",search);
+                            wall_selected=0;wall_focus=0;
+                        }
+                    }else if(wall_query[0] && wallpapers_browse(wall_filter,"",1)){
+                        wall_query[0]=0;wall_selected=0;wall_focus=0;
+                    }
                 }
                 if(key==SDL_CONTROLLER_BUTTON_Y)wallpapers_reset();
-                if(key==SDL_CONTROLLER_BUTTON_LEFTSHOULDER)
-                    wall_selected=swipe_page_selection(wall_selected,wall_count,WALL_PAGE,-1);
-                if(key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)
-                    wall_selected=swipe_page_selection(wall_selected,wall_count,WALL_PAGE,1);
+                if(key==SDL_CONTROLLER_BUTTON_LEFTSHOULDER){
+                    wall_focus=0;wall_move_page(-1);
+                }
+                if(key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER){
+                    wall_focus=0;wall_move_page(1);
+                }
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP){
                     if(!wall_focus && wall_selected%WALL_PAGE<WALL_COLS)wall_focus=1;
                     else if(!wall_focus)wall_selected-=WALL_COLS;
@@ -3794,11 +3809,11 @@ int main(int argc,char **argv) {
                         wall_selected+=WALL_COLS;
                 }
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT){
-                    if(wall_focus){wall_filter=(wall_filter+3)%4;wall_selected=0;wall_rebuild();}
+                    if(wall_focus)wall_load_filter((wall_filter+3)%4);
                     else if(wall_selected>0)wall_selected--;
                 }
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT){
-                    if(wall_focus){wall_filter=(wall_filter+1)%4;wall_selected=0;wall_rebuild();}
+                    if(wall_focus)wall_load_filter((wall_filter+1)%4);
                     else if(wall_selected+1<wall_count)wall_selected++;
                 }
                 if(key==SDL_CONTROLLER_BUTTON_A && !wall_focus &&
@@ -3835,6 +3850,10 @@ int main(int argc,char **argv) {
                     }else if(settings_selected==SETTING_WALLPAPERS){
                         wall_selected=0;wall_focus=0;
                         wallpapers_open();wall_rebuild();page=WALLPAPERS;
+                    }else if(settings_selected==SETTING_WALLPAPER_OFF){
+                        wallpapers_reset();
+                        snprintf(message,sizeof(message),"%s",
+                            TR("Стандартний фон відновлено","Default background restored"));
                     }else if(settings_selected==SETTING_LANGUAGE){
                         ui_set_language(ui_language()==UI_ENGLISH?UI_UKRAINIAN:UI_ENGLISH);
                         catalog_invalidate_language(category,query);

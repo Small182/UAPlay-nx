@@ -1754,6 +1754,10 @@ static int iptv_touched_card(int x,int y){
 enum { WALL_COLS=4,WALL_PAGE=12,WALL_X=32,WALL_Y=165,WALL_W=290,WALL_STEP_X=308,WALL_STEP_Y=158 };
 static int wall_selected,wall_filter,wall_focus,wall_count,wall_rows[WALLPAPERS_MAX];
 static char wall_query[96];
+enum { WALL_ANIM_MS=250 };
+static int wall_anim_from=-1,wall_anim_to=-1,wall_anim_dir=1,wall_api_dir;
+static Uint32 wall_anim_started;
+static int wall_mouse_active,wall_mouse_x,wall_mouse_y;
 static const UiText wall_tags[]={{"Усі","All"},{"Темні","Dark"},{"Мінімалізм","Minimal"},{"Аніме","Anime"}};
 /* Wallhaven performs text/category filtering on the server. */
 static void wall_rebuild(void){
@@ -1767,18 +1771,29 @@ static void wall_load_filter(int next){
         wall_filter=next;wall_selected=0;wall_focus=1;
     }
 }
+/* Animate a 12-item gallery page step. */
+static void wall_start_animation(int from,int to,int direction){
+    wall_anim_from=from;
+    wall_anim_to=to;
+    wall_anim_dir=direction;
+    wall_anim_started=SDL_GetTicks();
+    ui_animating=1;
+}
 static void wall_move_page(int direction){
-    if(wallpapers_busy())return;
+    if(wallpapers_busy() || !wall_count)return;
     int start=wall_selected/WALL_PAGE*WALL_PAGE;
     if(direction<0 && start==0 && wallpapers_current_page()>1){
         if(wallpapers_browse(wall_filter,wall_query,wallpapers_current_page()-1))
-            wall_selected=WALL_PAGE;
+            wall_api_dir=direction;
     }else if(direction>0 && start+WALL_PAGE>=wall_count &&
              wallpapers_current_page()<wallpapers_last_page()){
         if(wallpapers_browse(wall_filter,wall_query,wallpapers_current_page()+1))
-            wall_selected=0;
+            wall_api_dir=direction;
     }else{
-        wall_selected=swipe_page_selection(wall_selected,wall_count,WALL_PAGE,direction);
+        int target=swipe_page_selection(wall_selected,wall_count,WALL_PAGE,direction);
+        int next=target/WALL_PAGE*WALL_PAGE;
+        if(next!=start)wall_start_animation(start,next,direction);
+        wall_selected=target;
     }
 }
 static int wall_hit(int x,int y){
@@ -1788,6 +1803,23 @@ static int wall_hit(int x,int y){
        (y-WALL_Y)%WALL_STEP_Y>=137)return -1;
     int i=wall_selected/WALL_PAGE*WALL_PAGE+row*WALL_COLS+col;
     return i<wall_count?i:-1;
+}
+static void wall_draw_grid(Paint *p,int start,int offset_x,int *budget,int focused){
+    for(int n=start;n<wall_count && n<start+WALL_PAGE;n++){
+        const WallpaperItem *item=wallpapers_item(wall_rows[n]);
+        if(!item)continue;
+        int x=WALL_X+((n-start)%WALL_COLS)*WALL_STEP_X+offset_x;
+        int y=WALL_Y+((n-start)/WALL_COLS)*WALL_STEP_Y;
+        box_alpha(p,x,y,WALL_W,137,.13f,.16f,.19f,1.f,12);
+        int image_w=0,image_h=0;
+        GLuint tex=logo_texture(item->thumbnail,budget,&image_w,&image_h);
+        if(tex)wallpaper_image_cover(p,tex,image_w,image_h,x+4,y+4,WALL_W-8,105);
+        else text_center_button(p,"UAPlay",x+8,y+32,WALL_W-16,38,
+                                p->font_small,.7f,.74f,.79f);
+        if(focused && n==wall_selected && !wall_focus)
+            selection_frame(p,x,y,WALL_W,137);
+        text_font(p,item->name,x+10,y+114,WALL_W-20,p->font_tiny,1,1,1);
+    }
 }
 static void draw_wallpapers(Paint *p){
     screen_header(p,TR("Шпалери","Wallpapers"),"Wallhaven");
@@ -1802,29 +1834,39 @@ static void draw_wallpapers(Paint *p){
     box_alpha(p,1050,101,196,46,.13f,.17f,.20f,1.f,12);
     text_center_button(p,TR("Y: Стандартні","Y: Default"),1050,101,196,46,p->font_small,1,1,1);
     int budget=1,start=wall_selected/WALL_PAGE*WALL_PAGE;
-    for(int n=start;n<wall_count && n<start+WALL_PAGE;n++){
-        const WallpaperItem *item=wallpapers_item(wall_rows[n]);
-        if(!item)continue;
-        int x=WALL_X+((n-start)%WALL_COLS)*WALL_STEP_X;
-        int y=WALL_Y+((n-start)/WALL_COLS)*WALL_STEP_Y;
-        box_alpha(p,x,y,WALL_W,137,.13f,.16f,.19f,1.f,12);
-        int image_w=0,image_h=0;
-        GLuint tex=logo_texture(item->thumbnail,&budget,&image_w,&image_h);
-        if(tex)wallpaper_image_cover(p,tex,image_w,image_h,x+4,y+4,WALL_W-8,105);
-        else text_center_button(p,"UAPlay",x+8,y+32,WALL_W-16,38,p->font_small,.7f,.74f,.79f);
-        if(n==wall_selected && !wall_focus)selection_frame(p,x,y,WALL_W,137);
-        text_font(p,item->name,x+10,y+114,WALL_W-20,p->font_tiny,1,1,1);
+    paint_clip(p,WALL_X,WALL_Y,1216,3*WALL_STEP_Y);
+    Uint32 elapsed=ui_now-wall_anim_started;
+    if(wall_anim_to==start && elapsed<WALL_ANIM_MS){
+        float t=elapsed/(float)WALL_ANIM_MS;
+        float remain=1.f-t;
+        float eased=1.f-remain*remain*remain;
+        if(wall_anim_from>=0)
+            wall_draw_grid(p,wall_anim_from,
+                           -(int)(wall_anim_dir*1240.f*eased),&budget,0);
+        /* The previous remote API page isn't in memory. Animate the
+           freshly loaded page sliding in from the appropriate edge. */
+        int distance=wall_anim_from>=0?1240:210;
+        wall_draw_grid(p,start,
+                       (int)(wall_anim_dir*distance*(1.f-eased)),&budget,1);
+        ui_animating=1;
+    }else{
+        wall_anim_from=-1;wall_anim_to=-1;
+        wall_draw_grid(p,start,0,&budget,1);
     }
+    paint_clip(p,0,0,0,0);
     if(!wall_count && !wallpapers_busy())
         text_center_button(p,TR("Зображення не знайдено","No wallpapers found"),
                            50,330,1180,55,p->font_small,.8f,.85f,.9f);
     char status[120];
-    snprintf(status,sizeof(status),TR("Wallhaven %d/%d · Добірка %d/%d","Wallhaven %d/%d · Gallery %d/%d"),
+    snprintf(status,sizeof(status),
+             TR("Wallhaven %d/%d · Добірка %d/%d","Wallhaven %d/%d · Gallery %d/%d"),
              wallpapers_current_page(),wallpapers_last_page(),
-             wall_count?wall_selected/WALL_PAGE+1:0,(wall_count+WALL_PAGE-1)/WALL_PAGE);
+             wall_count?wall_selected/WALL_PAGE+1:0,
+             (wall_count+WALL_PAGE-1)/WALL_PAGE);
     text_small(p,status,46,641,410);
     if(*wallpapers_selected()){
-        char applied[180];snprintf(applied,sizeof(applied),TR("Активні: %s","Selected: %s"),wallpapers_selected());
+        char applied[180];
+        snprintf(applied,sizeof(applied),TR("Активні: %s","Selected: %s"),wallpapers_selected());
         text_small(p,applied,590,641,630);
     }
     footer(p,wallpapers_message());
@@ -2955,7 +2997,14 @@ int main(int argc,char **argv) {
         Uint32 frame_started_at=SDL_GetTicks();
         int old_wall_revision=wallpapers_revision();
         wallpapers_poll();
-        if(old_wall_revision!=wallpapers_revision())wall_rebuild();
+        if(old_wall_revision!=wallpapers_revision()){
+            if(wall_api_dir)wall_selected=wall_api_dir<0?WALL_PAGE:0;
+            wall_rebuild();
+            if(wall_api_dir){
+                wall_start_animation(-1,wall_selected/WALL_PAGE*WALL_PAGE,wall_api_dir);
+                wall_api_dir=0;
+            }
+        }
         if(app_update.thread && SDL_AtomicGet(&app_update.done)){
             SDL_WaitThread(app_update.thread,NULL);
             app_update.thread=NULL;

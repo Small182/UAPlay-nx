@@ -11,8 +11,9 @@
 #include <sys/stat.h>
 #include <errno.h>
 
-/* Source is a public GitHub-hosted JSON catalog; image files are fetched only
-   after the user selects one. Thumbnails reuse the existing poster cache. */
+/* Official Wallhaven SFW search API. Full-size sources are downloaded only
+   after explicit selection, resized to 1280x720 locally and saved offline.
+   A remote transform/Wallhaven thumbnail is fallback for oversized images. */
 #define WALLPAPER_API "https://wallhaven.cc/api/v1/search"
 #define WALLPAPER_RAW_PREFIX "https://w.wallhaven.cc/full/"
 #define WALLPAPER_THUMB_PREFIX "https://th.wallhaven.cc/"
@@ -21,15 +22,15 @@
 #define WALLPAPER_CATALOG_TMP WALLPAPER_HOME "/wallpapers.json.part"
 #define WALLPAPER_FILE WALLPAPER_HOME "/wallpaper.bin"
 #define WALLPAPER_TEMP WALLPAPER_HOME "/wallpaper.part"
+#define WALLPAPER_SCALED WALLPAPER_HOME "/wallpaper.720p.part"
 #define WALLPAPER_BACKUP WALLPAPER_HOME "/wallpaper.bak"
 #define WALLPAPER_NAME WALLPAPER_HOME "/wallpaper.txt"
 #define WALLPAPER_NAME_TMP WALLPAPER_HOME "/wallpaper.txt.part"
 #define WALLPAPER_NAME_BACKUP WALLPAPER_HOME "/wallpaper.txt.bak"
 #define CATALOG_BYTES_LIMIT (768u * 1024u)
-/* The remote image service supplies a 1280x720 JPEG, avoiding large
-   decodes and GPU uploads on the Switch. The raw original is only used
-   as a fallback when its reported dimensions and size are safe. */
-#define IMAGE_BYTES_LIMIT (8u * 1024u * 1024u)
+/* Accept full-resolution 1080p/4K wallpaper downloads while bounding RAM.
+   The decoded result is cropped/scaled to the Switch display once. */
+#define IMAGE_BYTES_LIMIT (24u * 1024u * 1024u)
 #define IMAGE_PROXY "https://images.weserv.nl/?url="
 #define IMAGE_PROXY_LIMIT (5u * 1024u * 1024u)
 #define IMAGE_PIXELS_LIMIT (12u * 1024u * 1024u)
@@ -76,7 +77,10 @@ static void curl_setup(CURL *curl,const char *url) {
     curl_easy_reset(curl);
     curl_easy_setopt(curl,CURLOPT_URL,url);
     curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);
-    curl_easy_setopt(curl,CURLOPT_USERAGENT,"UAPlay-nx/0.5");
+    curl_easy_setopt(curl,CURLOPT_USERAGENT,
+        "Mozilla/5.0 (Nintendo Switch; UAPlay-nx) AppleWebKit/537.36");
+    curl_easy_setopt(curl,CURLOPT_REFERER,"https://wallhaven.cc/");
+    curl_easy_setopt(curl,CURLOPT_ACCEPT_ENCODING,"");
     curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,1L);
     curl_easy_setopt(curl,CURLOPT_MAXREDIRS,3L);
 #if LIBCURL_VERSION_NUM >= 0x075500
@@ -274,32 +278,44 @@ static int load_catalog(CURL *curl,int filter,const char *user_query,int page){
     return pending_count>0;
 }
 
+/* Download from Wallhaven first. No third-party resizer is required for
+   720p/1080p/4K images; perform the scale locally on the GL thread.
+   For 8K+ originals try a proxy, then the Wallhaven preview as fallback. */
 static int save_image(CURL *curl,const WallpaperItem *item){
-    if(!item || strncmp(item->url,WALLPAPER_RAW_PREFIX,strlen(WALLPAPER_RAW_PREFIX)))return 0;
-    char resized[640];
-    int len=snprintf(resized,sizeof(resized),
-        IMAGE_PROXY "%s&w=1280&h=720&fit=cover&output=jpg&q=84",
-        item->url+strlen("https://"));
-    Buffer image={.limit=IMAGE_PROXY_LIMIT};
-    int ok=len>0 && (size_t)len<sizeof(resized) &&
-           fetch_data(curl,resized,&image) &&
-           image.used>128 && image.data[0]==0xff && image.data[1]==0xd8;
-    if(!ok && item->width==1280 && item->height==720 &&
-       item->bytes<=IMAGE_BYTES_LIMIT){
-        free(image.data);
-        image=(Buffer){.limit=IMAGE_BYTES_LIMIT};
-        ok=fetch_data(curl,item->url,&image);
+    if(!item ||
+       strncmp(item->url,WALLPAPER_RAW_PREFIX,strlen(WALLPAPER_RAW_PREFIX)))
+        return 0;
+    const int safe_original=
+        (unsigned long long)item->width*(unsigned)item->height<=IMAGE_PIXELS_LIMIT &&
+        item->bytes>0 && item->bytes<=IMAGE_BYTES_LIMIT;
+    Buffer bytes={.limit=IMAGE_BYTES_LIMIT};
+    int ok=safe_original && fetch_data(curl,item->url,&bytes);
+    if(!ok){
+        free(bytes.data);
+        bytes=(Buffer){.limit=IMAGE_PROXY_LIMIT};
+        char resized[640];
+        int len=snprintf(resized,sizeof(resized),
+            IMAGE_PROXY "%s&w=1280&h=720&fit=cover&output=jpg&q=84",
+            item->url+strlen("https://"));
+        ok=len>0 && (size_t)len<sizeof(resized) &&
+           fetch_data(curl,resized,&bytes);
+    }
+    if(!ok && !strncmp(item->thumbnail,WALLPAPER_THUMB_PREFIX,
+                       strlen(WALLPAPER_THUMB_PREFIX))){
+        free(bytes.data);
+        bytes=(Buffer){.limit=IMAGE_PROXY_LIMIT};
+        ok=fetch_data(curl,item->thumbnail,&bytes);
     }
     if(ok){
         FILE *f=fopen(WALLPAPER_TEMP,"wb");
-        ok=f && fwrite(image.data,1,image.used,f)==image.used;
+        ok=f && fwrite(bytes.data,1,bytes.used,f)==bytes.used;
         if(f && fclose(f)!=0)ok=0;
     }
-    free(image.data);
+    free(bytes.data);
     if(!ok)remove(WALLPAPER_TEMP);
     return ok;
 }
-static int background_load(const char *path,GLuint *output){
+static int background_load(const char *path,GLuint *output,const char *save_path){
     FILE *file=fopen(path,"rb");
     if(!file)return 0;
     SDL_RWops *rw=SDL_RWFromFP(file,1);
@@ -310,24 +326,28 @@ static int background_load(const char *path,GLuint *output){
     if(original->w<1 || original->h<1 || pixels>IMAGE_PIXELS_LIMIT){
         SDL_FreeSurface(original);return 0;
     }
-    SDL_Surface *rgba=SDL_ConvertSurfaceFormat(original,SDL_PIXELFORMAT_ABGR8888,0);
-    SDL_FreeSurface(original);
-    if(!rgba)return 0;
+    /* Avoid a second full-size RGBA copy; the 4K source is already decoded. */
     SDL_Surface *scaled=SDL_CreateRGBSurfaceWithFormat(0,1280,720,32,SDL_PIXELFORMAT_ABGR8888);
-    if(!scaled){SDL_FreeSurface(rgba);return 0;}
-    /* Fill the 16:9 Switch display without distorting portraits or squares. */
-    SDL_Rect crop={0,0,rgba->w,rgba->h};
+    if(!scaled){SDL_FreeSurface(original);return 0;}
+    SDL_Rect crop={0,0,original->w,original->h};
     if((long long)crop.w*720>=(long long)crop.h*1280){
         crop.w=(int)((long long)crop.h*1280/720);
-        crop.x=(rgba->w-crop.w)/2;
+        crop.x=(original->w-crop.w)/2;
     }else{
         crop.h=(int)((long long)crop.w*720/1280);
-        crop.y=(rgba->h-crop.h)/2;
+        crop.y=(original->h-crop.h)/2;
     }
-    SDL_SetSurfaceBlendMode(rgba,SDL_BLENDMODE_NONE);
-    int ok=SDL_BlitScaled(rgba,&crop,scaled,NULL)==0;
-    SDL_FreeSurface(rgba);
+    SDL_SetSurfaceBlendMode(original,SDL_BLENDMODE_NONE);
+    int ok=SDL_BlitScaled(original,&crop,scaled,NULL)==0;
+    SDL_FreeSurface(original);
     if(!ok){SDL_FreeSurface(scaled);return 0;}
+    /* Persist the *720p* image, not a huge original that must be decoded
+       again on every startup. SDL_image saves JPEG; BMP is a safe fallback. */
+    if(save_path && IMG_SaveJPG(scaled,save_path,85)!=0 &&
+       SDL_SaveBMP(scaled,save_path)!=0){
+        SDL_FreeSurface(scaled);
+        return 0;
+    }
     GLuint texture=0;
     glGenTextures(1,&texture);
     if(texture){
@@ -351,7 +371,7 @@ static int commit_selection(const char *name){
     if(!ok){remove(WALLPAPER_NAME_TMP);return 0;}
     remove(WALLPAPER_BACKUP);
     int had_image=rename(WALLPAPER_FILE,WALLPAPER_BACKUP)==0;
-    if(rename(WALLPAPER_TEMP,WALLPAPER_FILE)!=0){
+    if(rename(WALLPAPER_SCALED,WALLPAPER_FILE)!=0){
         if(had_image)rename(WALLPAPER_BACKUP,WALLPAPER_FILE);
         remove(WALLPAPER_NAME_TMP);return 0;
     }
@@ -402,7 +422,7 @@ void wallpapers_init(void){
     if(f){
         if(fgets(selected_name,sizeof(selected_name),f)){
             selected_name[strcspn(selected_name,"\r\n")]=0;
-            if(!background_load(WALLPAPER_FILE,&background))
+            if(!background_load(WALLPAPER_FILE,&background,NULL))
                 selected_name[0]=0;
         }
         fclose(f);
@@ -461,18 +481,20 @@ void wallpapers_poll(void){
     }else if(job==JOB_IMAGE){
         if(serial!=generation){remove(WALLPAPER_TEMP);return;}
         GLuint texture=0;
-        int valid=ok && background_load(WALLPAPER_TEMP,&texture);
+        int valid=ok && background_load(WALLPAPER_TEMP,&texture,WALLPAPER_SCALED);
         if(valid && index>=0 && index<count && commit_selection(catalog[index].name)){
             if(background)glDeleteTextures(1,&background);
             background=texture;
             snprintf(selected_name,sizeof(selected_name),"%s",catalog[index].name);
+            remove(WALLPAPER_TEMP);
             snprintf(notice,sizeof(notice),"%s",
-                     TR("Шпалери застосовано й збережено.","Wallpaper saved and applied."));
+                     TR("Шпалери 1280×720 застосовано й збережено.","1280x720 wallpaper saved and applied."));
         }else{
             if(texture)glDeleteTextures(1,&texture);
             remove(WALLPAPER_TEMP);
+            remove(WALLPAPER_SCALED);
             snprintf(notice,sizeof(notice),"%s",
-                     TR("Не вдалося отримати зображення 720p.","Could not fetch 720p image."));
+                     TR("Помилка завантаження або обробки зображення.","Failed to download or process wallpaper."));
         }
     }
 }
@@ -518,4 +540,5 @@ void wallpapers_shutdown(void){
     if(background)glDeleteTextures(1,&background);
     background=0;
     remove(WALLPAPER_TEMP);
+    remove(WALLPAPER_SCALED);
 }

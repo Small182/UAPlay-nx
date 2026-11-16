@@ -870,7 +870,7 @@ static void box_alpha(Paint *p,int x,int y,int w,int h,float r,float g,float b,f
 /* Center-crop wallpaper thumbnails with texture coordinates while keeping
    rounded card corners in local quad coordinates (no aspect distortion). */
 static void wallpaper_image_cover(Paint *p,GLuint image,int image_w,int image_h,
-                                  int x,int y,int w,int h){
+                                  int x,int y,int w,int h,int corner_radius){
     if(!image || image_w<1 || image_h<1 || w<1 || h<1)return;
     float u=0.f,v=0.f,uw=1.f,vh=1.f;
     if((long long)image_w*h>(long long)image_h*w){
@@ -884,7 +884,7 @@ static void wallpaper_image_cover(Paint *p,GLuint image,int image_w,int image_h,
     p->tex=image;
     glUseProgram(p->program);
     glUniform4f(p->uv_crop,u,v,uw,vh);
-    box_alpha(p,x,y,w,h,1.f,1.f,1.f,1.f,8);
+    box_alpha(p,x,y,w,h,1.f,1.f,1.f,1.f,corner_radius);
     glUniform4f(p->uv_crop,0.f,0.f,1.f,1.f);
     p->tex=old;
 }
@@ -1813,7 +1813,7 @@ static void wall_draw_grid(Paint *p,int start,int offset_x,int *budget,int focus
         box_alpha(p,x,y,WALL_W,137,.13f,.16f,.19f,1.f,12);
         int image_w=0,image_h=0;
         GLuint tex=logo_texture(item->thumbnail,budget,&image_w,&image_h);
-        if(tex)wallpaper_image_cover(p,tex,image_w,image_h,x+4,y+4,WALL_W-8,105);
+        if(tex)wallpaper_image_cover(p,tex,image_w,image_h,x+4,y+4,WALL_W-8,105,8);
         else text_center_button(p,"UAPlay",x+8,y+32,WALL_W-16,38,
                                 p->font_small,.7f,.74f,.79f);
         if(focused && n==wall_selected && !wall_focus)
@@ -1997,11 +1997,14 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
     ui_gradient_pass=0;
     GLuint wall=wallpapers_texture();
     if(wall && page!=PLAYER){
-        GLuint old=p->tex;int theme=ui_theme_enabled;
-        ui_theme_enabled=0;p->tex=wall;
-        box_alpha(p,0,0,1280,720,1,1,1,1.f,0);
-        p->tex=old;
-        box_alpha(p,0,0,1280,720,.02f,.025f,.03f,ui_light_theme?.38f:.64f,0);
+        int theme=ui_theme_enabled;
+        ui_theme_enabled=0;
+        /* Keep the original resolution; shader UV center crop fills 16:9
+           without changing the file or stretching the image. */
+        wallpaper_image_cover(p,wall,wallpapers_width(),wallpapers_height(),
+                              0,0,1280,720,0);
+        box_alpha(p,0,0,1280,720,.02f,.025f,.03f,
+                  ui_light_theme?.38f:.64f,0);
         ui_theme_enabled=theme;
     }
     static int previous_page=-1,previous_category=-1,previous_expanded=-1;

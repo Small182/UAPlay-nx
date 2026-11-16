@@ -470,7 +470,12 @@ int wallpapers_browse(int filter,const char *query,int page){
     return 1;
 }
 void wallpapers_open(void){
-    if(!count)wallpapers_browse(current_filter,current_query,api_page);
+    if(count)return;
+    /* Startup restoration may still be decoding the saved original.
+       Queue gallery discovery rather than dropping the first open request. */
+    gallery_pending=1;
+    if(wallpapers_browse(current_filter,current_query,api_page))
+        gallery_pending=0;
 }
 int wallpapers_current_page(void){return api_page;}
 int wallpapers_last_page(void){return api_last_page;}
@@ -480,8 +485,12 @@ void wallpapers_poll(void){
     if(!mutex)return;
     SDL_LockMutex(mutex);
     int done=completed,job=result_job,ok=result,index=result_index,serial=result_generation;
+    SDL_Surface *surface=NULL;
     if(done){
-        completed=0;SDL_CondSignal(condition);
+        surface=pending_surface;
+        pending_surface=NULL;
+        completed=0;
+        SDL_CondSignal(condition);
         if(job==JOB_CATALOG && ok){
             count=pending_count;
             memcpy(catalog,pending,(size_t)count*sizeof(catalog[0]));
@@ -494,14 +503,17 @@ void wallpapers_poll(void){
     SDL_UnlockMutex(mutex);
     if(!done){
         int phase=SDL_AtomicGet(&image_phase);
-        if(phase==PHASE_DOWNLOAD || phase==PHASE_RESIZE){
+        if(phase==PHASE_DOWNLOAD || phase==PHASE_DECODE){
             unsigned seconds=(SDL_GetTicks()-image_started_at)/1000u;
             snprintf(notice,sizeof(notice),
                 phase==PHASE_DOWNLOAD?
-                TR("Отримання зображення… %u с","Downloading image… %u s"):
-                TR("Підготовка 720p… %u с","Preparing 720p… %u s"),
+                TR("Отримання оригіналу… %u с","Downloading original… %u s"):
+                TR("Відкриття зображення… %u с","Decoding image… %u s"),
                 seconds);
         }
+        if(gallery_pending &&
+           wallpapers_browse(current_filter,current_query,api_page))
+            gallery_pending=0;
         return;
     }
     if(job==JOB_IMAGE)SDL_AtomicSet(&image_phase,PHASE_IDLE);
@@ -509,27 +521,43 @@ void wallpapers_poll(void){
         snprintf(notice,sizeof(notice),"%s",ok?
             TR("Wallhaven: натисніть A для застосування.","Wallhaven: press A to apply."):
             TR("Wallhaven недоступний або пошук порожній.","Wallhaven unavailable or no results."));
-    }else if(job==JOB_IMAGE){
-        if(serial!=generation){remove(WALLPAPER_TEMP);return;}
-        GLuint texture=0;
-        int valid=ok && load_720p_texture(WALLPAPER_SCALED,&texture);
-        if(valid && index>=0 && index<count && commit_selection(catalog[index].name)){
-            if(background)glDeleteTextures(1,&background);
-            background=texture;
-            snprintf(selected_name,sizeof(selected_name),"%s",catalog[index].name);
-            remove(WALLPAPER_TEMP);
-            snprintf(notice,sizeof(notice),"%s",
-                     TR("Шпалери 1280×720 застосовано й збережено.","1280x720 wallpaper saved and applied."));
+    }else if(job==JOB_IMAGE || job==JOB_RESTORE){
+        if(serial!=generation){
+            if(surface)SDL_FreeSurface(surface);
+            if(job==JOB_IMAGE)remove(WALLPAPER_TEMP);
         }else{
-            if(texture)glDeleteTextures(1,&texture);
-            remove(WALLPAPER_TEMP);
-            remove(WALLPAPER_SCALED);
-            snprintf(notice,sizeof(notice),"%s (%s)",
-                     TR("Не вдалося застосувати шпалери","Could not apply wallpaper"),
-                     download_diagnostic[0]?download_diagnostic:
-                     (ok?"decode":"unknown"));
+            GLuint texture=ok?upload_wallpaper(surface):0;
+            if(job==JOB_RESTORE){
+                if(texture){
+                    if(background)glDeleteTextures(1,&background);
+                    background=texture;
+                    background_width=surface->w;
+                    background_height=surface->h;
+                }else selected_name[0]=0;
+            }else if(texture && index>=0 && index<count &&
+                     commit_selection(catalog[index].name)){
+                if(background)glDeleteTextures(1,&background);
+                background=texture;
+                background_width=surface->w;
+                background_height=surface->h;
+                snprintf(selected_name,sizeof(selected_name),"%s",catalog[index].name);
+                snprintf(notice,sizeof(notice),"%s",
+                         TR("Оригінальні шпалери встановлено.","Original wallpaper applied."));
+            }else{
+                if(texture)glDeleteTextures(1,&texture);
+                remove(WALLPAPER_TEMP);
+                snprintf(notice,sizeof(notice),"%s (%s)",
+                         TR("Не вдалося застосувати шпалери","Could not apply wallpaper"),
+                         download_diagnostic[0]?download_diagnostic:
+                         TR("Формат або розмір не підтримується",
+                            "Unsupported image size or format"));
+            }
+            if(surface)SDL_FreeSurface(surface);
         }
     }
+    if(gallery_pending &&
+       wallpapers_browse(current_filter,current_query,api_page))
+        gallery_pending=0;
 }
 int wallpapers_count(void){return count;}
 const WallpaperItem *wallpapers_item(int i){return i>=0 && i<count?&catalog[i]:NULL;}
@@ -540,8 +568,16 @@ int wallpapers_busy(void){
 }
 int wallpapers_apply(int index){
     if(!mutex || index<0 || index>=count || wallpapers_busy())return 0;
-    /* Every catalog image, including large 4K/8K originals, is requested
-       as a Switch-sized image. The worker bounds both download and decode. */
+    const WallpaperItem *item=&catalog[index];
+    if(item->width<1 || item->height<1 ||
+       item->width>texture_limit || item->height>texture_limit ||
+       (unsigned long long)item->width*(unsigned)item->height>IMAGE_PIXELS_LIMIT ||
+       item->bytes==0 || item->bytes>IMAGE_BYTES_LIMIT){
+        snprintf(notice,sizeof(notice),"%s",
+                 TR("Оригінал завеликий для пам’яті Switch.",
+                    "Original exceeds Switch image memory limits."));
+        return 0;
+    }
     SDL_LockMutex(mutex);
     download_diagnostic[0]=0;
     image_started_at=SDL_GetTicks();
@@ -555,13 +591,15 @@ void wallpapers_reset(void){
     if(mutex){SDL_LockMutex(mutex);generation++;SDL_UnlockMutex(mutex);}
     SDL_AtomicSet(&image_phase,PHASE_IDLE);
     if(background)glDeleteTextures(1,&background);
-    background=0;selected_name[0]=0;
+    background=0;background_width=background_height=0;selected_name[0]=0;
     remove(WALLPAPER_NAME);remove(WALLPAPER_NAME_BACKUP);
     remove(WALLPAPER_FILE);remove(WALLPAPER_BACKUP);
     snprintf(notice,sizeof(notice),"%s",
              TR("Відновлено стандартний фон.","Default background restored."));
 }
 GLuint wallpapers_texture(void){return background;}
+int wallpapers_width(void){return background_width;}
+int wallpapers_height(void){return background_height;}
 const char *wallpapers_selected(void){return selected_name;}
 const char *wallpapers_message(void){return notice;}
 void wallpapers_shutdown(void){
@@ -574,8 +612,9 @@ void wallpapers_shutdown(void){
     if(condition)SDL_DestroyCond(condition);
     if(mutex)SDL_DestroyMutex(mutex);
     condition=NULL;mutex=NULL;thread=NULL;
+    if(pending_surface)SDL_FreeSurface(pending_surface);
+    pending_surface=NULL;
     if(background)glDeleteTextures(1,&background);
     background=0;
     remove(WALLPAPER_TEMP);
-    remove(WALLPAPER_SCALED);
 }

@@ -2340,8 +2340,8 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                     snprintf(description,sizeof(description),"%s",
                              *wallpapers_selected()?wallpapers_selected():
                              TR("Стандартний фон","Default background"));
-                    help=TR("Галерея Wallhaven із пошуком, фільтрами та свайпами.",
-                            "Browse Wallhaven wallpapers using search, filters and swipes.");
+                    help=TR("Галерея Wallhaven із пошуком і фільтрами.",
+                            "Browse Wallhaven wallpapers using search and filters.");
                     action=TR("Відкрити галерею","Open gallery");
                     break;
                 case APPEARANCE_DEFAULT:

@@ -839,7 +839,7 @@ static void box_alpha(Paint *p,int x,int y,int w,int h,float r,float g,float b,f
     int soft_panel=ui_theme_enabled && wallpapers_texture() &&
         p->tex==p->solid_tex && !ui_gradient_pass &&
         !ui_outline_width && w>=65 && h>=30;
-    if(soft_panel)a*=ui_light_theme?.77f:.67f;
+    if(soft_panel)a*=ui_light_theme?.43f:.67f;
     /* Opacity falls smoothly toward the sides and top; text, previews and
        posters remain fully opaque because they use their own textures. */
     glUniform1f(p->panel_gradient,soft_panel?1.f:0.f);
@@ -1751,11 +1751,14 @@ static int iptv_touched_card(int x,int y){
 }
 
 
-enum { WALL_COLS=4,WALL_PAGE=12,WALL_X=32,WALL_Y=165,WALL_W=290,WALL_STEP_X=308,WALL_STEP_Y=158 };
+/* Wallpaper grid: 3 columns by 2 rows, vertically paged. */
+enum { WALL_COLS=3,WALL_PAGE=6,WALL_X=32,WALL_Y=163,WALL_W=382,
+       WALL_CARD_H=214,WALL_STEP_X=417,WALL_STEP_Y=228,WALL_PAGE_SHIFT=456 };
 static int wall_selected,wall_filter,wall_focus,wall_count,wall_rows[WALLPAPERS_MAX];
 static char wall_query[96];
 enum { WALL_ANIM_MS=250 };
 static int wall_anim_from=-1,wall_anim_to=-1,wall_anim_dir=1,wall_api_dir;
+static int wall_api_column;
 static Uint32 wall_anim_started;
 static int wall_mouse_active,wall_mouse_x,wall_mouse_y;
 static const UiText wall_tags[]={{"Усі","All"},{"Темні","Dark"},{"Мінімалізм","Minimal"},{"Аніме","Anime"}};
@@ -1769,38 +1772,39 @@ static void wall_rebuild(void){
 static void wall_load_filter(int next){
     if(wallpapers_browse(next,wall_query,1)){
         wall_filter=next;wall_selected=0;wall_focus=1;
+        wall_anim_from=-1;wall_anim_to=-1;
     }
 }
-/* Animate a 12-item gallery page step. */
+/* Vertically scroll one six-item screen and preserve the selected column. */
 static void wall_start_animation(int from,int to,int direction){
-    wall_anim_from=from;
-    wall_anim_to=to;
-    wall_anim_dir=direction;
-    wall_anim_started=SDL_GetTicks();
-    ui_animating=1;
+    wall_anim_from=from;wall_anim_to=to;wall_anim_dir=direction;
+    wall_anim_started=SDL_GetTicks();ui_animating=1;
 }
 static void wall_move_page(int direction){
     if(wallpapers_busy() || !wall_count)return;
-    int start=wall_selected/WALL_PAGE*WALL_PAGE;
-    if(direction<0 && start==0 && wallpapers_current_page()>1){
-        if(wallpapers_browse(wall_filter,wall_query,wallpapers_current_page()-1))
-            wall_api_dir=direction;
-    }else if(direction>0 && start+WALL_PAGE>=wall_count &&
+    int first=wall_selected/WALL_PAGE*WALL_PAGE;
+    int column=wall_selected%WALL_COLS;
+    if(direction<0 && first==0 && wallpapers_current_page()>1){
+        if(wallpapers_browse(wall_filter,wall_query,wallpapers_current_page()-1)){
+            wall_api_dir=direction;wall_api_column=column;
+        }
+    }else if(direction>0 && first+WALL_PAGE>=wall_count &&
              wallpapers_current_page()<wallpapers_last_page()){
-        if(wallpapers_browse(wall_filter,wall_query,wallpapers_current_page()+1))
-            wall_api_dir=direction;
+        if(wallpapers_browse(wall_filter,wall_query,wallpapers_current_page()+1)){
+            wall_api_dir=direction;wall_api_column=column;
+        }
     }else{
-        int target=swipe_page_selection(wall_selected,wall_count,WALL_PAGE,direction);
-        int next=target/WALL_PAGE*WALL_PAGE;
-        if(next!=start)wall_start_animation(start,next,direction);
-        wall_selected=target;
+        int next=first+direction*WALL_PAGE;
+        if(next<0 || next>=wall_count)return;
+        wall_selected=next+column<wall_count?next+column:wall_count-1;
+        wall_start_animation(first,next,direction);
     }
 }
 static int wall_hit(int x,int y){
     if(x<WALL_X || y<WALL_Y)return -1;
     int col=(x-WALL_X)/WALL_STEP_X,row=(y-WALL_Y)/WALL_STEP_Y;
-    if(col>=WALL_COLS || row>=3 || (x-WALL_X)%WALL_STEP_X>=WALL_W ||
-       (y-WALL_Y)%WALL_STEP_Y>=137)return -1;
+    if(col>=WALL_COLS || row>=2 || (x-WALL_X)%WALL_STEP_X>=WALL_W ||
+       (y-WALL_Y)%WALL_STEP_Y>=WALL_CARD_H)return -1;
     int i=wall_selected/WALL_PAGE*WALL_PAGE+row*WALL_COLS+col;
     return i<wall_count?i:-1;
 }
@@ -2004,7 +2008,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         wallpaper_image_cover(p,wall,wallpapers_width(),wallpapers_height(),
                               0,0,1280,720,0);
         box_alpha(p,0,0,1280,720,.02f,.025f,.03f,
-                  ui_light_theme?.38f:.64f,0);
+                  ui_light_theme?.20f:.64f,0);
         ui_theme_enabled=theme;
     }
     static int previous_page=-1,previous_category=-1,previous_expanded=-1;

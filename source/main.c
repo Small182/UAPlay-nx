@@ -2969,6 +2969,7 @@ int main(int argc,char **argv) {
     int search_return_shelf=0,search_return_chosen=0;
     Page page=CATALOG;
     char query[192]={0},message[256]={0};
+    Uint32 wallpaper_reset_notice_started=0;
     catalog_loader_init();
     if(can_update)update_start(UPDATE_CHECK_JOB);
     n=load_category(category,query,movies,message,sizeof(message));
@@ -2998,6 +2999,15 @@ int main(int argc,char **argv) {
     Page update_return=CATALOG;
     while(running){
         Uint32 frame_started_at=SDL_GetTicks();
+        /* Only the reset confirmation is temporary. Never clear unrelated
+           errors or status messages on its two-second timer. */
+        if(wallpaper_reset_notice_started &&
+           frame_started_at-wallpaper_reset_notice_started>=2000u){
+            if(!strcmp(message,"Стандартний фон відновлено") ||
+               !strcmp(message,"Default background restored"))
+                message[0]=0;
+            wallpaper_reset_notice_started=0;
+        }
         int old_wall_revision=wallpapers_revision();
         wallpapers_poll();
         if(old_wall_revision!=wallpapers_revision()){
@@ -4006,6 +4016,7 @@ int main(int argc,char **argv) {
                         wallpapers_reset();
                         snprintf(message,sizeof(message),"%s",
                                  TR("Стандартний фон відновлено","Default background restored"));
+                        wallpaper_reset_notice_started=SDL_GetTicks();
                     }
                 }
                 continue;

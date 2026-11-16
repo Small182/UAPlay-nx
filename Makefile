@@ -21,7 +21,7 @@ LIBS := $(shell pkg-config --libs mpv sdl2 SDL2_ttf SDL2_image libcurl) -lGLESv2
 .PHONY: all clean
 all: $(TARGET).nro
 
-main.o: source/main.c source/catalog.h source/posters.h source/library.h source/playback.h source/downloads.h source/platform.h source/i18n.h source/subdl.h source/movy_stream.h source/update.h source/version.h source/iptv.h
+main.o: source/main.c source/wallpapers.h source/catalog.h source/posters.h source/library.h source/playback.h source/downloads.h source/platform.h source/i18n.h source/subdl.h source/movy_stream.h source/update.h source/version.h source/iptv.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 catalog.o: source/catalog.c source/catalog.h source/i18n.h source/platform.h source/subdl.h source/update.h source/version.h
@@ -51,7 +51,10 @@ update.o: source/update.c source/update.h source/version.h
 iptv.o: source/iptv.c source/iptv.h source/iptv_countries.inc source/platform.h source/i18n.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(TARGET).elf: main.o catalog.o posters.o library.o playback.o downloads.o i18n.o movy_stream.o update.o iptv.o
+wallpapers.o: source/wallpapers.c source/wallpapers.h source/i18n.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TARGET).elf: main.o catalog.o posters.o library.o playback.o downloads.o i18n.o movy_stream.o update.o iptv.o wallpapers.o
 	$(CC) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(TARGET).nacp: source/version.h
@@ -61,4 +64,4 @@ $(TARGET).nro: $(TARGET).elf $(TARGET).nacp
 	elf2nro $< $@ --nacp=$(TARGET).nacp --icon=icon.jpg --romfsdir=romfs
 
 clean:
-	rm -f main.o catalog.o posters.o library.o playback.o downloads.o i18n.o movy_stream.o update.o iptv.o $(TARGET).elf $(TARGET).nacp $(TARGET).nro
+	rm -f main.o catalog.o posters.o library.o playback.o downloads.o i18n.o movy_stream.o update.o iptv.o wallpapers.o $(TARGET).elf $(TARGET).nacp $(TARGET).nro

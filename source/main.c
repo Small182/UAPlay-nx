@@ -1840,7 +1840,14 @@ static void draw_wallpapers(Paint *p){
     box_alpha(p,1050,101,196,46,.13f,.17f,.20f,1.f,12);
     text_center_button(p,TR("Y: Стандартні","Y: Default"),1050,101,196,46,p->font_small,1,1,1);
     int budget=1,start=wall_selected/WALL_PAGE*WALL_PAGE;
-    paint_clip(p,WALL_X,WALL_Y,1216,455);
+    /* Focus ring extends 3px outside a card (selection_frame). Keep
+       extra breathing room around the whole 3x2 grid so the top row,
+       first/last columns and bottom row aren't clipped by GL scissor.
+       The six-pixel inset also works throughout vertical page animations. */
+    enum { WALL_CLIP_PAD=6, WALL_GRID_CLIP_W=1216, WALL_GRID_CLIP_H=455 };
+    paint_clip(p,WALL_X-WALL_CLIP_PAD,WALL_Y-WALL_CLIP_PAD,
+               WALL_GRID_CLIP_W+2*WALL_CLIP_PAD,
+               WALL_GRID_CLIP_H+2*WALL_CLIP_PAD);
     Uint32 elapsed=ui_now-wall_anim_started;
     if(wall_anim_to==start && elapsed<WALL_ANIM_MS){
         float t=elapsed/(float)WALL_ANIM_MS;

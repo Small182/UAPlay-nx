@@ -46,9 +46,16 @@ int downloads_get(unsigned id, Download *out);
 void downloads_remove(unsigned id);
 /* Whether something is queued or downloading. */
 int downloads_busy(void);
-/* Unfinished items (queued or downloading), with the running one's
-   progress (-1 when its size is unknown) and bytes so far. */
-int downloads_progress(int *permille, unsigned long long *bytes);
+typedef struct {
+    char name[160];   /* Filename without the temporary extension. */
+    int permille;     /* -1 if total size is unknown. */
+    unsigned long long bytes;
+    double bytes_per_second;
+    int seconds_left; /* -1 until an estimate is available. */
+} DownloadProgress;
+
+/* Copy a snapshot of the active download. Returns 0 when idle. */
+int downloads_progress(DownloadProgress *progress);
 /* Put a failed item back in the queue. */
 void downloads_retry(unsigned id);
 /* Address the player opens for a finished download. */

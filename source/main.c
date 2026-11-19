@@ -1730,6 +1730,37 @@ static int offline_catalog_status(const char *message){
            !strncmp(message,uk,strlen(uk)) || !strncmp(message,en,strlen(en));
 }
 
+static void draw_download_progress(Paint *p,const DownloadProgress *progress) {
+    char amount[32],speed[40],eta[64],metrics[160];
+    if(progress->permille>=0)
+        snprintf(amount,sizeof(amount),"%d%%",progress->permille/10);
+    else
+        snprintf(amount,sizeof(amount),TR("%llu МіБ","%llu MiB"),progress->bytes>>20);
+    double rate=progress->bytes_per_second;
+    if(rate>=1048576)
+        snprintf(speed,sizeof(speed),TR("%.1f МіБ/с","%.1f MiB/s"),rate/1048576);
+    else if(rate>0)
+        snprintf(speed,sizeof(speed),TR("%.0f КіБ/с","%.0f KiB/s"),rate/1024);
+    else
+        snprintf(speed,sizeof(speed),TR("— КіБ/с","— KiB/s"));
+    int left=progress->seconds_left;
+    if(left>=3600)
+        snprintf(eta,sizeof(eta),TR("≈ %d год %02d хв","≈ %d h %02d min"),left/3600,left/60%60);
+    else if(left>=60)
+        snprintf(eta,sizeof(eta),TR("≈ %d хв %02d с","≈ %d min %02d s"),left/60,left%60);
+    else if(left>=0)
+        snprintf(eta,sizeof(eta),TR("≈ %d с","≈ %d s"),left);
+    else
+        snprintf(eta,sizeof(eta),"—");
+    snprintf(metrics,sizeof(metrics),TR("%s · %s · Залишилось %s","%s · %s · Remaining %s"),
+             amount,speed,eta);
+    int stats_x=1244-measure(p,metrics,p->font_tiny);
+    char title[172];
+    snprintf(title,sizeof(title),"↓ %s",progress->name);
+    text_font(p,title,43,671,stats_x-55,p->font_tiny,1,1,1);
+    text_font(p,metrics,stats_x,671,1248-stats_x,p->font_tiny,1,1,1);
+}
+
 static void footer(Paint *p,const char *message) {
     box_alpha(p,0,UI_FOOTER_TOP,1280,720-UI_FOOTER_TOP,.047f,.057f,.070f,1.f,0);
     /* Controller legend: black keycaps with white glyphs in Basic White,
@@ -1741,9 +1772,13 @@ static void footer(Paint *p,const char *message) {
     box_alpha(p,UI_EDGE,UI_FOOTER_TOP,1216,2,
               ui_light_theme?.88f:.66f,ui_light_theme?.88f:.66f,
               ui_light_theme?.88f:.66f,.78f,0);
+    DownloadProgress download;
+    int downloading=downloads_progress(&download);
+    int footer_y=downloading?691:681;
+    if(downloading)draw_download_progress(p,&download);
     char position[30];
     snprintf(position,sizeof(position),"%d / %d",footer_position,footer_total);
-    text_font(p,footer_total && !(footer_page==CATALOG && expanded_catalog)?position:"UAPLAY",43,682,140,
+    text_font(p,footer_total && !(footer_page==CATALOG && expanded_catalog)?position:"UAPLAY",43,footer_y+1,140,
               p->font_small,ar,ag,ab);
     const char *keys[6],*labels[6];int count=0;
 #define HINT(k,l) do{keys[count]=k;labels[count]=l;count++;}while(0)
@@ -1807,21 +1842,11 @@ static void footer(Paint *p,const char *message) {
         if(badge_width<30)badge_width=30;
         int round=(!strcmp(keys[i],"A")||!strcmp(keys[i],"B")||
                    !strcmp(keys[i],"X")||!strcmp(keys[i],"Y"));
-        box_alpha(p,x,681,badge_width,28,keycap,keycap,keycap,1.f,round?14:5);
-        text_center(p,keys[i],x,682,badge_width,p->font_small,glyph,glyph,glyph);
-        text_font(p,labels[i],x+badge_width+8,681,widths[i]-badge_width-8,
+        box_alpha(p,x,footer_y,badge_width,28,keycap,keycap,keycap,1.f,round?14:5);
+        text_center(p,keys[i],x,footer_y+1,badge_width,p->font_small,glyph,glyph,glyph);
+        text_font(p,labels[i],x+badge_width+8,footer_y,widths[i]-badge_width-8,
                   p->font_small,ar,ag,ab);
         x+=widths[i]+12;
-    }
-    /* Background download indicator using the same footer typography. */
-    int download_percent=0; unsigned long long downloaded_bytes=0;
-    int pending_downloads=downloads_progress(&download_percent,&downloaded_bytes);
-    if(pending_downloads){
-        char progress_label[80];
-        if(download_percent>=0)
-            snprintf(progress_label,sizeof(progress_label),"↓ %d%% · %d",download_percent/10,pending_downloads);
-        else snprintf(progress_label,sizeof(progress_label),TR("↓ %u МБ · %d","↓ %u MB · %d"),(unsigned)(downloaded_bytes>>20),pending_downloads);
-        text_font(p,progress_label,250,682,175,p->font_small,ar,ag,ab);
     }
     /* Notification occupies its own safe zone, never the last selectable row. */
     if(message && *message && !offline_catalog_status(message) &&

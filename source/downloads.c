@@ -47,6 +47,10 @@ static SDL_cond *wake;
 static SDL_Thread *worker;
 static int quitting;
 static unsigned active_id;
+/* Protected by the download lock and reset for each new job. */
+static Uint32 speed_sample_at, speed_updated_at;
+static unsigned long long speed_sample_bytes;
+static double download_rate;
 /* Set to stop the running transfer: the item was removed, or the app quits. */
 static SDL_atomic_t abort_active;
 #ifndef __vita__
@@ -197,6 +201,19 @@ static int report(unsigned id, int permille, unsigned long long bytes) {
     SDL_LockMutex(lock);
     Download *d = find(id);
     if (d) {
+        Uint32 now = SDL_GetTicks();
+        Uint32 elapsed = now - speed_sample_at;
+        if (bytes < d->bytes) {
+            speed_sample_at = now;
+            speed_sample_bytes = bytes;
+            download_rate = 0;
+        } else if (bytes > speed_sample_bytes && elapsed >= 750) {
+            double sample = (bytes - speed_sample_bytes) * 1000.0 / elapsed;
+            download_rate = download_rate > 0 ? .65 * download_rate + .35 * sample : sample;
+            speed_sample_at = now;
+            speed_sample_bytes = bytes;
+            speed_updated_at = now;
+        }
         d->permille = permille < 0 ? -1 : permille > 1000 ? 1000 : permille;
         d->bytes = bytes;
     }
@@ -982,6 +999,9 @@ static int download_worker(void *opaque) {
         static Download job;
         job = *next;
         active_id = job.id;
+        speed_sample_at = speed_updated_at = SDL_GetTicks();
+        speed_sample_bytes = 0;
+        download_rate = 0;
         SDL_AtomicSet(&abort_active, 0);
         save_index();
         SDL_UnlockMutex(lock);
@@ -1119,21 +1139,30 @@ void downloads_remove(unsigned id) {
     SDL_UnlockMutex(lock);
 }
 
-int downloads_progress(int *permille, unsigned long long *bytes) {
-    *permille = 0;
-    *bytes = 0;
+int downloads_progress(DownloadProgress *progress) {
+    *progress = (DownloadProgress){ .seconds_left = -1 };
     if (!lock) return 0;
     SDL_LockMutex(lock);
-    int pending = 0;
-    for (int i = 0; i < item_count; i++) {
-        if (items[i].state == DOWNLOAD_ACTIVE) {
-            *permille = items[i].permille;
-            *bytes = items[i].bytes;
+    Download *d = active_id ? find(active_id) : NULL;
+    int active = d != NULL;
+    if (active) {
+        const char *name = d->file + (d->file[0] ? sizeof(DOWNLOADS_DIR "/") - 1 : 0);
+        const char *extension = strrchr(name, '.');
+        if (extension)
+            snprintf(progress->name, sizeof(progress->name), "%.*s", (int)(extension - name), name);
+        progress->permille = d->permille;
+        progress->bytes = d->bytes;
+
+        if (SDL_GetTicks() - speed_updated_at < 10000)
+            progress->bytes_per_second = download_rate;
+        if (progress->bytes_per_second > 0 && d->permille > 0 && d->permille < 1000) {
+            double remaining = (double)d->bytes * (1000 - d->permille) / d->permille;
+            double seconds = remaining / progress->bytes_per_second;
+            if (seconds < 864000) progress->seconds_left = (int)seconds + 1;
         }
-        if (items[i].state == DOWNLOAD_QUEUED || items[i].state == DOWNLOAD_ACTIVE) pending++;
     }
     SDL_UnlockMutex(lock);
-    return pending;
+    return active;
 }
 
 int downloads_busy(void) {

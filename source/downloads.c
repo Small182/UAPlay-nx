@@ -53,6 +53,7 @@ static unsigned long long speed_sample_bytes;
 static double download_rate;
 /* Set to stop the running transfer: the item was removed, or the app quits. */
 static SDL_atomic_t abort_active;
+static SDL_atomic_t user_paused;
 #ifndef __vita__
 /* The Vita network gate / profiler are console-specific. On Switch the
    download worker has its own gate. This protects video playback without
@@ -169,7 +170,7 @@ static void load_index(void) {
         Download *d = &items[i];
         if (d->id >= next_id) next_id = d->id + 1;
         /* Interrupted downloads start again from the beginning. */
-        if (d->state == DOWNLOAD_ACTIVE) {
+        if (d->state == DOWNLOAD_ACTIVE || (d->state == DOWNLOAD_PAUSED && d->file[0])) {
             char part[64];
             legacy_part_path(d->id, part, sizeof(part));
             remove(part);
@@ -177,7 +178,7 @@ static void load_index(void) {
             if (length > 5 && !strcmp(d->file + length - 5, ".part"))
                 remove(d->file);
             d->file[0] = 0;
-            d->state = DOWNLOAD_QUEUED;
+            if (d->state == DOWNLOAD_ACTIVE) d->state = DOWNLOAD_QUEUED;
             d->permille = 0;
             d->bytes = 0;
         }
@@ -301,6 +302,43 @@ static size_t on_header(char *data, size_t size, size_t count, void *opaque) {
     return bytes;
 }
 
+static int wait_for_resume(void) {
+    while (SDL_AtomicGet(&user_paused) && !SDL_AtomicGet(&abort_active))
+        SDL_Delay(50);
+    return !SDL_AtomicGet(&abort_active);
+}
+
+/* The worker owns the handle, including all pause and resume calls. */
+static CURLcode perform_direct(CURL *curl) {
+    CURLM *multi = curl_multi_init();
+    if (!multi) return CURLE_OUT_OF_MEMORY;
+    CURLcode result = CURLE_FAILED_INIT;
+    CURLMcode status = curl_multi_add_handle(multi, curl);
+    int running = 0, paused = 0;
+    if (status == CURLM_OK) status = curl_multi_perform(multi, &running);
+    while (status == CURLM_OK && running) {
+        if (SDL_AtomicGet(&abort_active)) {
+            result = CURLE_ABORTED_BY_CALLBACK;
+            break;
+        }
+        int pause = SDL_AtomicGet(&user_paused);
+        if (pause != paused) {
+            result = curl_easy_pause(curl, pause ? CURLPAUSE_RECV : CURLPAUSE_CONT);
+            if (result != CURLE_OK) break;
+            result = CURLE_FAILED_INIT;
+            paused = pause;
+        }
+        status = curl_multi_poll(multi, NULL, 0, 100, NULL);
+        if (status == CURLM_OK) status = curl_multi_perform(multi, &running);
+    }
+    int queued = 0;
+    CURLMsg *message = curl_multi_info_read(multi, &queued);
+    if (message && message->msg == CURLMSG_DONE) result = message->data.result;
+    curl_multi_remove_handle(multi, curl);
+    curl_multi_cleanup(multi);
+    return result;
+}
+
 /* One GET through the background gate. Slow Wi-Fi gets a stall limit
    rather than a total timeout, so large files can take as long as needed. */
 static int fetch(CURL *curl, const char *url, curl_write_callback write, void *sink,
@@ -334,10 +372,14 @@ static int fetch(CURL *curl, const char *url, curl_write_callback write, void *s
     net_tls_options(curl);
     transfer->status = 0;
     transfer->range_total = 0;
+    if (!wait_for_resume()) {
+        snprintf(error, error_size, TR("Скасовано","Canceled"));
+        return 0;
+    }
     Uint32 wait_started = SDL_GetTicks();
     if (!transfer->ungated) net_background_acquire(0);
     unsigned waited = SDL_GetTicks() - wait_started;
-    CURLcode result = curl_easy_perform(curl);
+    CURLcode result = transfer->direct ? perform_direct(curl) : curl_easy_perform(curl);
     if (!transfer->ungated) net_background_release(0);
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -965,7 +1007,7 @@ done:
         snprintf(error, error_size, TR("Не вдалося записати файл (немає місця?)","Could not write the file. Check available space."));
         ok = 0;
     }
-    if (!ok) { remove(part); return 0; }
+    if (!ok || !wait_for_resume()) { remove(part); return 0; }
     const char *ext = hls && !fragmented ? "ts" : "mp4";
     if (!finished_path(job, ext, file, file_size) || rename(part, file) != 0) {
         snprintf(error, error_size, TR("Не вдалося зберегти файл","Could not save the file"));
@@ -1003,6 +1045,7 @@ static int download_worker(void *opaque) {
         speed_sample_bytes = 0;
         download_rate = 0;
         SDL_AtomicSet(&abort_active, 0);
+        SDL_AtomicSet(&user_paused, 0);
         save_index();
         SDL_UnlockMutex(lock);
 
@@ -1019,8 +1062,9 @@ static int download_worker(void *opaque) {
         } else if (quitting) {
             item->file[0] = 0;
             if (ok) remove(file);
-            item->state = DOWNLOAD_QUEUED;
+            if (item->state != DOWNLOAD_PAUSED) item->state = DOWNLOAD_QUEUED;
             item->permille = 0;
+            item->bytes = 0;
         } else if (ok) {
             item->state = DOWNLOAD_DONE;
             item->permille = 1000;
@@ -1139,12 +1183,35 @@ void downloads_remove(unsigned id) {
     SDL_UnlockMutex(lock);
 }
 
+int downloads_toggle_pause(unsigned id) {
+    if (!lock) return -1;
+    SDL_LockMutex(lock);
+    Download *d = find(id);
+    int state = -1;
+    if (d && (d->state == DOWNLOAD_ACTIVE || d->state == DOWNLOAD_QUEUED ||
+              d->state == DOWNLOAD_PAUSED)) {
+        int running = id == active_id;
+        int pause = d->state != DOWNLOAD_PAUSED;
+        state = d->state = pause ? DOWNLOAD_PAUSED : running ? DOWNLOAD_ACTIVE : DOWNLOAD_QUEUED;
+        if (running) {
+            SDL_AtomicSet(&user_paused, pause);
+            speed_sample_at = speed_updated_at = SDL_GetTicks();
+            speed_sample_bytes = d->bytes;
+            download_rate = 0;
+        }
+        save_index();
+        SDL_CondSignal(wake);
+    }
+    SDL_UnlockMutex(lock);
+    return state;
+}
+
 int downloads_progress(DownloadProgress *progress) {
     *progress = (DownloadProgress){ .seconds_left = -1 };
     if (!lock) return 0;
     SDL_LockMutex(lock);
     Download *d = active_id ? find(active_id) : NULL;
-    int active = d != NULL;
+    int active = d && d->state == DOWNLOAD_ACTIVE;
     if (active) {
         progress->id = d->id;
         const char *name = d->file + (d->file[0] ? sizeof(DOWNLOADS_DIR "/") - 1 : 0);
@@ -1169,7 +1236,7 @@ int downloads_progress(DownloadProgress *progress) {
 int downloads_busy(void) {
     if (!lock) return 0;
     SDL_LockMutex(lock);
-    int busy = 0;
+    int busy = active_id != 0;
     for (int i = 0; i < item_count && !busy; i++)
         busy = items[i].state == DOWNLOAD_QUEUED || items[i].state == DOWNLOAD_ACTIVE;
     SDL_UnlockMutex(lock);

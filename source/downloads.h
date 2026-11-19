@@ -9,7 +9,7 @@
    plays. Direct files are saved as they are; HLS streams are fetched
    segment by segment (AES-128 decrypted on the Vita) into one file. */
 #define DOWNLOADS_MAX 64
-enum { DOWNLOAD_QUEUED, DOWNLOAD_ACTIVE, DOWNLOAD_DONE, DOWNLOAD_FAILED };
+enum { DOWNLOAD_QUEUED, DOWNLOAD_ACTIVE, DOWNLOAD_DONE, DOWNLOAD_FAILED, DOWNLOAD_PAUSED };
 
 typedef struct {
     unsigned id;
@@ -44,6 +44,8 @@ int downloads_list(DownloadInfo *out, int max);
 int downloads_get(unsigned id, Download *out);
 /* Delete the item and its file (a running download is cancelled). */
 void downloads_remove(unsigned id);
+/* Toggle the selected pending item. Returns its new state, or -1. */
+int downloads_toggle_pause(unsigned id);
 /* Whether something is queued or downloading. */
 int downloads_busy(void);
 typedef struct {

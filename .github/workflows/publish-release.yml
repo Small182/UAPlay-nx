@@ -1,6 +1,9 @@
 name: Publish UAPlay with NSP
 
 on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/publish-release.yml]
   workflow_dispatch:
     inputs:
       build_run_id:
@@ -24,7 +27,7 @@ jobs:
         id: build
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id || '44633014014' }}
         run: |
           set -eu
           case "$BUILD_RUN_ID" in
@@ -36,6 +39,7 @@ jobs:
                    .head_repository.full_name == .repository.full_name)
             | .head_sha | select(test("^[0-9a-f]{40}$"))
           ')"
+          test "$source_sha" = 'a16481b6e6a0782c7e0487122fc77355ec923ee7'
           printf 'sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
@@ -43,13 +47,15 @@ jobs:
       - name: Download NRO from the exact successful main build
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id || '44633014014' }}
         run: |
           set -eu
           mkdir -p dist
           gh run download "$BUILD_RUN_ID" --repo "$GITHUB_REPOSITORY" --name UAPlay-native --dir dist
           test -s dist/UAPlay.nro
-          test -s .release/UAPlay.nsp
+          gh release download UAPlay_0.5.5 --repo "$GITHUB_REPOSITORY" --pattern UAPlay.nsp --dir dist
+          printf '%s  %s\n' 'f563fc1bb019610e065128446d405e8e85c06cbeaad793936e6a031b2eac7b3c' dist/UAPlay.nsp | sha256sum -c -
+          cp dist/UAPlay.nsp .release/UAPlay.nsp
       - name: Verify NSP forwarder target
         run: |
           set -eu
@@ -67,6 +73,7 @@ jobs:
           test -f source/version.h || exit 0
           version="$(awk -F '"' '/^#define UAPLAY_VERSION / { print $2 }' source/version.h)"
           printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+          test "$version" = '0.5.6'
           tag="UAPlay_$version"
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "$tag is already published."

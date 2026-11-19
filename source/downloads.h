@@ -9,7 +9,7 @@
    plays. Direct files are saved as they are; HLS streams are fetched
    segment by segment (AES-128 decrypted on the Vita) into one file. */
 #define DOWNLOADS_MAX 64
-enum { DOWNLOAD_QUEUED, DOWNLOAD_ACTIVE, DOWNLOAD_DONE, DOWNLOAD_FAILED };
+enum { DOWNLOAD_QUEUED, DOWNLOAD_ACTIVE, DOWNLOAD_DONE, DOWNLOAD_FAILED, DOWNLOAD_PAUSED };
 
 typedef struct {
     unsigned id;
@@ -44,11 +44,21 @@ int downloads_list(DownloadInfo *out, int max);
 int downloads_get(unsigned id, Download *out);
 /* Delete the item and its file (a running download is cancelled). */
 void downloads_remove(unsigned id);
+/* Toggle the selected pending item. Returns its new state, or -1. */
+int downloads_toggle_pause(unsigned id);
 /* Whether something is queued or downloading. */
 int downloads_busy(void);
-/* Unfinished items (queued or downloading), with the running one's
-   progress (-1 when its size is unknown) and bytes so far. */
-int downloads_progress(int *permille, unsigned long long *bytes);
+typedef struct {
+    unsigned id;
+    char name[160];   /* Filename without the temporary extension. */
+    int permille;     /* -1 if total size is unknown. */
+    unsigned long long bytes;
+    double bytes_per_second;
+    int seconds_left; /* -1 until an estimate is available. */
+} DownloadProgress;
+
+/* Copy a snapshot of the active download. Returns 0 when idle. */
+int downloads_progress(DownloadProgress *progress);
 /* Put a failed item back in the queue. */
 void downloads_retry(unsigned id);
 /* Address the player opens for a finished download. */

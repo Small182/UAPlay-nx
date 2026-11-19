@@ -16,5 +16,7 @@
 #define UAPLAY_ROMFS "romfs:/"
 #endif
 #define UAPLAY_DATA_DIR UAPLAY_DATA_ROOT "/uaplay"
+/* Read only while migrating data from older Switch builds. */
+#define UAPLAY_PREVIOUS_DATA_DIR UAPLAY_DATA_ROOT "/uaflix"
 
 #endif

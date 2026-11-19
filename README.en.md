@@ -6,11 +6,11 @@ The application is written in C using **libnx, SDL2, and libmpv**. It is not a w
 
 [Українська](README.md) | **English**
 
-> **Current release: [UAPlay 0.5.5](https://github.com/Small182/UAPlay-nx/releases/tag/UAPlay_0.5.5).** This project is under active development, and video availability depends on third-party services. A successful build does not guarantee that every video will play on a Switch.
+> **Current release: [UAPlay 0.5.6](https://github.com/Small182/UAPlay-nx/releases/tag/UAPlay_0.5.6).** This project is under active development, and video availability depends on third-party services. A successful build does not guarantee that every video will play on a Switch.
 
 ## Download and installation
 
-Download both files from the [0.5.5 release](https://github.com/Small182/UAPlay-nx/releases/tag/UAPlay_0.5.5). Older versions are available on the [Releases page](https://github.com/Small182/UAPlay-nx/releases).
+Download both files from the [0.5.6 release](https://github.com/Small182/UAPlay-nx/releases/tag/UAPlay_0.5.6). Older versions are available on the [Releases page](https://github.com/Small182/UAPlay-nx/releases).
 
 | File | Purpose |
 |---|---|
@@ -94,9 +94,9 @@ Search and download start when selected in the menu. UAPlay reuses subtitle file
 
 ## User data and updates
 
-Favorites, watch history, and playback positions are stored **locally on the SD card**, not in the NRO. The main library file is `sdmc:/switch/uaflix/library.tsv` (a legacy path preserved for compatibility with earlier versions).
+Favorites, watch history, and playback positions are stored **locally on the SD card**, not in the NRO. The main library file is `sdmc:/switch/uaplay/library.tsv`.
 
-Replacing `UAPlay.nro` during an update **should not reset favorites**. Back up `sdmc:/switch/uaflix/` before formatting the SD card or reinstalling your system.
+Replacing `UAPlay.nro` during an update **should not reset favorites**. Back up `sdmc:/switch/uaplay/` before formatting the SD card or reinstalling your system.
 
 ## Building from source
 

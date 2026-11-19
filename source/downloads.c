@@ -4,6 +4,7 @@
 
 #include <SDL.h>
 #include <curl/curl.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +26,8 @@
 #define DIRECT_CHUNK (2ull * 1024ull * 1024ull)
 /* Weak Wi-Fi drops out for a moment: retry a segment with growing pauses. */
 #define SEGMENT_ATTEMPTS 6
+#define PARALLEL_REQUESTS 4
+#define PARALLEL_SEGMENT_LIMIT (8u * 1024u * 1024u)
 #define HLS_KEYS_MAX 16
 /* The player's HLS choice: a variant no taller than the screen. */
 #ifdef __vita__
@@ -44,8 +47,13 @@ static SDL_cond *wake;
 static SDL_Thread *worker;
 static int quitting;
 static unsigned active_id;
+/* Protected by the download lock and reset for each new job. */
+static Uint32 speed_sample_at, speed_updated_at;
+static unsigned long long speed_sample_bytes;
+static double download_rate;
 /* Set to stop the running transfer: the item was removed, or the app quits. */
 static SDL_atomic_t abort_active;
+static SDL_atomic_t user_paused;
 #ifndef __vita__
 /* The Vita network gate / profiler are console-specific. On Switch the
    download worker has its own gate. This protects video playback without
@@ -78,8 +86,60 @@ const char *stream_referer(const char *url) {
     return "";
 }
 
-static void part_path(unsigned id, char *out, size_t size) {
+static void legacy_part_path(unsigned id, char *out, size_t size) {
     snprintf(out, size, DOWNLOADS_DIR "/%u.part", id);
+}
+
+static int finished_path(const Download *job, const char *ext, char *out, size_t size) {
+    char title[sizeof(job->movie.title) + 2];
+    const char *source = job->movie.original[0] ? job->movie.original : job->movie.title;
+    size_t length = 0;
+    for (; length < sizeof(job->movie.title) && source[length]; length++) {
+        unsigned char c = (unsigned char)source[length];
+        title[length] = (c < 32 || c == 127 || strchr("<>:\"/\\|?*", c)) ? '_' : (char)c;
+    }
+    title[length] = '\0';
+
+    /* DOS device names remain reserved even with a file extension. */
+    size_t stem = strcspn(title, ".");
+    while (stem && title[stem - 1] == ' ') stem--;
+    if ((stem == 3 && (!strncasecmp(title, "CON", 3) || !strncasecmp(title, "PRN", 3) ||
+                       !strncasecmp(title, "AUX", 3) || !strncasecmp(title, "NUL", 3))) ||
+        (stem == 4 && (!strncasecmp(title, "COM", 3) || !strncasecmp(title, "LPT", 3)) &&
+         title[3] >= '0' && title[3] <= '9')) {
+        memmove(title + 1, title, length + 1);
+        title[0] = '_';
+        length++;
+    }
+
+    char episode[32] = "";
+    if (job->movie.series && job->episode > 0)
+        snprintf(episode, sizeof(episode), " - S%02dE%02d", job->season, job->episode);
+
+    for (unsigned copy = 1; copy != 0; copy++) {
+        char suffix[24] = "";
+        if (copy > 1) snprintf(suffix, sizeof(suffix), " (%u)", copy);
+
+        /* Leave space for the extension and keep the existing index layout. */
+        size_t overhead = sizeof(DOWNLOADS_DIR "/") + strlen(episode) +
+                          strlen(suffix) + 1 + strlen(ext);
+        if (size <= overhead) return 0;
+        size_t end = length < size - overhead ? length : size - overhead;
+        while (end && ((unsigned char)title[end] & 0xc0) == 0x80) end--;
+        while (end && (title[end - 1] == '.' || title[end - 1] == ' ')) end--;
+        const char *name = title;
+        if (!end) {
+            name = "UAPlay";
+            end = strlen(name);
+            if (end > size - overhead) return 0;
+        }
+
+        snprintf(out, size, DOWNLOADS_DIR "/%.*s%s%s.%s",
+                 (int)end, name, episode, suffix, ext);
+        struct stat info;
+        if (stat(out, &info) != 0) return errno == ENOENT;
+    }
+    return 0;
 }
 
 /* ---------- index ---------- */
@@ -108,13 +168,25 @@ static void load_index(void) {
     fclose(file);
     for (int i = 0; i < item_count; i++) {
         Download *d = &items[i];
+        const size_t old_prefix = sizeof(UAPLAY_PREVIOUS_DATA_DIR "/downloads/") - 1;
+        if (!strncmp(d->file, UAPLAY_PREVIOUS_DATA_DIR "/downloads/", old_prefix)) {
+            /* A migrated index can contain absolute paths from the previous directory. */
+            char path[sizeof(d->file)];
+            int length = snprintf(path, sizeof(path), DOWNLOADS_DIR "/%s", d->file + old_prefix);
+            if (length >= 0 && (size_t)length < sizeof(path))
+                memcpy(d->file, path, (size_t)length + 1);
+        }
         if (d->id >= next_id) next_id = d->id + 1;
         /* Interrupted downloads start again from the beginning. */
-        if (d->state == DOWNLOAD_ACTIVE) {
+        if (d->state == DOWNLOAD_ACTIVE || (d->state == DOWNLOAD_PAUSED && d->file[0])) {
             char part[64];
-            part_path(d->id, part, sizeof(part));
+            legacy_part_path(d->id, part, sizeof(part));
             remove(part);
-            d->state = DOWNLOAD_QUEUED;
+            size_t length = strlen(d->file);
+            if (length > 5 && !strcmp(d->file + length - 5, ".part"))
+                remove(d->file);
+            d->file[0] = 0;
+            if (d->state == DOWNLOAD_ACTIVE) d->state = DOWNLOAD_QUEUED;
             d->permille = 0;
             d->bytes = 0;
         }
@@ -138,6 +210,19 @@ static int report(unsigned id, int permille, unsigned long long bytes) {
     SDL_LockMutex(lock);
     Download *d = find(id);
     if (d) {
+        Uint32 now = SDL_GetTicks();
+        Uint32 elapsed = now - speed_sample_at;
+        if (bytes < d->bytes) {
+            speed_sample_at = now;
+            speed_sample_bytes = bytes;
+            download_rate = 0;
+        } else if (bytes > speed_sample_bytes && elapsed >= 750) {
+            double sample = (bytes - speed_sample_bytes) * 1000.0 / elapsed;
+            download_rate = download_rate > 0 ? .65 * download_rate + .35 * sample : sample;
+            speed_sample_at = now;
+            speed_sample_bytes = bytes;
+            speed_updated_at = now;
+        }
         d->permille = permille < 0 ? -1 : permille > 1000 ? 1000 : permille;
         d->bytes = bytes;
     }
@@ -167,6 +252,7 @@ typedef struct {
     int ungated;              /* skip the network gate (one long transfer) */
     long status;              /* HTTP status of the answer */
     unsigned long long range_total;  /* full size from Content-Range */
+    unsigned long long range_first, range_last;
 } Transfer;
 
 static size_t to_buffer(char *data, size_t size, size_t count, void *opaque) {
@@ -212,11 +298,53 @@ static int on_progress(void *opaque, curl_off_t total, curl_off_t now,
 static size_t on_header(char *data, size_t size, size_t count, void *opaque) {
     Transfer *t = opaque;
     size_t bytes = size * count;
-    if (bytes > 14 && !strncasecmp(data, "Content-Range:", 14)) {
-        const char *slash = memchr(data, '/', bytes);
-        if (slash) t->range_total = strtoull(slash + 1, NULL, 10);
+    if (bytes >= 5 && !memcmp(data, "HTTP/", 5)) t->range_total = 0;
+    if (bytes > 14 && bytes < 128 && !strncasecmp(data, "Content-Range:", 14)) {
+        char header[128];
+        memcpy(header, data, bytes);
+        header[bytes] = 0;
+        if (sscanf(header + 14, " bytes %llu-%llu/%llu",
+                   &t->range_first, &t->range_last, &t->range_total) != 3)
+            t->range_total = 0;
     }
     return bytes;
+}
+
+static int wait_for_resume(void) {
+    while (SDL_AtomicGet(&user_paused) && !SDL_AtomicGet(&abort_active))
+        SDL_Delay(50);
+    return !SDL_AtomicGet(&abort_active);
+}
+
+/* The worker owns the handle, including all pause and resume calls. */
+static CURLcode perform_direct(CURL *curl) {
+    CURLM *multi = curl_multi_init();
+    if (!multi) return CURLE_OUT_OF_MEMORY;
+    CURLcode result = CURLE_FAILED_INIT;
+    CURLMcode status = curl_multi_add_handle(multi, curl);
+    int running = 0, paused = 0;
+    if (status == CURLM_OK) status = curl_multi_perform(multi, &running);
+    while (status == CURLM_OK && running) {
+        if (SDL_AtomicGet(&abort_active)) {
+            result = CURLE_ABORTED_BY_CALLBACK;
+            break;
+        }
+        int pause = SDL_AtomicGet(&user_paused);
+        if (pause != paused) {
+            result = curl_easy_pause(curl, pause ? CURLPAUSE_RECV : CURLPAUSE_CONT);
+            if (result != CURLE_OK) break;
+            result = CURLE_FAILED_INIT;
+            paused = pause;
+        }
+        status = curl_multi_poll(multi, NULL, 0, 100, NULL);
+        if (status == CURLM_OK) status = curl_multi_perform(multi, &running);
+    }
+    int queued = 0;
+    CURLMsg *message = curl_multi_info_read(multi, &queued);
+    if (message && message->msg == CURLMSG_DONE) result = message->data.result;
+    curl_multi_remove_handle(multi, curl);
+    curl_multi_cleanup(multi);
+    return result;
 }
 
 /* One GET through the background gate. Slow Wi-Fi gets a stall limit
@@ -252,10 +380,14 @@ static int fetch(CURL *curl, const char *url, curl_write_callback write, void *s
     net_tls_options(curl);
     transfer->status = 0;
     transfer->range_total = 0;
+    if (!wait_for_resume()) {
+        snprintf(error, error_size, TR("Скасовано","Canceled"));
+        return 0;
+    }
     Uint32 wait_started = SDL_GetTicks();
     if (!transfer->ungated) net_background_acquire(0);
     unsigned waited = SDL_GetTicks() - wait_started;
-    CURLcode result = curl_easy_perform(curl);
+    CURLcode result = transfer->direct ? perform_direct(curl) : curl_easy_perform(curl);
     if (!transfer->ungated) net_background_release(0);
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -280,6 +412,77 @@ static int fetch(CURL *curl, const char *url, curl_write_callback write, void *s
     }
     return 1;
 }
+
+#ifndef __vita__
+typedef struct {
+    CURL *curl;
+    const char *url;
+    unsigned id;
+    Buffer data;
+    unsigned long long first, last, total;  /* total is zero for HLS */
+    int ok;
+} DownloadRequest;
+
+static int fetch_request(void *opaque) {
+    DownloadRequest *r = opaque;
+    char range[64], error[96];
+    Transfer transfer = { .id = r->id };
+    if (r->total) {
+        snprintf(range, sizeof(range), "%llu-%llu", r->first, r->last);
+        transfer.range = range;
+    }
+    r->ok = !SDL_AtomicGet(&abort_active) &&
+            fetch(r->curl, r->url, to_buffer, &r->data, &transfer, NULL, 0, error, sizeof(error));
+    if (r->total)
+        r->ok = r->ok && transfer.status == 206 && transfer.range_total == r->total &&
+                transfer.range_first == r->first && transfer.range_last == r->last &&
+                r->data.used == r->last - r->first + 1;
+    else
+        r->ok = r->ok && transfer.status == 200 && r->data.used != 0;
+    return 0;
+}
+
+/* The worker owns output and joins all transfers before writing any bytes. */
+static int fetch_batch(DownloadRequest *requests, int count, CURL **extra) {
+    SDL_Thread *threads[PARALLEL_REQUESTS - 1] = { 0 };
+    for (int i = 1; i < count; i++) {
+        if (!extra[i - 1]) extra[i - 1] = curl_easy_init();
+        if (extra[i - 1]) {
+            requests[i].curl = extra[i - 1];
+            threads[i - 1] = SDL_CreateThread(fetch_request, "download", &requests[i]);
+        }
+    }
+    fetch_request(&requests[0]);
+    int ok = requests[0].ok;
+    for (int i = 1; i < count; i++) {
+        if (threads[i - 1]) SDL_WaitThread(threads[i - 1], NULL);
+        ok = ok && requests[i].ok;
+    }
+    return ok;
+}
+
+static int write_batch(const DownloadRequest *requests, int count, FILE *out,
+                       unsigned long long *written, char *error, size_t error_size) {
+    for (int i = 0; i < count; i++) {
+        const Buffer *data = &requests[i].data;
+        if (fwrite(data->data, 1, data->used, out) != data->used) {
+            snprintf(error, error_size, TR("Не вдалося записати файл (немає місця?)","Could not write the file. Check available space."));
+            return 0;
+        }
+        *written += data->used;
+    }
+    return 1;
+}
+
+static void clear_batch(DownloadRequest *requests, int count) {
+    for (int i = 0; i < count; i++) free(requests[i].data.data);
+}
+
+static void close_batch_handles(CURL **extra) {
+    for (int i = 0; i < PARALLEL_REQUESTS - 1; i++)
+        if (extra[i]) curl_easy_cleanup(extra[i]);
+}
+#endif
 
 /* ---------- HLS ---------- */
 
@@ -458,6 +661,10 @@ static int download_hls(CURL *curl, unsigned id, char *playlist, const char *bas
     int key_count = 0, current_key = -1, segment_count = 0, capacity = 0, ok = 0;
     HlsSegment *segments = NULL;
     long long sequence = 0;
+#ifndef __vita__
+    CURL *extra[PARALLEL_REQUESTS - 1] = { 0 };
+    int parallel = 1;
+#endif
     char *cursor = playlist, *line, url[2048];
     while ((line = next_line(&cursor))) {
         if (!strncmp(line, "#EXT-X-MEDIA-SEQUENCE:", 22)) sequence = atoll(line + 22);
@@ -519,6 +726,35 @@ static int download_hls(CURL *curl, unsigned id, char *playlist, const char *bas
     Buffer data = { 0 };
     data.limit = SEGMENT_LIMIT;
     for (int i = 0; i < segment_count; i++) {
+#ifndef __vita__
+        if (parallel && segment_count - i >= 2) {
+            int count = segment_count - i;
+            if (count > PARALLEL_REQUESTS) count = PARALLEL_REQUESTS;
+            DownloadRequest requests[PARALLEL_REQUESTS] = { 0 };
+            requests[0].curl = curl;
+            for (int j = 0; j < count; j++) {
+                requests[j].id = id;
+                requests[j].url = segments[i + j].url;
+                requests[j].data.limit = PARALLEL_SEGMENT_LIMIT;
+            }
+            parallel = fetch_batch(requests, count, extra);
+            if (parallel && !write_batch(requests, count, out, written, error, error_size)) {
+                clear_batch(requests, count);
+                free(data.data);
+                goto done;
+            }
+            if (parallel) i += count - 1;
+            clear_batch(requests, count);
+            if (parallel) {
+                if (!report(id, (i + 1) * 1000 / segment_count, *written)) {
+                    snprintf(error, error_size, TR("Скасовано","Canceled"));
+                    free(data.data);
+                    goto done;
+                }
+                continue;
+            }
+        }
+#endif
         HlsSegment *s = &segments[i];
         if (s->key >= 0 && !keys[s->key].key_loaded) {
             Buffer key_data = { 0 };
@@ -581,6 +817,9 @@ static int download_hls(CURL *curl, unsigned id, char *playlist, const char *bas
     free(data.data);
     ok = 1;
 done:
+#ifndef __vita__
+    close_batch_handles(extra);
+#endif
     for (int i = 0; i < segment_count; i++) free(segments[i].url);
     free(segments);
     return ok;
@@ -601,8 +840,12 @@ static char *read_small_file(const char *path) {
 
 static int download_one(CURL *curl, const Download *job, char *file, size_t file_size,
                         char *error, size_t error_size) {
-    char part[64], effective[2048], url[2048];
-    part_path(job->id, part, sizeof(part));
+    char effective[2048], url[2048];
+    const char *part = job->file;
+    if (!*part) {
+        snprintf(error, error_size, TR("Не вдалося вибрати ім'я файлу","Could not choose a filename"));
+        return 0;
+    }
     snprintf(url, sizeof(url), "%s", job->url);
     FILE *out = fopen(part, "wb");
     if (!out) {
@@ -615,12 +858,16 @@ static int download_one(CURL *curl, const Download *job, char *file, size_t file
     int hls = movy_stream_url(url) || strstr(url, "m3u8") || strstr(url, ".m3u");
     unsigned long long written = 0;
     char *playlist = NULL;
+#ifndef __vita__
+    CURL *extra[PARALLEL_REQUESTS - 1] = { 0 };
+    int parallel = 1;
+#endif
     if (!hls) {
         /* Ask for the first byte: a 206 answer means the server takes
            ranges and tells the size; otherwise fetch the file in one go. */
         Buffer chunk = { 0 };
         chunk.limit = DIRECT_CHUNK + 64 * 1024;
-        Transfer probe = { job->id, 0, 0, 0, "0-0", 0, 0, 0 };
+        Transfer probe = { .id = job->id, .range = "0-0" };
         int probed = fetch(curl, url, to_buffer, &chunk, &probe, effective, sizeof(effective),
                            error, error_size);
         unsigned long long total = probe.status == 206 ? probe.range_total : 0;
@@ -628,6 +875,39 @@ static int download_one(CURL *curl, const Download *job, char *file, size_t file
         if (total) snprintf(url, sizeof(url), "%s", effective);
         FileSink sink = { out, 0, 0 };
         while (total && sink.written < total) {
+#ifndef __vita__
+            if (parallel && total - sink.written > DIRECT_CHUNK) {
+                DownloadRequest requests[PARALLEL_REQUESTS] = { 0 };
+                int count = 0;
+                unsigned long long offset = sink.written;
+                requests[0].curl = curl;
+                while (count < PARALLEL_REQUESTS && offset < total) {
+                    DownloadRequest *request = &requests[count++];
+                    request->url = url;
+                    request->id = job->id;
+                    request->first = offset;
+                    offset += total - offset < DIRECT_CHUNK ? total - offset : DIRECT_CHUNK;
+                    request->last = offset - 1;
+                    request->total = total;
+                    request->data.limit = DIRECT_CHUNK + 1;
+                }
+                parallel = fetch_batch(requests, count, extra);
+                if (parallel && !write_batch(requests, count, out, &sink.written, error, error_size)) {
+                    clear_batch(requests, count);
+                    free(chunk.data);
+                    goto done;
+                }
+                clear_batch(requests, count);
+                if (parallel) {
+                    if (!report(job->id, (int)(sink.written * 1000 / total), sink.written)) {
+                        snprintf(error, error_size, TR("Скасовано","Canceled"));
+                        free(chunk.data);
+                        goto done;
+                    }
+                    continue;
+                }
+            }
+#endif
             char range[64];
             unsigned long long last = sink.written + DIRECT_CHUNK - 1;
             if (last >= total) last = total - 1;
@@ -638,9 +918,11 @@ static int download_one(CURL *curl, const Download *job, char *file, size_t file
                 if (attempt) SDL_Delay(1000u * (unsigned)attempt);
                 chunk.used = 0;
                 error[0] = 0;
-                Transfer t = { job->id, 0, 0, 0, range, 0, 0, 0 };
+                Transfer t = { .id = job->id, .range = range };
                 fetched = fetch(curl, url, to_buffer, &chunk, &t, NULL, 0, error, error_size) &&
-                          t.status == 206 && chunk.used;
+                          t.status == 206 && t.range_total == total &&
+                          t.range_first == sink.written && t.range_last == last &&
+                          chunk.used == last - sink.written + 1;
                 if (!fetched && !error[0]) snprintf(error, error_size, TR("Сервер перервав передачу","The server interrupted the transfer"));
             }
             if (!fetched) {
@@ -664,7 +946,7 @@ static int download_one(CURL *curl, const Download *job, char *file, size_t file
         if (!total) {
             /* No ranges: one long transfer, outside the gate so it does
                not hold every other request back until it ends. */
-            Transfer t = { job->id, 1, 0, 0, NULL, 1, 0, 0 };
+            Transfer t = { .id = job->id, .direct = 1, .ungated = 1 };
             error[0] = 0;
             if (!fetch(curl, url, to_file, &sink, &t, effective, sizeof(effective), error,
                        error_size)) goto done;
@@ -725,16 +1007,17 @@ static int download_one(CURL *curl, const Download *job, char *file, size_t file
     }
     ok = 1;
 done:
+#ifndef __vita__
+    close_batch_handles(extra);
+#endif
     free(playlist);
     if (out && fclose(out) != 0 && ok) {
         snprintf(error, error_size, TR("Не вдалося записати файл (немає місця?)","Could not write the file. Check available space."));
         ok = 0;
     }
-    if (!ok) { remove(part); return 0; }
-    snprintf(file, file_size, DOWNLOADS_DIR "/%u.%s", job->id,
-             hls && !fragmented ? "ts" : "mp4");
-    remove(file);
-    if (rename(part, file) != 0) {
+    if (!ok || !wait_for_resume()) { remove(part); return 0; }
+    const char *ext = hls && !fragmented ? "ts" : "mp4";
+    if (!finished_path(job, ext, file, file_size) || rename(part, file) != 0) {
         snprintf(error, error_size, TR("Не вдалося зберегти файл","Could not save the file"));
         remove(part);
         return 0;
@@ -760,10 +1043,17 @@ static int download_worker(void *opaque) {
         next->permille = 0;
         next->bytes = 0;
         next->error[0] = 0;
+        next->file[0] = 0;
+        if (!finished_path(next, "part", next->file, sizeof(next->file)))
+            next->file[0] = 0;
         static Download job;
         job = *next;
         active_id = job.id;
+        speed_sample_at = speed_updated_at = SDL_GetTicks();
+        speed_sample_bytes = 0;
+        download_rate = 0;
         SDL_AtomicSet(&abort_active, 0);
+        SDL_AtomicSet(&user_paused, 0);
         save_index();
         SDL_UnlockMutex(lock);
 
@@ -778,14 +1068,17 @@ static int download_worker(void *opaque) {
             /* Removed while downloading. */
             if (ok) remove(file);
         } else if (quitting) {
+            item->file[0] = 0;
             if (ok) remove(file);
-            item->state = DOWNLOAD_QUEUED;
+            if (item->state != DOWNLOAD_PAUSED) item->state = DOWNLOAD_QUEUED;
             item->permille = 0;
+            item->bytes = 0;
         } else if (ok) {
             item->state = DOWNLOAD_DONE;
             item->permille = 1000;
             snprintf(item->file, sizeof(item->file), "%s", file);
         } else {
+            item->file[0] = 0;
             item->state = DOWNLOAD_FAILED;
             snprintf(item->error, sizeof(item->error), "%s", error);
         }
@@ -898,27 +1191,60 @@ void downloads_remove(unsigned id) {
     SDL_UnlockMutex(lock);
 }
 
-int downloads_progress(int *permille, unsigned long long *bytes) {
-    *permille = 0;
-    *bytes = 0;
-    if (!lock) return 0;
+int downloads_toggle_pause(unsigned id) {
+    if (!lock) return -1;
     SDL_LockMutex(lock);
-    int pending = 0;
-    for (int i = 0; i < item_count; i++) {
-        if (items[i].state == DOWNLOAD_ACTIVE) {
-            *permille = items[i].permille;
-            *bytes = items[i].bytes;
+    Download *d = find(id);
+    int state = -1;
+    if (d && (d->state == DOWNLOAD_ACTIVE || d->state == DOWNLOAD_QUEUED ||
+              d->state == DOWNLOAD_PAUSED)) {
+        int running = id == active_id;
+        int pause = d->state != DOWNLOAD_PAUSED;
+        state = d->state = pause ? DOWNLOAD_PAUSED : running ? DOWNLOAD_ACTIVE : DOWNLOAD_QUEUED;
+        if (running) {
+            SDL_AtomicSet(&user_paused, pause);
+            speed_sample_at = speed_updated_at = SDL_GetTicks();
+            speed_sample_bytes = d->bytes;
+            download_rate = 0;
         }
-        if (items[i].state == DOWNLOAD_QUEUED || items[i].state == DOWNLOAD_ACTIVE) pending++;
+        save_index();
+        SDL_CondSignal(wake);
     }
     SDL_UnlockMutex(lock);
-    return pending;
+    return state;
+}
+
+int downloads_progress(DownloadProgress *progress) {
+    *progress = (DownloadProgress){ .seconds_left = -1 };
+    if (!lock) return 0;
+    SDL_LockMutex(lock);
+    Download *d = active_id ? find(active_id) : NULL;
+    int active = d && d->state == DOWNLOAD_ACTIVE;
+    if (active) {
+        progress->id = d->id;
+        const char *name = d->file + (d->file[0] ? sizeof(DOWNLOADS_DIR "/") - 1 : 0);
+        const char *extension = strrchr(name, '.');
+        if (extension)
+            snprintf(progress->name, sizeof(progress->name), "%.*s", (int)(extension - name), name);
+        progress->permille = d->permille;
+        progress->bytes = d->bytes;
+
+        if (SDL_GetTicks() - speed_updated_at < 10000)
+            progress->bytes_per_second = download_rate;
+        if (progress->bytes_per_second > 0 && d->permille > 0 && d->permille < 1000) {
+            double remaining = (double)d->bytes * (1000 - d->permille) / d->permille;
+            double seconds = remaining / progress->bytes_per_second;
+            if (seconds < 864000) progress->seconds_left = (int)seconds + 1;
+        }
+    }
+    SDL_UnlockMutex(lock);
+    return active;
 }
 
 int downloads_busy(void) {
     if (!lock) return 0;
     SDL_LockMutex(lock);
-    int busy = 0;
+    int busy = active_id != 0;
     for (int i = 0; i < item_count && !busy; i++)
         busy = items[i].state == DOWNLOAD_QUEUED || items[i].state == DOWNLOAD_ACTIVE;
     SDL_UnlockMutex(lock);

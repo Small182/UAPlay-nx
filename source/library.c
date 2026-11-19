@@ -1,17 +1,68 @@
 #include "library.h"
+#include "platform.h"
+
+#include <dirent.h>
+#include <errno.h>
+#include <unistd.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
-#define LIBRARY_DIR "sdmc:/switch/uaplay"
+#define LIBRARY_DIR UAPLAY_DATA_DIR
 #define LIBRARY_FILE LIBRARY_DIR "/library.tsv"
 #define LIBRARY_TMP LIBRARY_DIR "/library.tmp"
 #define LIBRARY_BACKUP LIBRARY_DIR "/library.bak"
-/* Older UAFlix/UAPlay builds used this folder. Import once, retaining the
-   original file as a safety copy so an NRO update never loses favorites. */
-#define LEGACY_LIBRARY_FILE "sdmc:/switch/uaflix/library.tsv"
+static void migrate_storage(void) {
+#ifndef __vita__
+    struct stat info;
+    if (stat(UAPLAY_PREVIOUS_DATA_DIR, &info) != 0 || !S_ISDIR(info.st_mode)) return;
+    if (stat(LIBRARY_DIR, &info) != 0 && errno == ENOENT &&
+        rename(UAPLAY_PREVIOUS_DATA_DIR, LIBRARY_DIR) == 0) return;
+
+    char backup[sizeof(LIBRARY_DIR) + 64] = "";
+    for (;;) {
+        DIR *directory = opendir(UAPLAY_PREVIOUS_DATA_DIR);
+        if (!directory) return;
+        struct dirent *entry;
+        char name[256] = "";
+        while ((entry = readdir(directory))) {
+            if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+            if (strlen(entry->d_name) >= sizeof(name)) {
+                closedir(directory);
+                return;
+            }
+            strcpy(name, entry->d_name);
+            break;
+        }
+        closedir(directory);
+        if (!name[0]) {
+            rmdir(UAPLAY_PREVIOUS_DATA_DIR);
+            return;
+        }
+
+        char source[sizeof(UAPLAY_PREVIOUS_DATA_DIR) + sizeof(name)];
+        char destination[sizeof(backup) + sizeof(name)];
+        snprintf(source, sizeof(source), "%s/%s", UAPLAY_PREVIOUS_DATA_DIR, name);
+        snprintf(destination, sizeof(destination), "%s/%s", LIBRARY_DIR, name);
+        if (stat(destination, &info) == 0) {
+            if (!backup[0]) {
+                unsigned number = 1;
+                for (;;) {
+                    snprintf(backup, sizeof(backup), LIBRARY_DIR "/migrated-data-%u", number++);
+                    if (mkdir(backup, 0777) == 0) break;
+                    if (errno != EEXIST || number == 0) return;
+                }
+            }
+            snprintf(destination, sizeof(destination), "%s/%s", backup, name);
+        } else if (errno != ENOENT) return;
+
+        /* Moving whole subdirectories keeps associated files together. */
+        if (rename(source, destination) != 0) return;
+    }
+#endif
+}
 #define MAX_LIBRARY_ITEMS 1024
 
 typedef struct {
@@ -53,7 +104,7 @@ static void clean_field(char *out, size_t capacity, const char *in) {
 }
 
 static void library_save(void) {
-    mkdir("sdmc:/switch",0777);
+    mkdir(UAPLAY_DATA_ROOT,0777);
     mkdir(LIBRARY_DIR,0777);
     FILE *file=fopen(LIBRARY_TMP,"wb");
     if (!file) return;
@@ -91,11 +142,10 @@ static void library_save(void) {
 }
 
 void library_init(void) {
+    migrate_storage();
     total=0;
     FILE *file=fopen(LIBRARY_FILE,"rb");
-    int legacy=0;
     if(!file)file=fopen(LIBRARY_BACKUP,"rb");
-    if(!file){file=fopen(LEGACY_LIBRARY_FILE,"rb");legacy=file!=NULL;}
     if (!file) return;
     char line[2400];
     while (total<MAX_LIBRARY_ITEMS && fgets(line,sizeof(line),file)) {
@@ -148,7 +198,6 @@ void library_init(void) {
         entry->movie.poster[strcspn(entry->movie.poster,"\r\n")]=0;
     }
     fclose(file);
-    if(legacy && total)library_save();
 }
 
 int library_favorite(const Movie *movie) {

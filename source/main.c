@@ -1596,8 +1596,8 @@ static void screen_header(Paint *p,const char *name,const char *context){
     if(context && *context && strcmp(context,"UAPlay"))
         text_tiny(p,context,979,38,264);
 }
-static void list_row(Paint *p,const char *title,int y,int selected,
-                     const char *detail){
+static void list_row_with_detail_width(Paint *p,const char *title,int y,int selected,
+                                       const char *detail,int detail_width){
     box_alpha(p,UI_EDGE,y,1216,UI_ROW_HEIGHT,
               selected?.20f:.085f,selected?.30f:.105f,
               selected?.38f:.135f,1.f,12);
@@ -1606,9 +1606,13 @@ static void list_row(Paint *p,const char *title,int y,int selected,
         box_alpha(p,UI_EDGE,y+9,4,UI_ROW_HEIGHT-18,r,g,b,1.f,2);
         selection_frame(p,UI_EDGE,y,1216,UI_ROW_HEIGHT);
     }
-    text(p,title,UI_EDGE+22,y+9,detail?915:1155);
-    if(detail)text_muted(p,detail,1052,y+13,178);
+    int detail_x=1230-detail_width;
+    text(p,title,UI_EDGE+22,y+9,detail?detail_x-(UI_EDGE+22)-83:1155);
+    if(detail)text_muted(p,detail,detail_x,y+13,detail_width);
     press_preview(p,UI_EDGE,y,1216,UI_ROW_HEIGHT,12);
+}
+static void list_row(Paint *p,const char *title,int y,int selected,const char *detail){
+    list_row_with_detail_width(p,title,y,selected,detail,178);
 }
 static const char *const iptv_quick_countries[]={"UA","US","DE","UK","PL","IT"};
 enum { IPTV_QUICK_COUNT=sizeof(iptv_quick_countries)/sizeof(iptv_quick_countries[0]),
@@ -1723,11 +1727,55 @@ static int iptv_filter_count(Page page){
 
 static int footer_position,footer_total;
 static Page footer_page;
+static int footer_download_state=-1;
+static char footer_notice[256];
+static Uint32 footer_notice_at;
 static int offline_catalog_status(const char *message){
     if(!message)return 0;
     const char *uk="Офлайн-пошук",*en="Offline search";
     return !strncmp(message,"Offline catalog",15) ||
            !strncmp(message,uk,strlen(uk)) || !strncmp(message,en,strlen(en));
+}
+
+static void format_download_amount(const DownloadProgress *progress,char *amount,size_t size){
+    if(progress->permille>=0)
+        snprintf(amount,size,"%d%%",progress->permille/10);
+    else
+        snprintf(amount,size,TR("%llu МіБ","%llu MiB"),progress->bytes>>20);
+}
+
+static void format_download_metrics(const DownloadProgress *progress,char *metrics,size_t size){
+    char amount[32],speed[40],eta[64];
+    format_download_amount(progress,amount,sizeof(amount));
+    double rate=progress->bytes_per_second;
+    if(rate>=1048576)
+        snprintf(speed,sizeof(speed),TR("%.1f МіБ/с","%.1f MiB/s"),rate/1048576);
+    else if(rate>0)
+        snprintf(speed,sizeof(speed),TR("%.0f КіБ/с","%.0f KiB/s"),rate/1024);
+    else
+        snprintf(speed,sizeof(speed),TR("— КіБ/с","— KiB/s"));
+    int left=progress->seconds_left;
+    if(left>=3600)
+        snprintf(eta,sizeof(eta),TR("%d год %02d хв","%d h %02d min"),left/3600,left/60%60);
+    else if(left>=60)
+        snprintf(eta,sizeof(eta),TR("%d хв %02d с","%d min %02d s"),left/60,left%60);
+    else if(left>=0)
+        snprintf(eta,sizeof(eta),TR("%d с","%d s"),left);
+    else
+        snprintf(eta,sizeof(eta),"—");
+    snprintf(metrics,size,TR("%s · %s · Залишилось %s","%s · %s · Remaining %s"),
+             amount,speed,eta);
+}
+
+static void draw_download_progress(Paint *p,const DownloadProgress *progress,int x,int y){
+    char percent[16]="—%";
+    if(progress->permille>=0)
+        snprintf(percent,sizeof(percent),"%d%%",progress->permille/10);
+    unsigned phase=SDL_GetTicks()%900u;
+    unsigned travel=phase<450u?phase:900u-phase;
+    int offset=(int)(travel*4u/450u);
+    text_font(p,"↓",x,y-2+offset,24,p->font_small,1,1,1);
+    text_font(p,percent,x+24,y,54,p->font_small,1,1,1);
 }
 
 static void footer(Paint *p,const char *message) {
@@ -1741,10 +1789,9 @@ static void footer(Paint *p,const char *message) {
     box_alpha(p,UI_EDGE,UI_FOOTER_TOP,1216,2,
               ui_light_theme?.88f:.66f,ui_light_theme?.88f:.66f,
               ui_light_theme?.88f:.66f,.78f,0);
-    char position[30];
-    snprintf(position,sizeof(position),"%d / %d",footer_position,footer_total);
-    text_font(p,footer_total && !(footer_page==CATALOG && expanded_catalog)?position:"UAPLAY",43,682,140,
-              p->font_small,ar,ag,ab);
+    DownloadProgress download;
+    int downloading=footer_page!=DOWNLOADS && downloads_progress(&download);
+    const int footer_y=681;
     const char *keys[6],*labels[6];int count=0;
 #define HINT(k,l) do{keys[count]=k;labels[count]=l;count++;}while(0)
     if(footer_page==CATALOG){
@@ -1787,7 +1834,18 @@ static void footer(Paint *p,const char *message) {
     }else if(footer_page==SOURCES){
         HINT("↑↓",TR("Вибір","Select"));HINT("A",TR("Відкрити","Open"));HINT("Y",TR("Завантажити","Download"));HINT("B",TR("Назад","Back"));
     }else if(footer_page==DOWNLOADS){
-        HINT("↑↓",TR("Файл","File"));HINT("A",TR("Відкрити","Open"));HINT("X",TR("Видалити","Delete"));HINT("B",TR("Назад","Back"));
+        HINT("↑↓",TR("Файл","File"));
+        if(footer_download_state==DOWNLOAD_ACTIVE || footer_download_state==DOWNLOAD_QUEUED)
+            HINT("Y",TR("Пауза","Pause"));
+        else if(footer_download_state==DOWNLOAD_PAUSED)HINT("Y",TR("Продовжити","Resume"));
+        else if(footer_download_state==DOWNLOAD_DONE)HINT("A",TR("Відкрити","Open"));
+        else if(footer_download_state==DOWNLOAD_FAILED)HINT("A",TR("Повторити","Retry"));
+        if(footer_download_state>=0){
+            if(footer_download_state==DOWNLOAD_DONE || footer_download_state==DOWNLOAD_FAILED)
+                HINT("X",TR("Видалити","Delete"));
+            else HINT("X",TR("Скасувати","Cancel"));
+        }
+        HINT("B",TR("Назад","Back"));
     }else{
         HINT("↑↓",TR("Вибір","Select"));HINT("A",TR("Відкрити","Open"));HINT("B",TR("Назад","Back"));
     }
@@ -1802,32 +1860,41 @@ static void footer(Paint *p,const char *message) {
     total+=(count-1)*12;
     int x=1244-total;
     if(x<204)x=204;
+
+    char position[30];
+    snprintf(position,sizeof(position),"%d / %d",footer_position,footer_total);
+    const char *position_label=footer_total && !(footer_page==CATALOG && expanded_catalog)
+        ?position:"UAPLAY";
+    int position_limit=140;
+    if(downloading && x-43-102<position_limit)position_limit=x-43-102;
+    text_font(p,position_label,43,footer_y+1,position_limit,p->font_small,ar,ag,ab);
+    if(downloading){
+        int width=measure(p,position_label,p->font_small);
+        if(width>position_limit)width=position_limit;
+        draw_download_progress(p,&download,43+width+20,footer_y+1);
+    }
     for(int i=0;i<count;i++){
         int badge_width=measure(p,keys[i],p->font_small)+12;
         if(badge_width<30)badge_width=30;
         int round=(!strcmp(keys[i],"A")||!strcmp(keys[i],"B")||
                    !strcmp(keys[i],"X")||!strcmp(keys[i],"Y"));
-        box_alpha(p,x,681,badge_width,28,keycap,keycap,keycap,1.f,round?14:5);
-        text_center(p,keys[i],x,682,badge_width,p->font_small,glyph,glyph,glyph);
-        text_font(p,labels[i],x+badge_width+8,681,widths[i]-badge_width-8,
+        box_alpha(p,x,footer_y,badge_width,28,keycap,keycap,keycap,1.f,round?14:5);
+        text_center(p,keys[i],x,footer_y+1,badge_width,p->font_small,glyph,glyph,glyph);
+        text_font(p,labels[i],x+badge_width+8,footer_y,widths[i]-badge_width-8,
                   p->font_small,ar,ag,ab);
         x+=widths[i]+12;
     }
-    /* Background download indicator using the same footer typography. */
-    int download_percent=0; unsigned long long downloaded_bytes=0;
-    int pending_downloads=downloads_progress(&download_percent,&downloaded_bytes);
-    if(pending_downloads){
-        char progress_label[80];
-        if(download_percent>=0)
-            snprintf(progress_label,sizeof(progress_label),"↓ %d%% · %d",download_percent/10,pending_downloads);
-        else snprintf(progress_label,sizeof(progress_label),TR("↓ %u МБ · %d","↓ %u MB · %d"),(unsigned)(downloaded_bytes>>20),pending_downloads);
-        text_font(p,progress_label,250,682,175,p->font_small,ar,ag,ab);
-    }
     /* Notification occupies its own safe zone, never the last selectable row. */
-    if(message && *message && !offline_catalog_status(message) &&
-       strncmp(message,"A:",2) && strncmp(message,"B:",2)){
+    const char *notice=message && !offline_catalog_status(message) &&
+                       strncmp(message,"A:",2) && strncmp(message,"B:",2)?message:"";
+    Uint32 now=SDL_GetTicks();
+    if(strcmp(footer_notice,notice)){
+        snprintf(footer_notice,sizeof(footer_notice),"%s",notice);
+        footer_notice_at=now;
+    }
+    if(*footer_notice && now-footer_notice_at<3000u){
         box_alpha(p,UI_EDGE,617,1216,43,.11f,.16f,.19f,.98f,11);
-        text_small(p,message,50,626,1170);
+        text_small(p,footer_notice,50,626,1170);
     }
 }
 static void poster(Paint *p,const Movie *movie,int x,int y,int width,int height,int *budget) {
@@ -2658,15 +2725,19 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
     } else if (page==DOWNLOADS) {
         static DownloadInfo records[DOWNLOADS_MAX];
         int count=downloads_list(records,DOWNLOADS_MAX);
+        DownloadProgress progress;
+        int downloading=downloads_progress(&progress);
         footer_position=count?download_selected+1:0;
         footer_total=count;
+        footer_download_state=download_selected<count?records[download_selected].state:-1;
         screen_header(p,TR("Завантажені","Downloads"),TR("Збережені фільми та серії","Saved movies and episodes"));
         if(!count)text_center_button(p,TR("Список порожній. Натисніть Y на джерелі або серії","No downloads yet. Press Y on a source or an episode."),
                                       UI_EDGE,305,1216,110,p->font_small,.73f,.77f,.82f);
         int offset=list_offset(p,page,download_selected,count),first=first_visible_row(offset);
         for(int i=first;i<count && i<first+UI_ROWS+2;i++){
             const DownloadInfo *d=&records[i];
-            char name[300],detail[80];
+            char name[300],detail[160];
+            int show_metrics=downloading && d->state==DOWNLOAD_ACTIVE && d->id==progress.id;
             if(d->season>0 && d->episode>0)
                 snprintf(name,sizeof(name),TR("%.150s · Сезон %d · Серія %d",
                                               "%.150s · Season %d · Episode %d"),
@@ -2675,6 +2746,12 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             else snprintf(name,sizeof(name),"%.190s",d->title);
             unsigned mb=(unsigned)(d->bytes>>20);
             if(d->state==DOWNLOAD_QUEUED)snprintf(detail,sizeof(detail),TR("У черзі","Queued"));
+            else if(d->state==DOWNLOAD_PAUSED){
+                if(d->bytes && d->permille>=0)
+                    snprintf(detail,sizeof(detail),TR("Пауза · %d%%","Paused · %d%%"),d->permille/10);
+                else snprintf(detail,sizeof(detail),TR("Пауза","Paused"));
+            }
+            else if(show_metrics)format_download_metrics(&progress,detail,sizeof(detail));
             else if(d->state==DOWNLOAD_ACTIVE && d->permille<0)
                 snprintf(detail,sizeof(detail),TR("%u МБ","%u MB"),mb);
             else if(d->state==DOWNLOAD_ACTIVE)
@@ -2682,8 +2759,11 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             else if(d->state==DOWNLOAD_DONE)snprintf(detail,sizeof(detail),TR("Готово · %u МБ","Done · %u MB"),mb);
             else snprintf(detail,sizeof(detail),TR("Помилка","Failed"));
             int y=UI_ROW_Y+i*UI_ROW_STEP-offset;
-            list_row(p,name,y,i==download_selected,detail);
-            if(d->state==DOWNLOAD_ACTIVE && d->permille>=0)
+            if(show_metrics){
+                int width=measure(p,detail,p->font_small)+8;
+                list_row_with_detail_width(p,name,y,i==download_selected,detail,width);
+            }else list_row(p,name,y,i==download_selected,detail);
+            if((d->state==DOWNLOAD_ACTIVE || d->state==DOWNLOAD_PAUSED) && d->permille>=0)
                 box_alpha(p,UI_EDGE+12,y+UI_ROW_HEIGHT-5,1192*d->permille/1000,
                           3,.30f,.71f,.81f,1.f,1);
         }
@@ -4216,6 +4296,7 @@ int main(int argc,char **argv) {
                         if(uakino_resolve(&episode_source,url,sizeof(url),message,sizeof(message))){
                             char label[96];
                             snprintf(label,sizeof(label),TR("Сезон %d · Серія %d","Season %d · Episode %d"),ep->season,ep->number);
+                            footer_notice[0]=0;
                             int added=downloads_add(&movies[chosen],ep->season,ep->number,label,url);
                             snprintf(message,sizeof(message),"%s",added>0?TR("Додано до завантажень","Added to downloads"):
                                      added==0?TR("Уже в завантаженнях","Already in downloads"):TR("Черга завантажень заповнена","Download queue is full"));
@@ -4266,14 +4347,31 @@ int main(int argc,char **argv) {
                     {download_selected--;download_confirm=0;}
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN && download_selected<count-1)
                     {download_selected++;download_confirm=0;}
+                if(key==SDL_CONTROLLER_BUTTON_Y && count){
+                    int state=downloads_toggle_pause(download_rows[download_selected].id);
+                    if(state>=0){
+                        download_confirm=0;
+                        footer_notice[0]=0;
+                        snprintf(message,sizeof(message),"%s",state==DOWNLOAD_PAUSED
+                                 ?TR("Завантаження призупинено","Download paused")
+                                 :TR("Завантаження продовжено","Download resumed"));
+                    }
+                }
                 if(key==SDL_CONTROLLER_BUTTON_X && count){
-                    unsigned id=download_rows[download_selected].id;
-                    if(download_confirm!=id){
+                    const DownloadInfo *info=&download_rows[download_selected];
+                    unsigned id=info->id;
+                    int cancel=info->state==DOWNLOAD_ACTIVE || info->state==DOWNLOAD_QUEUED ||
+                               info->state==DOWNLOAD_PAUSED;
+                    footer_notice[0]=0;
+                    if(download_confirm!=id || SDL_GetTicks()-footer_notice_at>=3000u){
                         download_confirm=id;
-                        snprintf(message,sizeof(message),TR("Натисніть X ще раз для видалення","Press X again to delete"));
+                        snprintf(message,sizeof(message),"%s",cancel
+                                 ?TR("Натисніть X ще раз для скасування","Press X again to cancel")
+                                 :TR("Натисніть X ще раз для видалення","Press X again to delete"));
                     }else{
                         downloads_remove(id);download_confirm=0;
-                        snprintf(message,sizeof(message),TR("Видалено","Deleted"));
+                        snprintf(message,sizeof(message),"%s",cancel
+                                 ?TR("Завантаження скасовано","Download canceled"):TR("Видалено","Deleted"));
                     }
                 }
                 if(key==SDL_CONTROLLER_BUTTON_A && count){
@@ -4282,7 +4380,9 @@ int main(int argc,char **argv) {
                     if(info->state==DOWNLOAD_FAILED){
                         downloads_retry(info->id);
                         snprintf(message,sizeof(message),TR("Завантаження повторюється","Retrying download"));
-                    }else if(info->state!=DOWNLOAD_DONE)
+                    }else if(info->state==DOWNLOAD_PAUSED)
+                        snprintf(message,sizeof(message),TR("Натисніть Y, щоб продовжити","Press Y to resume"));
+                    else if(info->state!=DOWNLOAD_DONE)
                         snprintf(message,sizeof(message),TR("Файл ще завантажується","The file is still downloading"));
                     else if(!render)snprintf(message,sizeof(message),TR("Плеєр mpv не ініціалізовано","The mpv player could not start"));
                     else if(downloads_get(info->id,&item)){
@@ -4939,6 +5039,7 @@ int main(int argc,char **argv) {
                     else {
                         char url[2048]={0};
                         if(uakino_resolve(&sources[source],url,sizeof(url),message,sizeof(message))){
+                            footer_notice[0]=0;
                             int added=downloads_add(&movies[chosen],0,0,"",url);
                             snprintf(message,sizeof(message),"%s",added>0?TR("Додано до завантажень","Added to downloads"):
                                      added==0?TR("Уже в завантаженнях","Already in downloads"):TR("Черга завантажень заповнена","Download queue is full"));

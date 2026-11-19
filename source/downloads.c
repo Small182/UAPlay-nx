@@ -4,6 +4,7 @@
 
 #include <SDL.h>
 #include <curl/curl.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,6 +81,58 @@ const char *stream_referer(const char *url) {
 
 static void part_path(unsigned id, char *out, size_t size) {
     snprintf(out, size, DOWNLOADS_DIR "/%u.part", id);
+}
+
+static int finished_path(const Download *job, const char *ext, char *out, size_t size) {
+    char title[sizeof(job->movie.title) + 2];
+    const char *source = job->movie.title[0] ? job->movie.title : job->movie.original;
+    size_t length = 0;
+    for (; length < sizeof(job->movie.title) && source[length]; length++) {
+        unsigned char c = (unsigned char)source[length];
+        title[length] = (c < 32 || c == 127 || strchr("<>:\"/\\|?*", c)) ? '_' : (char)c;
+    }
+    title[length] = '\0';
+
+    /* DOS device names remain reserved even with a file extension. */
+    size_t stem = strcspn(title, ".");
+    while (stem && title[stem - 1] == ' ') stem--;
+    if ((stem == 3 && (!strncasecmp(title, "CON", 3) || !strncasecmp(title, "PRN", 3) ||
+                       !strncasecmp(title, "AUX", 3) || !strncasecmp(title, "NUL", 3))) ||
+        (stem == 4 && (!strncasecmp(title, "COM", 3) || !strncasecmp(title, "LPT", 3)) &&
+         title[3] >= '0' && title[3] <= '9')) {
+        memmove(title + 1, title, length + 1);
+        title[0] = '_';
+        length++;
+    }
+
+    char episode[32] = "";
+    if (job->movie.series && job->episode > 0)
+        snprintf(episode, sizeof(episode), " - S%02dE%02d", job->season, job->episode);
+
+    for (unsigned copy = 1; copy != 0; copy++) {
+        char suffix[24] = "";
+        if (copy > 1) snprintf(suffix, sizeof(suffix), " (%u)", copy);
+
+        /* Leave space for the extension and keep the existing index layout. */
+        size_t overhead = sizeof(DOWNLOADS_DIR "/") + strlen(episode) +
+                          strlen(suffix) + 1 + strlen(ext);
+        if (size <= overhead) return 0;
+        size_t end = length < size - overhead ? length : size - overhead;
+        while (end && ((unsigned char)title[end] & 0xc0) == 0x80) end--;
+        while (end && (title[end - 1] == '.' || title[end - 1] == ' ')) end--;
+        const char *name = title;
+        if (!end) {
+            name = "UAPlay";
+            end = strlen(name);
+            if (end > size - overhead) return 0;
+        }
+
+        snprintf(out, size, DOWNLOADS_DIR "/%.*s%s%s.%s",
+                 (int)end, name, episode, suffix, ext);
+        struct stat info;
+        if (stat(out, &info) != 0) return errno == ENOENT;
+    }
+    return 0;
 }
 
 /* ---------- index ---------- */
@@ -731,10 +784,8 @@ done:
         ok = 0;
     }
     if (!ok) { remove(part); return 0; }
-    snprintf(file, file_size, DOWNLOADS_DIR "/%u.%s", job->id,
-             hls && !fragmented ? "ts" : "mp4");
-    remove(file);
-    if (rename(part, file) != 0) {
+    const char *ext = hls && !fragmented ? "ts" : "mp4";
+    if (!finished_path(job, ext, file, file_size) || rename(part, file) != 0) {
         snprintf(error, error_size, TR("Не вдалося зберегти файл","Could not save the file"));
         remove(part);
         return 0;

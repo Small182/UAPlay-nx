@@ -1753,11 +1753,11 @@ static void format_download_metrics(const DownloadProgress *progress,char *metri
         snprintf(speed,sizeof(speed),TR("— КіБ/с","— KiB/s"));
     int left=progress->seconds_left;
     if(left>=3600)
-        snprintf(eta,sizeof(eta),TR("≈ %d год %02d хв","≈ %d h %02d min"),left/3600,left/60%60);
+        snprintf(eta,sizeof(eta),TR("%d год %02d хв","%d h %02d min"),left/3600,left/60%60);
     else if(left>=60)
-        snprintf(eta,sizeof(eta),TR("≈ %d хв %02d с","≈ %d min %02d s"),left/60,left%60);
+        snprintf(eta,sizeof(eta),TR("%d хв %02d с","%d min %02d s"),left/60,left%60);
     else if(left>=0)
-        snprintf(eta,sizeof(eta),TR("≈ %d с","≈ %d s"),left);
+        snprintf(eta,sizeof(eta),TR("%d с","%d s"),left);
     else
         snprintf(eta,sizeof(eta),"—");
     snprintf(metrics,size,TR("%s · %s · Залишилось %s","%s · %s · Remaining %s"),
@@ -1765,12 +1765,14 @@ static void format_download_metrics(const DownloadProgress *progress,char *metri
 }
 
 static void draw_download_progress(Paint *p,const DownloadProgress *progress){
-    char amount[32],title[172];
-    format_download_amount(progress,amount,sizeof(amount));
-    int stats_x=1244-measure(p,amount,p->font_tiny);
-    snprintf(title,sizeof(title),"↓ %s",progress->name);
-    text_font(p,title,43,671,stats_x-55,p->font_tiny,1,1,1);
-    text_font(p,amount,stats_x,671,1248-stats_x,p->font_tiny,1,1,1);
+    char percent[16]="—%";
+    if(progress->permille>=0)
+        snprintf(percent,sizeof(percent),"%d%%",progress->permille/10);
+    unsigned phase=SDL_GetTicks()%900u;
+    unsigned travel=phase<450u?phase:900u-phase;
+    int offset=(int)(travel*4u/450u);
+    text_font(p,"↓",43,669+offset,20,p->font_tiny,1,1,1);
+    text_font(p,percent,62,671,64,p->font_tiny,1,1,1);
 }
 
 static void footer(Paint *p,const char *message) {
@@ -1785,7 +1787,7 @@ static void footer(Paint *p,const char *message) {
               ui_light_theme?.88f:.66f,ui_light_theme?.88f:.66f,
               ui_light_theme?.88f:.66f,.78f,0);
     DownloadProgress download;
-    int downloading=downloads_progress(&download);
+    int downloading=footer_page!=DOWNLOADS && downloads_progress(&download);
     int footer_y=downloading?691:681;
     if(downloading)draw_download_progress(p,&download);
     char position[30];

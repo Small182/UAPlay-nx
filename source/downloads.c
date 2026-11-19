@@ -26,7 +26,7 @@
 #define DIRECT_CHUNK (2ull * 1024ull * 1024ull)
 /* Weak Wi-Fi drops out for a moment: retry a segment with growing pauses. */
 #define SEGMENT_ATTEMPTS 6
-#define PARALLEL_REQUESTS 3
+#define PARALLEL_REQUESTS 4
 #define PARALLEL_SEGMENT_LIMIT (8u * 1024u * 1024u)
 #define HLS_KEYS_MAX 16
 /* The player's HLS choice: a variant no taller than the screen. */

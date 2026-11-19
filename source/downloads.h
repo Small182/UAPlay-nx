@@ -47,6 +47,7 @@ void downloads_remove(unsigned id);
 /* Whether something is queued or downloading. */
 int downloads_busy(void);
 typedef struct {
+    unsigned id;
     char name[160];   /* Filename without the temporary extension. */
     int permille;     /* -1 if total size is unknown. */
     unsigned long long bytes;

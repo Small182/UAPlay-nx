@@ -1596,8 +1596,8 @@ static void screen_header(Paint *p,const char *name,const char *context){
     if(context && *context && strcmp(context,"UAPlay"))
         text_tiny(p,context,979,38,264);
 }
-static void list_row(Paint *p,const char *title,int y,int selected,
-                     const char *detail){
+static void list_row_with_detail_width(Paint *p,const char *title,int y,int selected,
+                                       const char *detail,int detail_width){
     box_alpha(p,UI_EDGE,y,1216,UI_ROW_HEIGHT,
               selected?.20f:.085f,selected?.30f:.105f,
               selected?.38f:.135f,1.f,12);
@@ -1606,9 +1606,13 @@ static void list_row(Paint *p,const char *title,int y,int selected,
         box_alpha(p,UI_EDGE,y+9,4,UI_ROW_HEIGHT-18,r,g,b,1.f,2);
         selection_frame(p,UI_EDGE,y,1216,UI_ROW_HEIGHT);
     }
-    text(p,title,UI_EDGE+22,y+9,detail?915:1155);
-    if(detail)text_muted(p,detail,1052,y+13,178);
+    int detail_x=1230-detail_width;
+    text(p,title,UI_EDGE+22,y+9,detail?detail_x-(UI_EDGE+22)-83:1155);
+    if(detail)text_muted(p,detail,detail_x,y+13,detail_width);
     press_preview(p,UI_EDGE,y,1216,UI_ROW_HEIGHT,12);
+}
+static void list_row(Paint *p,const char *title,int y,int selected,const char *detail){
+    list_row_with_detail_width(p,title,y,selected,detail,178);
 }
 static const char *const iptv_quick_countries[]={"UA","US","DE","UK","PL","IT"};
 enum { IPTV_QUICK_COUNT=sizeof(iptv_quick_countries)/sizeof(iptv_quick_countries[0]),
@@ -1730,12 +1734,16 @@ static int offline_catalog_status(const char *message){
            !strncmp(message,uk,strlen(uk)) || !strncmp(message,en,strlen(en));
 }
 
-static void draw_download_progress(Paint *p,const DownloadProgress *progress) {
-    char amount[32],speed[40],eta[64],metrics[160];
+static void format_download_amount(const DownloadProgress *progress,char *amount,size_t size){
     if(progress->permille>=0)
-        snprintf(amount,sizeof(amount),"%d%%",progress->permille/10);
+        snprintf(amount,size,"%d%%",progress->permille/10);
     else
-        snprintf(amount,sizeof(amount),TR("%llu МіБ","%llu MiB"),progress->bytes>>20);
+        snprintf(amount,size,TR("%llu МіБ","%llu MiB"),progress->bytes>>20);
+}
+
+static void format_download_metrics(const DownloadProgress *progress,char *metrics,size_t size){
+    char amount[32],speed[40],eta[64];
+    format_download_amount(progress,amount,sizeof(amount));
     double rate=progress->bytes_per_second;
     if(rate>=1048576)
         snprintf(speed,sizeof(speed),TR("%.1f МіБ/с","%.1f MiB/s"),rate/1048576);
@@ -1752,13 +1760,17 @@ static void draw_download_progress(Paint *p,const DownloadProgress *progress) {
         snprintf(eta,sizeof(eta),TR("≈ %d с","≈ %d s"),left);
     else
         snprintf(eta,sizeof(eta),"—");
-    snprintf(metrics,sizeof(metrics),TR("%s · %s · Залишилось %s","%s · %s · Remaining %s"),
+    snprintf(metrics,size,TR("%s · %s · Залишилось %s","%s · %s · Remaining %s"),
              amount,speed,eta);
-    int stats_x=1244-measure(p,metrics,p->font_tiny);
-    char title[172];
+}
+
+static void draw_download_progress(Paint *p,const DownloadProgress *progress){
+    char amount[32],title[172];
+    format_download_amount(progress,amount,sizeof(amount));
+    int stats_x=1244-measure(p,amount,p->font_tiny);
     snprintf(title,sizeof(title),"↓ %s",progress->name);
     text_font(p,title,43,671,stats_x-55,p->font_tiny,1,1,1);
-    text_font(p,metrics,stats_x,671,1248-stats_x,p->font_tiny,1,1,1);
+    text_font(p,amount,stats_x,671,1248-stats_x,p->font_tiny,1,1,1);
 }
 
 static void footer(Paint *p,const char *message) {
@@ -2683,6 +2695,8 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
     } else if (page==DOWNLOADS) {
         static DownloadInfo records[DOWNLOADS_MAX];
         int count=downloads_list(records,DOWNLOADS_MAX);
+        DownloadProgress progress;
+        int downloading=downloads_progress(&progress);
         footer_position=count?download_selected+1:0;
         footer_total=count;
         screen_header(p,TR("Завантажені","Downloads"),TR("Збережені фільми та серії","Saved movies and episodes"));
@@ -2691,7 +2705,8 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
         int offset=list_offset(p,page,download_selected,count),first=first_visible_row(offset);
         for(int i=first;i<count && i<first+UI_ROWS+2;i++){
             const DownloadInfo *d=&records[i];
-            char name[300],detail[80];
+            char name[300],detail[160];
+            int show_metrics=downloading && d->state==DOWNLOAD_ACTIVE && d->id==progress.id;
             if(d->season>0 && d->episode>0)
                 snprintf(name,sizeof(name),TR("%.150s · Сезон %d · Серія %d",
                                               "%.150s · Season %d · Episode %d"),
@@ -2700,6 +2715,7 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             else snprintf(name,sizeof(name),"%.190s",d->title);
             unsigned mb=(unsigned)(d->bytes>>20);
             if(d->state==DOWNLOAD_QUEUED)snprintf(detail,sizeof(detail),TR("У черзі","Queued"));
+            else if(show_metrics)format_download_metrics(&progress,detail,sizeof(detail));
             else if(d->state==DOWNLOAD_ACTIVE && d->permille<0)
                 snprintf(detail,sizeof(detail),TR("%u МБ","%u MB"),mb);
             else if(d->state==DOWNLOAD_ACTIVE)
@@ -2707,7 +2723,10 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
             else if(d->state==DOWNLOAD_DONE)snprintf(detail,sizeof(detail),TR("Готово · %u МБ","Done · %u MB"),mb);
             else snprintf(detail,sizeof(detail),TR("Помилка","Failed"));
             int y=UI_ROW_Y+i*UI_ROW_STEP-offset;
-            list_row(p,name,y,i==download_selected,detail);
+            if(show_metrics){
+                int width=measure(p,detail,p->font_small)+8;
+                list_row_with_detail_width(p,name,y,i==download_selected,detail,width);
+            }else list_row(p,name,y,i==download_selected,detail);
             if(d->state==DOWNLOAD_ACTIVE && d->permille>=0)
                 box_alpha(p,UI_EDGE+12,y+UI_ROW_HEIGHT-5,1192*d->permille/1000,
                           3,.30f,.71f,.81f,1.f,1);

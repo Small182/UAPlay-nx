@@ -1146,6 +1146,7 @@ int downloads_progress(DownloadProgress *progress) {
     Download *d = active_id ? find(active_id) : NULL;
     int active = d != NULL;
     if (active) {
+        progress->id = d->id;
         const char *name = d->file + (d->file[0] ? sizeof(DOWNLOADS_DIR "/") - 1 : 0);
         const char *extension = strrchr(name, '.');
         if (extension)

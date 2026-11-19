@@ -1764,15 +1764,15 @@ static void format_download_metrics(const DownloadProgress *progress,char *metri
              amount,speed,eta);
 }
 
-static void draw_download_progress(Paint *p,const DownloadProgress *progress){
+static void draw_download_progress(Paint *p,const DownloadProgress *progress,int x,int y){
     char percent[16]="—%";
     if(progress->permille>=0)
         snprintf(percent,sizeof(percent),"%d%%",progress->permille/10);
     unsigned phase=SDL_GetTicks()%900u;
     unsigned travel=phase<450u?phase:900u-phase;
     int offset=(int)(travel*4u/450u);
-    text_font(p,"↓",43,669+offset,20,p->font_tiny,1,1,1);
-    text_font(p,percent,62,671,64,p->font_tiny,1,1,1);
+    text_font(p,"↓",x,y-2+offset,20,p->font_tiny,1,1,1);
+    text_font(p,percent,x+19,y,48,p->font_tiny,1,1,1);
 }
 
 static void footer(Paint *p,const char *message) {
@@ -1788,12 +1788,7 @@ static void footer(Paint *p,const char *message) {
               ui_light_theme?.88f:.66f,.78f,0);
     DownloadProgress download;
     int downloading=footer_page!=DOWNLOADS && downloads_progress(&download);
-    int footer_y=downloading?691:681;
-    if(downloading)draw_download_progress(p,&download);
-    char position[30];
-    snprintf(position,sizeof(position),"%d / %d",footer_position,footer_total);
-    text_font(p,footer_total && !(footer_page==CATALOG && expanded_catalog)?position:"UAPLAY",43,footer_y+1,140,
-              p->font_small,ar,ag,ab);
+    const int footer_y=681;
     const char *keys[6],*labels[6];int count=0;
 #define HINT(k,l) do{keys[count]=k;labels[count]=l;count++;}while(0)
     if(footer_page==CATALOG){
@@ -1851,6 +1846,19 @@ static void footer(Paint *p,const char *message) {
     total+=(count-1)*12;
     int x=1244-total;
     if(x<204)x=204;
+
+    char position[30];
+    snprintf(position,sizeof(position),"%d / %d",footer_position,footer_total);
+    const char *position_label=footer_total && !(footer_page==CATALOG && expanded_catalog)
+        ?position:"UAPLAY";
+    int position_limit=140;
+    if(downloading && x-43-83<position_limit)position_limit=x-43-83;
+    text_font(p,position_label,43,footer_y+1,position_limit,p->font_small,ar,ag,ab);
+    if(downloading){
+        int width=measure(p,position_label,p->font_small);
+        if(width>position_limit)width=position_limit;
+        draw_download_progress(p,&download,43+width+12,footer_y+4);
+    }
     for(int i=0;i<count;i++){
         int badge_width=measure(p,keys[i],p->font_small)+12;
         if(badge_width<30)badge_width=30;

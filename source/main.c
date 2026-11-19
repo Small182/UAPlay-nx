@@ -1771,8 +1771,8 @@ static void draw_download_progress(Paint *p,const DownloadProgress *progress,int
     unsigned phase=SDL_GetTicks()%900u;
     unsigned travel=phase<450u?phase:900u-phase;
     int offset=(int)(travel*4u/450u);
-    text_font(p,"↓",x,y-2+offset,20,p->font_tiny,1,1,1);
-    text_font(p,percent,x+19,y,48,p->font_tiny,1,1,1);
+    text_font(p,"↓",x,y-2+offset,24,p->font_small,1,1,1);
+    text_font(p,percent,x+24,y,54,p->font_small,1,1,1);
 }
 
 static void footer(Paint *p,const char *message) {
@@ -1852,12 +1852,12 @@ static void footer(Paint *p,const char *message) {
     const char *position_label=footer_total && !(footer_page==CATALOG && expanded_catalog)
         ?position:"UAPLAY";
     int position_limit=140;
-    if(downloading && x-43-91<position_limit)position_limit=x-43-91;
+    if(downloading && x-43-102<position_limit)position_limit=x-43-102;
     text_font(p,position_label,43,footer_y+1,position_limit,p->font_small,ar,ag,ab);
     if(downloading){
         int width=measure(p,position_label,p->font_small);
         if(width>position_limit)width=position_limit;
-        draw_download_progress(p,&download,43+width+20,footer_y+4);
+        draw_download_progress(p,&download,43+width+20,footer_y+1);
     }
     for(int i=0;i<count;i++){
         int badge_width=measure(p,keys[i],p->font_small)+12;

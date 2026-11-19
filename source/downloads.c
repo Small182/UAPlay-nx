@@ -168,6 +168,14 @@ static void load_index(void) {
     fclose(file);
     for (int i = 0; i < item_count; i++) {
         Download *d = &items[i];
+        const size_t old_prefix = sizeof(UAPLAY_PREVIOUS_DATA_DIR "/downloads/") - 1;
+        if (!strncmp(d->file, UAPLAY_PREVIOUS_DATA_DIR "/downloads/", old_prefix)) {
+            /* A migrated index can contain absolute paths from the previous directory. */
+            char path[sizeof(d->file)];
+            int length = snprintf(path, sizeof(path), DOWNLOADS_DIR "/%s", d->file + old_prefix);
+            if (length >= 0 && (size_t)length < sizeof(path))
+                memcpy(d->file, path, (size_t)length + 1);
+        }
         if (d->id >= next_id) next_id = d->id + 1;
         /* Interrupted downloads start again from the beginning. */
         if (d->state == DOWNLOAD_ACTIVE || (d->state == DOWNLOAD_PAUSED && d->file[0])) {

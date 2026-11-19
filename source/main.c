@@ -1852,12 +1852,12 @@ static void footer(Paint *p,const char *message) {
     const char *position_label=footer_total && !(footer_page==CATALOG && expanded_catalog)
         ?position:"UAPLAY";
     int position_limit=140;
-    if(downloading && x-43-83<position_limit)position_limit=x-43-83;
+    if(downloading && x-43-91<position_limit)position_limit=x-43-91;
     text_font(p,position_label,43,footer_y+1,position_limit,p->font_small,ar,ag,ab);
     if(downloading){
         int width=measure(p,position_label,p->font_small);
         if(width>position_limit)width=position_limit;
-        draw_download_progress(p,&download,43+width+12,footer_y+4);
+        draw_download_progress(p,&download,43+width+20,footer_y+4);
     }
     for(int i=0;i<count;i++){
         int badge_width=measure(p,keys[i],p->font_small)+12;

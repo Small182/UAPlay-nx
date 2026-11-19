@@ -83,15 +83,75 @@ static void part_path(unsigned id, char *out, size_t size) {
     snprintf(out, size, DOWNLOADS_DIR "/%u.part", id);
 }
 
-static int finished_path(const Download *job, const char *ext, char *out, size_t size) {
-    char title[sizeof(job->movie.title) + 2];
-    const char *source = job->movie.title[0] ? job->movie.title : job->movie.original;
-    size_t length = 0;
-    for (; length < sizeof(job->movie.title) && source[length]; length++) {
-        unsigned char c = (unsigned char)source[length];
-        title[length] = (c < 32 || c == 127 || strchr("<>:\"/\\|?*", c)) ? '_' : (char)c;
+/* Transliterate Ukrainian titles using the Ukrainian Latin spelling rules. */
+static const char *cyrillic_latin(unsigned letter, int initial) {
+    static const char *const letters[] = {
+        "a", "b", "v", "h", "d", "e", "zh", "z", "y", "y",
+        "k", "l", "m", "n", "o", "p", "r", "s", "t", "u", "f",
+        "kh", "ts", "ch", "sh", "shch", "", "y", "", "e", "iu", "ia"
+    };
+    switch (letter) {
+        case 0x0439: return initial ? "y" : "i";
+        case 0x044e: return initial ? "yu" : "iu";
+        case 0x044f: return initial ? "ya" : "ia";
+        case 0x0451: return "yo";
+        case 0x0454: return initial ? "ye" : "ie";
+        case 0x0456: return "i";
+        case 0x0457: return initial ? "yi" : "i";
+        case 0x0491: return "g";
+        default: return letter >= 0x0430 && letter <= 0x044f
+            ? letters[letter - 0x0430] : NULL;
     }
-    title[length] = '\0';
+}
+
+static size_t filename_title(const char *source, size_t source_size, char *out) {
+    size_t length = 0;
+    int initial = 1;
+    unsigned previous = 0;
+    for (size_t i = 0; i < source_size && source[i]; i++) {
+        unsigned char c = (unsigned char)source[i];
+        unsigned char next = i + 1 < source_size ? (unsigned char)source[i + 1] : 0;
+        if ((c == 0xd0 || c == 0xd1 || c == 0xd2) && (next & 0xc0) == 0x80) {
+            unsigned letter = ((c & 0x1f) << 6) | (next & 0x3f);
+            int upper = (letter >= 0x0410 && letter <= 0x042f) ||
+                        letter == 0x0401 || letter == 0x0404 ||
+                        letter == 0x0406 || letter == 0x0407 || letter == 0x0490;
+            if (upper) {
+                if (letter == 0x0490) letter++;
+                else letter += letter < 0x0410 ? 0x50 : 0x20;
+            }
+            const char *latin = cyrillic_latin(letter, initial);
+            if (latin) {
+                /* Зг uses zgh to distinguish it from ж (zh). */
+                if (previous == 0x0437 && letter == 0x0433) out[length++] = 'g';
+                for (size_t j = 0; latin[j]; j++)
+                    out[length++] = upper && j == 0 ? latin[j] - 'a' + 'A' : latin[j];
+                previous = letter;
+                initial = 0;
+                i++;
+                continue;
+            }
+        }
+        if (previous && (c == '\'' || (c == 0xe2 && next == 0x80 && i + 2 < source_size &&
+                          (unsigned char)source[i + 2] == 0x99) ||
+                         (c == 0xca && next == 0xbc))) {
+            if (c != '\'') i += c == 0xe2 ? 2 : 1;
+            previous = 0;
+            continue;
+        }
+        out[length++] = (c < 32 || c == 127 || strchr("<>:\"/\\|?*", c)) ? '_' : (char)c;
+        initial = c < 128 && !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'));
+        previous = 0;
+    }
+    out[length] = '\0';
+    return length;
+}
+
+static int finished_path(const Download *job, const char *ext, char *out, size_t size) {
+    /* A two-byte Cyrillic letter expands to at most four Latin characters. */
+    char title[sizeof(job->movie.title) * 2 + 2];
+    const char *source = job->movie.title[0] ? job->movie.title : job->movie.original;
+    size_t length = filename_title(source, sizeof(job->movie.title), title);
 
     /* DOS device names remain reserved even with a file extension. */
     size_t stem = strcspn(title, ".");

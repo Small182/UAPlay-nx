@@ -1851,23 +1851,48 @@ static int movy_resolve(int id,int season,int episode,char *stream,int size,
         free(query_seed);
         goto unavailable;
     }
-    int length=snprintf(url,sizeof(url),MOVY_API "/miami/sources?title=%s&mediaType=%s"
-                        "&year=%s&episodeId=%d&seasonId=%d&tmdbId=%d&imdbId=%s&enc=2&seed=%s",
-                        query_title,type,year,series?episode:1,series?season:1,id,imdb,query_seed);
+    /* The upstream exposes multiple independent servers. A missing or
+       malformed stream on one server must not hide the others. Keep the
+       accepted CDN restricted to the relay's known HTTPS origin. */
+    static const char *servers[]={"miami","boise","vegas","reno","oakland"};
+    char last_error[256]="";
+    for(size_t server=0;server<sizeof(servers)/sizeof(servers[0]);server++){
+        int length=snprintf(url,sizeof(url),MOVY_API "/%s/sources?title=%s&mediaType=%s"
+                            "&year=%s&episodeId=%d&seasonId=%d&tmdbId=%d&imdbId=%s&enc=2&seed=%s",
+                            servers[server],query_title,type,year,series?episode:1,
+                            series?season:1,id,imdb,query_seed);
+        if(length<0 || length>=(int)sizeof(url))continue;
+        response=request_form(url,NULL,MOVY_ORIGIN "/",error,error_size);
+        if(!response){
+            if(error[0])snprintf(last_error,sizeof(last_error),"%s",error);
+            continue;
+        }
+        char *json=movy_decode(response,seed,id);
+        char playlist[2048]="";
+        if(json)json_field(json,json+strlen(json),"playlist",playlist,sizeof(playlist));
+        /* Some upstream responses use url instead of playlist. */
+        if(json && !playlist[0])
+            json_field(json,json+strlen(json),"url",playlist,sizeof(playlist));
+        free(response);
+        if(movy_stream_url(playlist) &&
+           !playlist[strcspn(playlist," \\t\\r\\n")] &&
+           strlen(playlist)<sizeof(playlist)-1 &&
+           strlen(playlist)<(size_t)size){
+            snprintf(stream,(size_t)size,"%s",playlist);
+            free(query_title);
+            free(query_seed);
+            error[0]=0;
+            return 1;
+        }
+    }
     free(query_title);
     free(query_seed);
-    if(length<0 || length>=(int)sizeof(url))goto unavailable;
-    response=request_form(url,NULL,MOVY_ORIGIN "/",error,error_size);
-    if(!response)return 0;
-    char *json=movy_decode(response,seed,id);
-    char playlist[2048]="";
-    if(json)json_field(json,json+strlen(json),"playlist",playlist,sizeof(playlist));
-    free(response);
-    if(!movy_stream_url(playlist) || playlist[strcspn(playlist," \t\r\n")] ||
-       strlen(playlist)==sizeof(playlist)-1 || strlen(playlist)>=(size_t)size)
-        goto unavailable;
-    snprintf(stream,(size_t)size,"%s",playlist);
-    return 1;
+    if(last_error[0])
+        snprintf(error,error_size,"Movy: %.180s",last_error);
+    else
+        snprintf(error,error_size,"%s",TR("Movy: відеопотік недоступний",
+                                          "Movy: video stream unavailable"));
+    return 0;
 unavailable:
     snprintf(error,error_size,"%s",TR("Movy: відеопотік недоступний","Movy: video stream unavailable"));
     return 0;

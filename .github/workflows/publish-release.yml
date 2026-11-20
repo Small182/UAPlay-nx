@@ -1,6 +1,9 @@
 name: Publish UAPlay with NSP
 
 on:
+  workflow_run:
+    workflows: ["Build native UAPlay with libmpv"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       build_run_id:
@@ -14,7 +17,7 @@ permissions:
 
 jobs:
   publish:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-24.04
     concurrency:
       group: uaplay-release
@@ -24,7 +27,7 @@ jobs:
         id: build
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          BUILD_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.build_run_id }}
         run: |
           set -eu
           case "$BUILD_RUN_ID" in
@@ -36,6 +39,12 @@ jobs:
                    .head_repository.full_name == .repository.full_name)
             | .head_sha | select(test("^[0-9a-f]{40}$"))
           ')"
+          # Never publish an older build if another commit has reached main.
+          main_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          if [ "$source_sha" != "$main_sha" ]; then
+            echo "Skipping outdated build $source_sha (main is $main_sha)."
+            exit 1
+          fi
           printf 'sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:

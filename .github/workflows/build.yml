@@ -5,6 +5,9 @@ on:
     branches: [main, feature/vita-performance-downloads, feature/wallpaper-gallery]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   switch:
     runs-on: ubuntu-24.04
@@ -64,3 +67,27 @@ jobs:
           name: UAPlay-native
           path: UAPlay.nro
           if-no-files-found: error
+      - name: Publish versioned release after successful build
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          version="$(awk -F '"' '/^#define UAPLAY_VERSION / { print $2 }' source/version.h)"
+          printf '%s\n' "$version" | grep -Eq '^[0-9]+\\.[0-9]+\\.[0-9]+
+
+          tag="UAPlay_$version"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$tag is already published"
+            exit 0
+          fi
+          test -s UAPlay.nro
+          test -s .release/UAPlay.nsp
+          test -s .release/RELEASE_NOTES.md
+          grep -aFq 'sdmc:/switch/UAPlay.nro' .release/UAPlay.nsp
+          gh release create "$tag" \
+            UAPlay.nro .release/UAPlay.nsp#UAPlay.nsp \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "UAPlay $version" \
+            --notes-file .release/RELEASE_NOTES.md

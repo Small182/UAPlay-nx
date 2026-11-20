@@ -67,8 +67,18 @@ jobs:
           name: UAPlay-native
           path: UAPlay.nro
           if-no-files-found: error
-      - name: Publish versioned release after successful build
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+  release:
+    needs: switch
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: UAPlay-native
+          path: dist
+      - name: Publish versioned release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -83,12 +93,12 @@ jobs:
             echo "$tag is already published"
             exit 0
           fi
-          test -s UAPlay.nro
+          test -s dist/UAPlay.nro
           test -s .release/UAPlay.nsp
           test -s .release/RELEASE_NOTES.md
           grep -aFq 'sdmc:/switch/UAPlay.nro' .release/UAPlay.nsp
           gh release create "$tag" \
-            UAPlay.nro .release/UAPlay.nsp#UAPlay.nsp \
+            dist/UAPlay.nro .release/UAPlay.nsp#UAPlay.nsp \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "UAPlay $version" \

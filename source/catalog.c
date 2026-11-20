@@ -1875,7 +1875,7 @@ static int movy_resolve(int id,int season,int episode,char *stream,int size,
             json_field(json,json+strlen(json),"url",playlist,sizeof(playlist));
         free(response);
         if(movy_stream_url(playlist) &&
-           !playlist[strcspn(playlist," \\t\\r\\n")] &&
+           !playlist[strcspn(playlist," \t\r\n")] &&
            strlen(playlist)<sizeof(playlist)-1 &&
            strlen(playlist)<(size_t)size){
             snprintf(stream,(size_t)size,"%s",playlist);

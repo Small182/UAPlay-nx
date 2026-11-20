@@ -1864,8 +1864,10 @@ static int movy_resolve(int id,int season,int episode,char *stream,int size,
     /* The upstream exposes multiple independent servers. A missing or
        malformed stream on one server must not hide the others. Keep the
        accepted CDN restricted to the relay's known HTTPS origin. */
-    static const char *servers[]={"miami","boise","vegas","reno","oakland"};
+    static const char *servers[]={"miami","boise","vegas","reno","oakland",
+                                  "seattle","phoenix","atlanta","portland"};
     char last_error[256]="";
+    unsigned failed_http=0,invalid_stream=0;
     for(size_t server=0;server<sizeof(servers)/sizeof(servers[0]);server++){
         int length=snprintf(url,sizeof(url),MOVY_API "/%s/sources?title=%s&mediaType=%s"
                             "&year=%s&episodeId=%d&seasonId=%d&tmdbId=%d&imdbId=%s&enc=2&seed=%s",
@@ -1874,6 +1876,7 @@ static int movy_resolve(int id,int season,int episode,char *stream,int size,
         if(length<0 || length>=(int)sizeof(url))continue;
         response=request_form(url,NULL,MOVY_ORIGIN "/",error,error_size);
         if(!response){
+            failed_http++;
             if(error[0])snprintf(last_error,sizeof(last_error),"%s: %.190s",
                                  servers[server],error);
             continue;
@@ -1895,10 +1898,16 @@ static int movy_resolve(int id,int season,int episode,char *stream,int size,
             error[0]=0;
             return 1;
         }
+        invalid_stream++;
     }
     free(query_title);
     free(query_seed);
-    if(last_error[0])
+    /* Report the overall outcome, not only the last HTTP failure. */
+    if(invalid_stream)
+        snprintf(error,error_size,TR("Movy: %u серверів без сумісного відео, %u помилок запиту",
+                                      "Movy: %u servers without compatible video, %u request errors"),
+                 invalid_stream,failed_http);
+    else if(last_error[0])
         snprintf(error,error_size,"Movy: %.180s",last_error);
     else
         snprintf(error,error_size,"%s",TR("Movy: відеопотік недоступний",

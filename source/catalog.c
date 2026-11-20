@@ -1819,7 +1819,12 @@ static int movy_resolve(int id,int season,int episode,char *stream,int size,
     char url[2304];
     snprintf(url,sizeof(url),MOVY_ORIGIN "/%s/%d",type,id);
     char *page=request(url,error,error_size);
-    if(!page)return 0;
+    if(!page){
+        char cause[160];
+        snprintf(cause,sizeof(cause),"%s",error);
+        snprintf(error,error_size,"Movy page: %s",cause);
+        return 0;
+    }
     const char *end;
     const char *details=movy_details(page,id,series,&end);
     char title[192]="",year[12]="",imdb[32]="";
@@ -1837,7 +1842,12 @@ static int movy_resolve(int id,int season,int episode,char *stream,int size,
 
     snprintf(url,sizeof(url),MOVY_API "/seed?mediaId=%d",id);
     char *response=request_form(url,NULL,MOVY_ORIGIN "/",error,error_size);
-    if(!response)return 0;
+    if(!response){
+        char cause[160];
+        snprintf(cause,sizeof(cause),"%s",error);
+        snprintf(error,error_size,"Movy seed: %s",cause);
+        return 0;
+    }
     char seed[256];
     json_field(response,response+strlen(response),"seed",seed,sizeof(seed));
     free(response);
@@ -1864,7 +1874,8 @@ static int movy_resolve(int id,int season,int episode,char *stream,int size,
         if(length<0 || length>=(int)sizeof(url))continue;
         response=request_form(url,NULL,MOVY_ORIGIN "/",error,error_size);
         if(!response){
-            if(error[0])snprintf(last_error,sizeof(last_error),"%s",error);
+            if(error[0])snprintf(last_error,sizeof(last_error),"%s: %.190s",
+                                 servers[server],error);
             continue;
         }
         char *json=movy_decode(response,seed,id);
@@ -2652,7 +2663,12 @@ static int movy_episodes(const char *url,Episode *items,int max,char *error,int 
     int id=atoi(url+sizeof(MOVY_SERIES_URL)-1);
     if(id<=0)return 0;
     char *page=request(url,error,error_size);
-    if(!page)return 0;
+    if(!page){
+        char cause[160];
+        snprintf(cause,sizeof(cause),"%s",error);
+        snprintf(error,error_size,"Movy episodes: %s",cause);
+        return 0;
+    }
     const char *details_end;
     const char *details=movy_details(page,id,1,&details_end);
     const char *row=details?json_array_start(details,details_end,"seasons"):NULL;

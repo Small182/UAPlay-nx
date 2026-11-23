@@ -2995,7 +2995,10 @@ static void draw_player_controls(Paint *p,mpv_handle *player,double offset,
     else if(video_title && video_title[0]){
         int has_next=active_episode_variant>=0 &&
             catalog_next_episode(episodes,episode_count,active_episode_variant)>=0;
-        text_small(p,video_title,35,517,has_next?737:1125);
+        char playback_heading[576];
+        snprintf(playback_heading,sizeof(playback_heading),"%s: %s",
+                 TR("Відтворення","Playback"),video_title);
+        text_small(p,playback_heading,35,517,has_next?737:1125);
     }else text_tiny(p,TR("UAPlay  ·  Відтворення","UAPlay  ·  Playback"),35,519,430);
     if(active_episode_variant>=0 &&
        catalog_next_episode(episodes,episode_count,active_episode_variant)>=0)

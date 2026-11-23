@@ -2434,6 +2434,28 @@ int catalog_next_episode(const Episode *items,int count,int current){
     return best;
 }
 
+/* Previous chronologically available episode; preserve the current voice variant. */
+int catalog_previous_episode(const Episode *items,int count,int current){
+    if(!items || current<0 || current>=count)return -1;
+    const Episode *now=&items[current];
+    int best=-1;
+    for(int i=0;i<count;i++){
+        const Episode *candidate=&items[i];
+        if(candidate->season>now->season ||
+           (candidate->season==now->season && candidate->number>=now->number))
+            continue;
+        if(best<0 || candidate->season>items[best].season ||
+           (candidate->season==items[best].season &&
+            candidate->number>items[best].number))best=i;
+    }
+    if(best<0)return -1;
+    if(now->voice[0])for(int i=0;i<count;i++)
+        if(items[i].season==items[best].season &&
+           items[i].number==items[best].number &&
+           !strcmp(items[i].voice,now->voice))return i;
+    return best;
+}
+
 /* Playerjs serials often contain a JSON tree voice -> season -> episode in
    their iframe's `file` field. Unlike UAFlix episode cards, these have no
    /season-N-episode-M/ hrefs (e.g. South Park and many animated shows). */

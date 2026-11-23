@@ -3018,7 +3018,7 @@ static void draw_player_controls(Paint *p,mpv_handle *player,double offset,
     if(active_episode_variant>=0 &&
        catalog_next_episode(episodes,episode_count,active_episode_variant)>=0){
         box_alpha(p,869,27,241,49,.045f,.063f,.079f,.92f,14);
-        text_center(p,TR("»  Наступна серія","»  Next episode"),869,37,241,
+        text_center(p,TR("R  »  Наступна серія","R  »  Next episode"),869,37,241,
                     p->font_small,.96f,.97f,.99f);
     }
     box_alpha(p,0,507,1280,213,.027f,.034f,.044f,.93f,0);
@@ -3034,7 +3034,7 @@ static void draw_player_controls(Paint *p,mpv_handle *player,double offset,
     }else text_tiny(p,TR("UAPlay  ·  Відтворення","UAPlay  ·  Playback"),35,519,430);
     if(active_episode_variant>=0 &&
        catalog_next_episode(episodes,episode_count,active_episode_variant)>=0)
-        text_tiny(p,TR("L — Наступна серія","L — Next episode"),790,519,310);
+        text_tiny(p,TR("L — Попередня · R — Наступна","L — Previous · R — Next"),790,519,410);
     if(live_title){
         text_small(p,TR("●  Прямий ефір","●  Live"),35,569,320);
     }else{
@@ -3253,12 +3253,15 @@ static void stick_arrow(SDL_GameController *pad,int include_right,
     int ry=SDL_GameControllerGetAxis(pad,SDL_CONTROLLER_AXIS_RIGHTY);
     int key=0;
     if(abs(ly)>deadzone || abs(lx)>deadzone)
-        key=abs(ly)>=abs(lx)?(ly>0?SDLK_DOWN:SDLK_UP):(lx>0?SDLK_RIGHT:SDLK_LEFT);
+        key=abs(ly)>=abs(lx)?(include_right?(ly>0?SDLK_DOWN:SDLK_UP):
+                                      (ly>0?SDLK_PAGEDOWN:SDLK_PAGEUP)):
+                                      (lx>0?SDLK_RIGHT:SDLK_LEFT);
     else if(include_right && (abs(ry)>deadzone || abs(rx)>deadzone))
         key=abs(ry)>=abs(rx)?(ry>0?SDLK_DOWN:SDLK_UP):(rx>0?SDLK_RIGHT:SDLK_LEFT);
     Uint32 now=SDL_GetTicks();
     if(!key){*last_key=0;return;}
-    if(key==*last_key && now-*last_time<175)return;
+    if(key==*last_key && now-*last_time<
+       ((key==SDLK_PAGEUP || key==SDLK_PAGEDOWN)?500u:175u))return;
     *last_key=key;*last_time=now;
     SDL_Event event={0};event.type=SDL_KEYDOWN;event.key.keysym.sym=key;
     SDL_PushEvent(&event);
@@ -3573,6 +3576,9 @@ int main(int argc,char **argv) {
                     case SDLK_BACKSPACE:key=SDL_CONTROLLER_BUTTON_B;break;
                     case SDLK_UP:key=SDL_CONTROLLER_BUTTON_DPAD_UP;break;
                     case SDLK_DOWN:key=SDL_CONTROLLER_BUTTON_DPAD_DOWN;break;
+                    /* Reserved for left stick up/down inside PLAYER. */
+                    case SDLK_PAGEUP:key=10001;break;
+                    case SDLK_PAGEDOWN:key=10002;break;
                     case SDLK_LEFT:key=SDL_CONTROLLER_BUTTON_DPAD_LEFT;break;
                     case SDLK_RIGHT:key=SDL_CONTROLLER_BUTTON_DPAD_RIGHT;break;
                     case SDLK_x:key=SDL_CONTROLLER_BUTTON_X;break;
@@ -3879,7 +3885,7 @@ int main(int argc,char **argv) {
                             active_episode_variant>=0 &&
                             catalog_next_episode(episodes,episode_count,
                                                  active_episode_variant)>=0)
-                        key=SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
+                        key=SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
                     else if(player_return_page!=IPTV_CHANNELS && ty>=547 && ty<=594 && tx>=118 && tx<=1161){
                         double duration=0;
                         if(player && video_loaded &&
@@ -4209,13 +4215,16 @@ int main(int argc,char **argv) {
                     movy.seek_started=0;
                     command(player,"stop",NULL);page=player_return_page;
                 }
-                if(key==SDL_CONTROLLER_BUTTON_LEFTSHOULDER &&
-                   active_episode_variant>=0 && player_return_page==EPISODES)
-                    next_episode_request=catalog_next_episode(
-                        episodes,episode_count,active_episode_variant);
+                if(active_episode_variant>=0 && player_return_page==EPISODES){
+                    if(key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)
+                        next_episode_request=catalog_next_episode(
+                            episodes,episode_count,active_episode_variant);
+                    else if(key==SDL_CONTROLLER_BUTTON_LEFTSHOULDER)
+                        next_episode_request=catalog_previous_episode(
+                            episodes,episode_count,active_episode_variant);
+                }
                 if(key==SDL_CONTROLLER_BUTTON_A)command(player,"cycle","pause");
-                int fast=pad && SDL_GameControllerGetAttached(pad) &&
-                    SDL_GameControllerGetButton(pad,SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+                /* R now selects the next episode, not fast seeking. */
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT || key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT){
                     int direction=key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT?1:-1;
                     if(player_return_page==IPTV_CHANNELS){
@@ -4231,10 +4240,29 @@ int main(int argc,char **argv) {
                            mpv_get_property(player,"duration",MPV_FORMAT_DOUBLE,&duration)>=0){
                             position+=movy.offset;
                             duration+=movy.offset;
-                            double target=position+direction*(fast?60:10);
+                            double target=position+direction*10;
                             movy_seek_to(player,&movy,fmax(0,fmin(target,duration-1)),&video_loaded);
                         }
-                    }else seek(player,direction>0?(fast?"60":"10"):(fast?"-60":"-10"));
+                    }else seek(player,direction>0?"10":"-10");
+                }
+                if(key==10001 || key==10002){
+                    /* Vertical left stick seeks one minute and opens controls. */
+                    if(video_loaded && player_return_page!=IPTV_CHANNELS){
+                        int direction=key==10001?1:-1;
+                        if(movy_stream_url(playing_url)){
+                            double position=0,duration=0;
+                            if(!movy.seek_started &&
+                               mpv_get_property(player,"time-pos",MPV_FORMAT_DOUBLE,&position)>=0 &&
+                               mpv_get_property(player,"duration",MPV_FORMAT_DOUBLE,&duration)>=0){
+                                position+=movy.offset;
+                                duration+=movy.offset;
+                                movy_seek_to(player,&movy,
+                                             fmax(0,fmin(position+direction*60,duration-1)),
+                                             &video_loaded);
+                            }
+                        }else seek(player,direction>0?"60":"-60");
+                        controls_until=SDL_GetTicks()+3000;
+                    }
                 }
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)change_volume(player,1);
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)change_volume(player,-1);

@@ -1,6 +1,6 @@
 #ifndef UAPLAY_VERSION_H
 #define UAPLAY_VERSION_H
 
-#define UAPLAY_VERSION "0.5.9"
+#define UAPLAY_VERSION "0.5.10"
 
 #endif

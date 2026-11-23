@@ -54,16 +54,15 @@ static const struct {
 } providers[]={
     {1,{"UAFlix","UAFlix"}},{2,{"UASerials","UASerials"}},{3,{"Eneyida","Eneyida"}},
     {4,{"UAFilm","UAFilm"}},{5,{"UAKino","UAKino"}},{6,{"Mikai (аніме)","Mikai (anime)"}},
-    {7,{"AnimeON (аніме)","AnimeON (anime)"}},
-    {UAKINO_PROVIDER_MOVY,{"Movy (тестове)","Movy (experimental)"}}
+    {7,{"AnimeON (аніме)","AnimeON (anime)"}}
 };
 enum { PROVIDER_COUNT=sizeof(providers)/sizeof(providers[0]),
        MOVY_PROVIDER_BIT=1u<<(UAKINO_PROVIDER_MOVY-1),
        LEGACY_PROVIDER_MASK=(1u<<UAKINO_PROVIDER_MOVY)-1u,
-       ALL_PROVIDERS=0x7fu|MOVY_PROVIDER_BIT };
+       ALL_PROVIDERS=0x7fu };
 /* Bit positions follow the persisted provider IDs, including the slot
    retired between AnimeON and Movy. */
-static unsigned enabled_providers=ALL_PROVIDERS & ~MOVY_PROVIDER_BIT;
+static unsigned enabled_providers=ALL_PROVIDERS;
 
 static int provider_for_row(int row){
     if(row<0)return -1;
@@ -341,8 +340,7 @@ static void theme_load(void){
                     ui_set_language(UI_ENGLISH);
                 /* Aether used the same bit before the Movy setting existed. */
                 char provider_version[8];
-                if(fscanf(f," %7s",provider_version)!=1 || strcmp(provider_version,"movy"))
-                    enabled_providers&=~MOVY_PROVIDER_BIT;
+                (void)fscanf(f," %7s",provider_version); /* Movy stays disabled. */
                 /* Optional trailing field. Existing theme.txt files still load
                    with their original system accent as the default. */
                 int stored_accent=ACCENT_SYSTEM;
@@ -2906,7 +2904,8 @@ static void change_volume(mpv_handle *player,int direction){
 /* Player-only right-stick shortcuts; never convert them into navigation keys.
    SDL analog Y is negative when pushed up. Repeat slowly while held. */
 static int player_right_stick(SDL_GameController *pad,mpv_handle *player,
-                              int backlight_ready,Uint32 *last_time,int *last_direction){
+                              int backlight_ready,Uint32 *last_time,int *last_direction,
+                              float *indicator_value){
     if(!pad || !SDL_GameControllerGetAttached(pad)){
         *last_direction=0;
         return 0;
@@ -2926,8 +2925,11 @@ static int player_right_stick(SDL_GameController *pad,mpv_handle *player,
     *last_direction=direction;
     *last_time=now;
     if(direction>=3){
+        double previous=video_options[1];
         change_volume(player,direction==4?1:-1);
-        return 1;
+        if(previous==video_options[1])return 0;
+        *indicator_value=(float)(video_options[1]/130.0);
+        return 2;
     }
     if(!backlight_ready)return 0;
     float current=0;
@@ -2938,7 +2940,30 @@ static int player_right_stick(SDL_GameController *pad,mpv_handle *player,
     if(fabsf(current-next)<0.001f)return 0;
     if(R_FAILED(lblSetCurrentBrightnessSetting(next)))return 0;
     lblApplyCurrentBrightnessSettingToBacklight();
+    *indicator_value=next;
     return 1;
+}
+/* The right stick shows one-second side HUDs rather than the player controls.
+   Last 300 ms fade smoothly to transparent. */
+static void draw_player_stick_indicator(Paint *p,int kind,float value,Uint32 elapsed){
+    if((kind!=1 && kind!=2) || elapsed>=1000u)return;
+    if(value<0.f)value=0.f;
+    if(value>1.f)value=1.f;
+    float alpha=elapsed>700u?(1000.f-(float)elapsed)/300.f:1.f;
+    int x=kind==1?31:1177, y=205;
+    box_alpha(p,x,y,72,310,.035f,.047f,.063f,.83f*alpha,21);
+    text_center(p,kind==1?"☀":"♪",x+5,y+14,62,p->font_big,
+                .95f*alpha,.96f*alpha,.99f*alpha);
+    const int tx=x+31,ty=y+78,h=190;
+    box_alpha(p,tx,ty,10,h,.30f,.36f,.45f,.94f*alpha,5);
+    int filled=(int)lroundf(h*value);
+    if(filled>0)box_alpha(p,tx,ty+h-filled,10,filled,.94f,.96f,.99f,alpha,5);
+    box_alpha(p,tx-5,ty+h-filled-8,20,16,.97f,.98f,1.f,alpha,8);
+    char label[20];
+    int percent=kind==1?(int)lroundf(value*100.f):(int)lroundf(value*130.f);
+    snprintf(label,sizeof(label),"%d%%",percent);
+    text_center(p,label,x+4,y+277,64,p->font_small,
+                .97f*alpha,.98f*alpha,1.f*alpha);
 }
 static void draw_player_controls(Paint *p,mpv_handle *player,double offset,
                                  const char *live_title,const char *video_title) {
@@ -3415,6 +3440,9 @@ int main(int argc,char **argv) {
     Uint32 next_episode_countdown_at=0;
     Uint32 stick_last_time=0,right_stick_last_time=0;
     int stick_last_key=0,right_stick_last_direction=0;
+    Uint32 stick_indicator_at=0;
+    int stick_indicator_kind=0;
+    float stick_indicator_value=0.f;
     int media_playback_mode=0;
     int catalog_language_changed=0;
     TouchGesture touch={0};
@@ -3474,10 +3502,19 @@ int main(int argc,char **argv) {
                 TR("Не вдалося завантажити список IPTV","Could not load the IPTV list"));
         }
         stick_arrow(pad,page!=PLAYER,&stick_last_time,&stick_last_key);
-        if(page==PLAYER &&
-           player_right_stick(pad,player,backlight_ready,
-                              &right_stick_last_time,&right_stick_last_direction))
-            controls_until=SDL_GetTicks()+3000;
+        if(page==PLAYER){
+            int changed=player_right_stick(pad,player,backlight_ready,
+                        &right_stick_last_time,&right_stick_last_direction,
+                        &stick_indicator_value);
+            if(changed){
+                stick_indicator_kind=changed;
+                stick_indicator_at=SDL_GetTicks();
+                controls_until=0;
+            }
+        }else{
+            stick_indicator_kind=0;
+            right_stick_last_direction=0;
+        }
         SDL_Event e;
         for(;;){
             int replay=pending_key>=0;
@@ -5451,6 +5488,10 @@ int main(int argc,char **argv) {
                 draw_player_controls(&paint,player,movy.offset,live_title,video_title);
                 battery_status_horizontal(&paint,1187,28);
             }
+            if(video_loaded && stick_indicator_kind &&
+               SDL_GetTicks()-stick_indicator_at<1000u)
+                draw_player_stick_indicator(&paint,stick_indicator_kind,
+                        stick_indicator_value,SDL_GetTicks()-stick_indicator_at);
             if(pending_next_episode>=0){
                 Uint32 elapsed=SDL_GetTicks()-next_episode_countdown_at;
                 int remaining=elapsed<NEXT_EPISODE_DELAY_MS?

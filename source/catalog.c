@@ -182,7 +182,9 @@ static char *request_form(const char *url, const char *post_data,
     if(!strncmp(url,MOVY_API "/",sizeof(MOVY_API "/")-1))
         headers=curl_slist_append(headers,"Origin: " MOVY_ORIGIN);
     if(post_data)headers=curl_slist_append(headers,
-                              "Content-Type: application/x-www-form-urlencoded; charset=UTF-8");
+        !strncmp(url,"https://bbe.lme.isroot.in/api/v2/",34)?
+            "Content-Type: application/json":
+            "Content-Type: application/x-www-form-urlencoded; charset=UTF-8");
     request_options(curl, url, &r, post_data?4L:6L, post_data?8L:14L);
     if(referer)curl_easy_setopt(curl,CURLOPT_REFERER,referer);
     if(headers)curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
@@ -1726,6 +1728,318 @@ static void search_animeon(const char *query,Source *items,int *count,int max){
     free(json);
 }
 
+
+/* Bandera Online 2.0 API is a secondary route for existing providers, NOT a
+   separate catalogue. Its public Lampa client uses GET /search and JSON POST
+   /content and /stream. Keep opaque refs rather than guessing site-specific
+   iframe URLs; never send them to a host other than the fixed API origin. */
+#define BANDERA_API "https://bbe.lme.isroot.in/api/v2"
+#define BANDERA_PREFIX "bandera://"
+#define BANDERA_REF_MAX 1536
+#define BANDERA_REF_SLOTS 1024
+typedef struct {
+    char source[24];
+    char ref[BANDERA_REF_MAX];
+    unsigned char is_episode;
+} BanderaEntry;
+static BanderaEntry bandera_entries[BANDERA_REF_SLOTS];
+static int bandera_entry_count;
+
+static const char *bandera_member(const char *object,const char *key){
+    if(!object || *object!='{')return NULL;
+    const char *p=json_ws(object+1);
+    size_t len=strlen(key);
+    while(*p && *p!='}'){
+        if(*p!='"')return NULL;
+        const char *end=json_skip(p,0);
+        if(!end)return NULL;
+        int match=(size_t)(end-p)==len+2 && !memcmp(p+1,key,len);
+        p=json_ws(end);
+        if(*p++!=':')return NULL;
+        p=json_ws(p);
+        if(match)return p;
+        p=json_skip(p,0);
+        if(!p)return NULL;
+        p=json_ws(p);
+        if(*p==',')p=json_ws(p+1);
+    }
+    return NULL;
+}
+static const char *bandera_array(const char *object,const char *key){
+    const char *p=bandera_member(object,key);
+    return p && *p=='['?json_ws(p+1):NULL;
+}
+static int bandera_ref_slot(const char *source,const char *ref,int episode){
+    if(!source || !ref || *ref!='{' || bandera_entry_count>=BANDERA_REF_SLOTS)
+        return -1;
+    const char *end=json_skip(ref,0);
+    if(!end || end-ref<2 || end-ref>=BANDERA_REF_MAX)return -1;
+    BanderaEntry *entry=&bandera_entries[bandera_entry_count];
+    memset(entry,0,sizeof(*entry));
+    snprintf(entry->source,sizeof(entry->source),"%s",source);
+    memcpy(entry->ref,ref,(size_t)(end-ref));
+    entry->ref[end-ref]=0;
+    entry->is_episode=episode!=0;
+    return bandera_entry_count++;
+}
+static int bandera_slot_url(const char *url){
+    if(strncmp(url,BANDERA_PREFIX,sizeof(BANDERA_PREFIX)-1))return -1;
+    const char *n=url+sizeof(BANDERA_PREFIX)-1;
+    if(!isdigit((unsigned char)*n))return -1;
+    unsigned value=0;
+    while(isdigit((unsigned char)*n)){
+        value=value*10+(unsigned)(*n++-'0');
+        if(value>=BANDERA_REF_SLOTS)return -1;
+    }
+    return *n || value>=(unsigned)bandera_entry_count?-1:(int)value;
+}
+static char *bandera_post(const char *path,const BanderaEntry *entry,int full,
+                          char *error,int error_size){
+    char body[BANDERA_REF_MAX+160];
+    int n=snprintf(body,sizeof(body),
+        full?"{\"source\":\"%s\",\"ref\":%s,\"full\":true}":
+             "{\"source\":\"%s\",\"ref\":%s}",
+        entry->source,entry->ref);
+    if(n<0 || n>=(int)sizeof(body))return NULL;
+    char url[144];
+    snprintf(url,sizeof(url),BANDERA_API "/%s",path);
+    return request_form(url,body,NULL,error,error_size);
+}
+static int bandera_valid_stream(const char *url){
+    if(strncmp(url,"https://",8))return 0;
+    const char *host=url+8;
+    if(!*host || *host=='/' || *host=='[' || strchr(host,'@'))return 0;
+    const char *end=strpbrk(host,"/:?#");
+    size_t n=end?(size_t)(end-host):strlen(host);
+    if(n<4 || n>240 || !memchr(host,'.',n))return 0;
+    if(!strncasecmp(host,"localhost",n))return 0;
+    if(n>=6 && !strncmp(host,"127.0.",6))return 0;
+    if(n>=8 && !strncmp(host,"192.168.",8))return 0;
+    if(n>=3 && !strncmp(host,"10.",3))return 0;
+    if(n>=4 && !strncmp(host,"169.",4))return 0;
+    if(n>=4 && !strncmp(host,"172.",4))return 0;
+    return 1;
+}
+static int bandera_url_from_object(const char *object,char *stream,int size){
+    char url[2048]="";
+    const char *end=json_skip(object,0);
+    if(!end)return 0;
+    json_field(object,end,"url",url,sizeof(url));
+    if(url[0]=='['){
+        const char *space=strchr(url,']');
+        if(space){memmove(url,space+1,strlen(space+1)+1);}
+    }
+    if(!bandera_valid_stream(url) || strlen(url)>=(size_t)size)return 0;
+    snprintf(stream,(size_t)size,"%s",url);
+    return 1;
+}
+static int bandera_streams(const char *json,char *stream,int size){
+    const char *items=bandera_array(json,"streams");
+    if(!items)return 0;
+    for(const char *p=items;*p && *p!=']';){
+        p=json_ws(p);
+        if(*p==','){p++;continue;}
+        if(*p!='{')break;
+        if(bandera_url_from_object(p,stream,size))return 1;
+        const char *end=json_skip(p,0);
+        if(!end)break;
+        const char *variants=bandera_array(p,"variants");
+        if(variants)for(const char *v=variants;v<end && *v && *v!=']';){
+            v=json_ws(v);
+            if(*v==','){v++;continue;}
+            if(*v!='{')break;
+            if(bandera_url_from_object(v,stream,size))return 1;
+            v=json_skip(v,0);
+            if(!v)break;
+        }
+        p=end;
+    }
+    return 0;
+}
+static int bandera_resolve_slot(int slot,char *stream,int size,char *error,int error_size){
+    const BanderaEntry *entry=&bandera_entries[slot];
+    if(entry->is_episode){
+        char *response=bandera_post("stream",entry,0,error,error_size);
+        if(!response)return 0;
+        int ok=bandera_streams(response,stream,size);
+        free(response);
+        if(ok)error[0]=0;
+        else snprintf(error,error_size,"%s",TR("Bandera: немає сумісного відео",
+                                              "Bandera: no compatible stream"));
+        return ok;
+    }
+    char *content=bandera_post("content",entry,1,error,error_size);
+    if(!content)return 0;
+    int ok=bandera_streams(content,stream,size);
+    if(!ok){
+        const char *ref=bandera_member(content,"stream_ref");
+        if(ref && *ref=='{'){
+            BanderaEntry candidate=*entry;
+            const char *end=json_skip(ref,0);
+            if(end && end-ref<BANDERA_REF_MAX){
+                memcpy(candidate.ref,ref,(size_t)(end-ref));
+                candidate.ref[end-ref]=0;
+                char *response=bandera_post("stream",&candidate,0,error,error_size);
+                if(response){
+                    ok=bandera_streams(response,stream,size);
+                    free(response);
+                }
+            }
+        }
+    }
+    if(!ok){
+        const char *voices=bandera_array(content,"voices");
+        for(const char *voice=voices;voice && *voice && *voice!=']' && !ok;){
+            voice=json_ws(voice);
+            if(*voice==','){voice++;continue;}
+            if(*voice!='{')break;
+            ok=bandera_streams(voice,stream,size);
+            const char *ref=bandera_member(voice,"stream_ref");
+            if(!ok && ref && *ref=='{'){
+                BanderaEntry candidate=*entry;
+                const char *end=json_skip(ref,0);
+                if(end && end-ref<BANDERA_REF_MAX){
+                    memcpy(candidate.ref,ref,(size_t)(end-ref));
+                    candidate.ref[end-ref]=0;
+                    char *response=bandera_post("stream",&candidate,0,error,error_size);
+                    if(response){
+                        ok=bandera_streams(response,stream,size);
+                        free(response);
+                    }
+                }
+            }
+            voice=json_skip(voice,0);
+        }
+    }
+    free(content);
+    if(ok)error[0]=0;
+    else snprintf(error,error_size,"%s",TR("Bandera: відеопотік недоступний",
+                                          "Bandera: stream unavailable"));
+    return ok;
+}
+static const char *bandera_provider(int selected){
+    switch(selected){
+        case 1:return "uaflix";
+        case 2:return "uaserials";
+        case 3:return "eneyida";
+        case 4:return "uafilm";
+        case 5:return "uakino";
+        case 6:return "mikai";
+        case 7:return "animeon";
+        default:return NULL;
+    }
+}
+/* Called only when the native provider returns no matches. An unavailable
+   API must leave the original error untouched. */
+static int bandera_search_backup(const Movie *movie,int selected,Source *items,
+                                  int max){
+    const char *provider=bandera_provider(selected);
+    if(!provider || max<1 || !movie || movie->id<=0)return 0;
+    char *encoded=encode(movie->original[0]?movie->original:movie->title);
+    if(!encoded)return 0;
+    char url[1800];
+    snprintf(url,sizeof(url),
+        BANDERA_API "/search?source=%s&sources=%s&tmdb_id=%d&serial=%d&title=%s",
+        provider,provider,movie->id,movie->series?1:0,encoded);
+    free(encoded);
+    char error[160]="";
+    char *json=request_form(url,NULL,NULL,error,sizeof(error));
+    if(!json)return 0;
+    const char *items_json=bandera_array(json,"items");
+    int count=0;
+    for(const char *p=items_json;p && *p && *p!=']' && count<max;){
+        p=json_ws(p);
+        if(*p==','){p++;continue;}
+        if(*p!='{')break;
+        const char *end=json_skip(p,0);
+        if(!end)break;
+        const char *ref=bandera_member(p,"ref");
+        if(ref && *ref=='{'){
+            int slot=bandera_ref_slot(provider,ref,0);
+            if(slot>=0){
+                Source *item=&items[count++];
+                char title[192]="";
+                json_field(p,end,"title",title,sizeof(title));
+                if(!title[0])snprintf(title,sizeof(title),"%s",movie->title);
+                snprintf(item->title,sizeof(item->title),"Bandera (%s): %.145s",
+                         provider,title);
+                snprintf(item->url,sizeof(item->url),BANDERA_PREFIX "%d",slot);
+            }
+        }
+        p=end;
+    }
+    free(json);
+    return count;
+}
+static int bandera_episodes(int slot,Episode *items,int max,
+                             char *error,int error_size){
+    char *content=bandera_post("content",&bandera_entries[slot],1,error,error_size);
+    if(!content)return 0;
+    const char *voices=bandera_array(content,"voices");
+    int count=0;
+    for(const char *voice=voices;voice && *voice && *voice!=']' && count<max;){
+        voice=json_ws(voice);
+        if(*voice==','){voice++;continue;}
+        if(*voice!='{')break;
+        const char *voice_end=json_skip(voice,0);
+        if(!voice_end)break;
+        char voice_name[96]="";
+        json_field(voice,voice_end,"display_name",voice_name,sizeof(voice_name));
+        if(!voice_name[0])json_field(voice,voice_end,"name",voice_name,sizeof(voice_name));
+        const char *seasons=bandera_array(voice,"seasons");
+        for(const char *season=seasons;season && *season && *season!=']' && count<max;){
+            season=json_ws(season);
+            if(*season==','){season++;continue;}
+            if(*season!='{')break;
+            const char *season_end=json_skip(season,0);
+            if(!season_end)break;
+            char number[24]="";
+            json_field(season,season_end,"number",number,sizeof(number));
+            if(!number[0])json_field(season,season_end,"title",number,sizeof(number));
+            int s=atoi(number);
+            if(s<1 || s>999){season=season_end;continue;}
+            const char *episodes=bandera_array(season,"episodes");
+            int sequence=0;
+            for(const char *ep=episodes;ep && *ep && *ep!=']' && count<max;){
+                ep=json_ws(ep);
+                if(*ep==','){ep++;continue;}
+                if(*ep!='{')break;
+                const char *ep_end=json_skip(ep,0);
+                if(!ep_end)break;
+                char num[24]="",label[192]="";
+                json_field(ep,ep_end,"number",num,sizeof(num));
+                if(!num[0])json_field(ep,ep_end,"episode",num,sizeof(num));
+                int n=atoi(num);
+                if(n<1)n=++sequence;else sequence=n;
+                json_field(ep,ep_end,"title",label,sizeof(label));
+                const char *ref=bandera_member(ep,"ref");
+                if(ref && *ref=='{'){
+                    int index=bandera_ref_slot(bandera_entries[slot].source,ref,1);
+                    if(index>=0){
+                        Episode *item=&items[count++];
+                        memset(item,0,sizeof(*item));
+                        item->season=s;item->number=n;
+                        snprintf(item->voice,sizeof(item->voice),"%s",voice_name);
+                        snprintf(item->title,sizeof(item->title),"%s",label[0]?label:
+                                 TR("Серія","Episode"));
+                        snprintf(item->url,sizeof(item->url),BANDERA_PREFIX "%d",index);
+                    }
+                }
+                ep=ep_end;
+            }
+            season=season_end;
+        }
+        voice=voice_end;
+    }
+    free(content);
+    if(count){
+        qsort(items,(size_t)count,sizeof(*items),episode_order);
+        error[0]=0;
+    }else snprintf(error,error_size,"%s",TR("Bandera: серії недоступні",
+                                            "Bandera: episodes unavailable"));
+    return count;
+}
+
 int movy_stream_url(const char *url){
     const char prefix[]="https://moon.goldenkite.top/";
     return !strncmp(url,prefix,sizeof(prefix)-1);
@@ -1926,6 +2240,7 @@ int uakino_search_provider(const Movie *movie, Source *items, int max,
     const char *localized=movie->title;
     const char *original=movie->original;
     error[0]=0;
+    bandera_entry_count=0;
     if(selected==UAKINO_PROVIDER_MOVY){
         if(max<1 || movie->id<=0)return 0;
         if(movie->series)
@@ -1991,6 +2306,8 @@ int uakino_search_provider(const Movie *movie, Source *items, int max,
         if(count==before_animeon && original[0] && strcmp(original,localized))
             search_animeon(original,items,&count,max);
     }
+    if(!count && selected>=1 && selected<=7)
+        count=bandera_search_backup(movie,selected,items,max);
     if (count) error[0]=0;
     else if (!error[0])
         snprintf(error,error_size,"%s",TR("Нічого не знайдено","No results found"));
@@ -2346,6 +2663,9 @@ int uakino_resolve(const Source *source, char *stream, int size,
                    char *error, int error_size) {
     resolved_subtitle_count=0;
     resolved_audio_count=0;
+    int bandera_slot=bandera_slot_url(source->url);
+    if(bandera_slot>=0)
+        return bandera_resolve_slot(bandera_slot,stream,size,error,error_size);
     if(movy_stream_url(source->url)){
         if(strlen(source->url)>=(size_t)size)return 0;
         snprintf(stream,(size_t)size,"%s",source->url);
@@ -2712,6 +3032,8 @@ static int movy_episodes(const char *url,Episode *items,int max,char *error,int 
 
 int uakino_episodes(const Source *source, Episode *items, int max,
                     char *error, int error_size) {
+    int bandera_slot=bandera_slot_url(source->url);
+    if(bandera_slot>=0)return bandera_episodes(bandera_slot,items,max,error,error_size);
     if(!strncmp(source->url,MOVY_SERIES_URL,sizeof(MOVY_SERIES_URL)-1))
         return movy_episodes(source->url,items,max,error,error_size);
     if(strstr(source->url,"animeon.club/api/player/")){

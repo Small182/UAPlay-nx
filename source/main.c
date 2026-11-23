@@ -2946,6 +2946,34 @@ static int player_right_stick(SDL_GameController *pad,mpv_handle *player,
 }
 /* The right stick shows one-second side HUDs rather than the player controls.
    Last 300 ms fade smoothly to transparent. */
+/* Map touch Y on either HUD rail to its underlying player setting. */
+static int player_touch_slider(mpv_handle *player,int backlight_ready,int kind,
+                               int y,float *value){
+    float normalized=(float)(205+78+190-y)/190.f;
+    if(normalized<0.f)normalized=0.f;
+    if(normalized>1.f)normalized=1.f;
+    if(kind==2){
+        double volume=round(normalized*130.0);
+        if(video_options[1]!=volume){
+            video_options[1]=volume;
+            playback_set_value(player,"volume",volume);
+        }
+        *value=(float)(volume/130.0);
+        return 1;
+    }
+    if(kind==1 && backlight_ready){
+        float next=normalized<.05f?.05f:normalized;
+        float current=0.f;
+        if(R_FAILED(lblGetCurrentBrightnessSetting(&current)))return 0;
+        if(fabsf(current-next)>=.001f){
+            if(R_FAILED(lblSetCurrentBrightnessSetting(next)))return 0;
+            lblApplyCurrentBrightnessSettingToBacklight();
+        }
+        *value=next;
+        return 1;
+    }
+    return 0;
+}
 static void draw_player_stick_indicator(Paint *p,int kind,float value,Uint32 elapsed){
     if((kind!=1 && kind!=2) || elapsed>=1000u)return;
     if(value<0.f)value=0.f;
@@ -3450,6 +3478,9 @@ int main(int argc,char **argv) {
     Uint32 stick_indicator_at=0;
     int stick_indicator_kind=0;
     float stick_indicator_value=0.f;
+    int stick_touch_drag=0; /* 1: finger, 2: mouse */
+    SDL_TouchID stick_touch_device=0;
+    SDL_FingerID stick_touch_finger=0;
     int media_playback_mode=0;
     int catalog_language_changed=0;
     TouchGesture touch={0};
@@ -3509,7 +3540,9 @@ int main(int argc,char **argv) {
                 TR("Не вдалося завантажити список IPTV","Could not load the IPTV list"));
         }
         stick_arrow(pad,page!=PLAYER,&stick_last_time,&stick_last_key);
-        if(page==PLAYER){
+        if(page==PLAYER && stick_touch_drag)
+            stick_indicator_at=SDL_GetTicks(); /* Keep HUD visible while held. */
+        if(page==PLAYER && !stick_touch_drag){
             int changed=player_right_stick(pad,player,backlight_ready,
                         &right_stick_last_time,&right_stick_last_direction,
                         &stick_indicator_value);
@@ -3518,8 +3551,9 @@ int main(int argc,char **argv) {
                 stick_indicator_at=SDL_GetTicks();
                 controls_until=0;
             }
-        }else{
+        }else if(page!=PLAYER){
             stick_indicator_kind=0;
+            stick_touch_drag=0;
             right_stick_last_direction=0;
         }
         SDL_Event e;
@@ -3554,6 +3588,7 @@ int main(int argc,char **argv) {
                 e.type==SDL_APP_WILLENTERBACKGROUND ||
                 (e.type==SDL_WINDOWEVENT && e.window.event==SDL_WINDOWEVENT_FOCUS_LOST);
             if(touch.page!=page || cancel_pointer_drag)touch.active=0;
+            if(cancel_pointer_drag)stick_touch_drag=0;
             /* Eden mouse drags must not be cancelled merely because an
                unrelated SDL touch gesture belongs to a different page. */
             if(cancel_pointer_drag){
@@ -3611,6 +3646,53 @@ int main(int argc,char **argv) {
                     }
                 }
                 continue;
+            }
+            /* A visible side HUD captures touch/mouse drags before the player
+               handles generic taps (which would open the full controls). */
+            if(page==PLAYER && video_loaded &&
+               (e.type==SDL_FINGERDOWN || e.type==SDL_FINGERMOTION ||
+                e.type==SDL_FINGERUP ||
+                (e.type==SDL_MOUSEBUTTONDOWN && e.button.button==SDL_BUTTON_LEFT &&
+                 e.button.which!=SDL_TOUCH_MOUSEID) ||
+                (e.type==SDL_MOUSEMOTION && e.motion.which!=SDL_TOUCH_MOUSEID) ||
+                (e.type==SDL_MOUSEBUTTONUP && e.button.button==SDL_BUTTON_LEFT &&
+                 e.button.which!=SDL_TOUCH_MOUSEID))){
+                int finger=e.type==SDL_FINGERDOWN || e.type==SDL_FINGERMOTION ||
+                           e.type==SDL_FINGERUP;
+                int down=e.type==SDL_FINGERDOWN || e.type==SDL_MOUSEBUTTONDOWN;
+                int up=e.type==SDL_FINGERUP || e.type==SDL_MOUSEBUTTONUP;
+                int x,y;
+                if(finger){x=(int)(e.tfinger.x*1280);y=(int)(e.tfinger.y*720);}
+                else{
+                    int ww=1280,hh=720;
+                    SDL_GetWindowSize(window,&ww,&hh);
+                    int mx=e.type==SDL_MOUSEMOTION?e.motion.x:e.button.x;
+                    int my=e.type==SDL_MOUSEMOTION?e.motion.y:e.button.y;
+                    x=mx*1280/(ww?ww:1280);y=my*720/(hh?hh:720);
+                }
+                if(down && !stick_touch_drag && stick_indicator_kind &&
+                   SDL_GetTicks()-stick_indicator_at<1000u &&
+                   y>=205 && y<=515 &&
+                   x>=(stick_indicator_kind==1?31:1177) &&
+                   x<=(stick_indicator_kind==1?103:1249)){
+                    stick_touch_drag=finger?1:2;
+                    if(finger){
+                        stick_touch_device=e.tfinger.touchId;
+                        stick_touch_finger=e.tfinger.fingerId;
+                    }
+                }
+                int owned=stick_touch_drag &&
+                    ((finger && stick_touch_drag==1 &&
+                      e.tfinger.touchId==stick_touch_device &&
+                      e.tfinger.fingerId==stick_touch_finger) ||
+                     (!finger && stick_touch_drag==2));
+                if(owned){
+                    if(player_touch_slider(player,backlight_ready,stick_indicator_kind,
+                                           y,&stick_indicator_value))
+                        stick_indicator_at=SDL_GetTicks();
+                    if(up){stick_touch_drag=0;stick_indicator_at=SDL_GetTicks();}
+                    continue;
+                }
             }
             int tx=-1,ty=-1;
             if(e.type==SDL_FINGERDOWN || e.type==SDL_FINGERMOTION || e.type==SDL_FINGERUP){

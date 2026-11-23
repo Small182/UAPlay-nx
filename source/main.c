@@ -2925,9 +2925,8 @@ static int player_right_stick(SDL_GameController *pad,mpv_handle *player,
     *last_direction=direction;
     *last_time=now;
     if(direction>=3){
-        double previous=video_options[1];
         change_volume(player,direction==4?1:-1);
-        if(previous==video_options[1])return 0;
+        /* Show the HUD even if volume is already at 0% or 130%. */
         *indicator_value=(float)(video_options[1]/130.0);
         return 2;
     }
@@ -2937,9 +2936,11 @@ static int player_right_stick(SDL_GameController *pad,mpv_handle *player,
     float next=current+(direction==1?0.05f:-0.05f);
     if(next<0.05f)next=0.05f;
     if(next>1.f)next=1.f;
-    if(fabsf(current-next)<0.001f)return 0;
-    if(R_FAILED(lblSetCurrentBrightnessSetting(next)))return 0;
-    lblApplyCurrentBrightnessSettingToBacklight();
+    if(fabsf(current-next)>=0.001f){
+        if(R_FAILED(lblSetCurrentBrightnessSetting(next)))return 0;
+        lblApplyCurrentBrightnessSettingToBacklight();
+    }
+    /* At either brightness limit, still show and refresh the HUD. */
     *indicator_value=next;
     return 1;
 }
@@ -2958,7 +2959,8 @@ static void draw_player_stick_indicator(Paint *p,int kind,float value,Uint32 ela
     box_alpha(p,tx,ty,10,h,.30f,.36f,.45f,.94f*alpha,5);
     int filled=(int)lroundf(h*value);
     if(filled>0)box_alpha(p,tx,ty+h-filled,10,filled,.94f,.96f,.99f,alpha,5);
-    box_alpha(p,tx-5,ty+h-filled-8,20,16,.97f,.98f,1.f,alpha,8);
+    /* Circular thumb with rounded rail ends, centered on the value. */
+    box_alpha(p,tx-5,ty+h-filled-10,20,20,.97f,.98f,1.f,alpha,10);
     char label[20];
     int percent=kind==1?(int)lroundf(value*100.f):(int)lroundf(value*130.f);
     snprintf(label,sizeof(label),"%d%%",percent);

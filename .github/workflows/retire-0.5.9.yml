@@ -9,7 +9,6 @@ permissions:
 
 jobs:
   retire:
-    if: github.event.head_commit.message == 'chore: retire UAPlay 0.5.9 release'
     runs-on: ubuntu-24.04
     steps:
       - name: Delete only the superseded 0.5.9 release and tag
@@ -17,4 +16,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          gh release delete UAPlay_0.5.9 --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          if gh release view UAPlay_0.5.9 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete UAPlay_0.5.9 --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          fi

@@ -2,7 +2,7 @@ name: Build native UAPlay with libmpv
 
 on:
   push:
-    branches: [main, feature/vita-performance-downloads, feature/wallpaper-gallery]
+    branches: [main, feature/vita-performance-downloads, feature/wallpaper-gallery, feature/bandera-api-fallback]
   workflow_dispatch:
 
 permissions:

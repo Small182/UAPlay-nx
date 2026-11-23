@@ -98,4 +98,6 @@ int uakino_episodes(const Source *source, Episode *items, int max,
 /* Next chronologically available episode, preferring the current dub when
    the same episode exists in multiple voice variants. -1 if at the end. */
 int catalog_next_episode(const Episode *items,int count,int current);
+/* Previous available episode, keeping the current voice where possible. */
+int catalog_previous_episode(const Episode *items,int count,int current);
 #endif

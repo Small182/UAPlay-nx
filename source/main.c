@@ -3877,6 +3877,32 @@ int main(int argc,char **argv) {
                 }
                 if(page==PLAYER){
                     int was_visible=SDL_GetTicks()<controls_until;
+                    /* A tap on empty video/overlay space toggles controls.
+                       Preserve interactive buttons, seek, and volume gestures. */
+                    if(was_visible && video_loaded &&
+                       ((e.type==SDL_FINGERDOWN) ||
+                        (e.type==SDL_MOUSEBUTTONDOWN && e.button.which!=SDL_TOUCH_MOUSEID))){
+                        int on_control=(ty>=24 && ty<=86 && tx>=27 && tx<=203) ||
+                            (ty>=24 && ty<=83 && tx>=869 && tx<=1110 &&
+                             active_episode_variant>=0 &&
+                             catalog_next_episode(episodes,episode_count,
+                                                  active_episode_variant)>=0) ||
+                            (player_return_page!=IPTV_CHANNELS &&
+                             ty>=547 && ty<=594 && tx>=118 && tx<=1161) ||
+                            (ty>=603 && ty<703 && tx>=60 && tx<259);
+                        if(!on_control && ty>=603 && ty<703)
+                            for(int i=0;i<6;i++){
+                                SDL_Rect hit=player_button_rect(i);
+                                if(tx>=hit.x && tx<hit.x+hit.w &&
+                                   ty>=hit.y && ty<hit.y+hit.h){
+                                    on_control=1;break;
+                                }
+                            }
+                        if(!on_control){
+                            controls_until=0;
+                            continue;
+                        }
+                    }
                     controls_until=SDL_GetTicks()+3000;
                     if(!was_visible && video_loaded)continue;
                     if(ty>=24 && ty<=86 && tx>=27 && tx<=203)key=SDL_CONTROLLER_BUTTON_B;

@@ -1,7 +1,7 @@
 ## Українська
 
-- Виправлено джерело Movy.
+- Покращено управління плеєром (керування яскравістю та гучністю правим джойстиком).
 
 ## English
 
-- Fixed the Movy source.
+- Improved player controls (adjust brightness and volume with the right joystick).

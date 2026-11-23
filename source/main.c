@@ -54,16 +54,15 @@ static const struct {
 } providers[]={
     {1,{"UAFlix","UAFlix"}},{2,{"UASerials","UASerials"}},{3,{"Eneyida","Eneyida"}},
     {4,{"UAFilm","UAFilm"}},{5,{"UAKino","UAKino"}},{6,{"Mikai (аніме)","Mikai (anime)"}},
-    {7,{"AnimeON (аніме)","AnimeON (anime)"}},
-    {UAKINO_PROVIDER_MOVY,{"Movy (тестове)","Movy (experimental)"}}
+    {7,{"AnimeON (аніме)","AnimeON (anime)"}}
 };
 enum { PROVIDER_COUNT=sizeof(providers)/sizeof(providers[0]),
        MOVY_PROVIDER_BIT=1u<<(UAKINO_PROVIDER_MOVY-1),
        LEGACY_PROVIDER_MASK=(1u<<UAKINO_PROVIDER_MOVY)-1u,
-       ALL_PROVIDERS=0x7fu|MOVY_PROVIDER_BIT };
+       ALL_PROVIDERS=0x7fu };
 /* Bit positions follow the persisted provider IDs, including the slot
    retired between AnimeON and Movy. */
-static unsigned enabled_providers=ALL_PROVIDERS & ~MOVY_PROVIDER_BIT;
+static unsigned enabled_providers=ALL_PROVIDERS;
 
 static int provider_for_row(int row){
     if(row<0)return -1;
@@ -341,8 +340,7 @@ static void theme_load(void){
                     ui_set_language(UI_ENGLISH);
                 /* Aether used the same bit before the Movy setting existed. */
                 char provider_version[8];
-                if(fscanf(f," %7s",provider_version)!=1 || strcmp(provider_version,"movy"))
-                    enabled_providers&=~MOVY_PROVIDER_BIT;
+                (void)fscanf(f," %7s",provider_version); /* Movy stays disabled. */
                 /* Optional trailing field. Existing theme.txt files still load
                    with their original system accent as the default. */
                 int stored_accent=ACCENT_SYSTEM;
@@ -2906,7 +2904,8 @@ static void change_volume(mpv_handle *player,int direction){
 /* Player-only right-stick shortcuts; never convert them into navigation keys.
    SDL analog Y is negative when pushed up. Repeat slowly while held. */
 static int player_right_stick(SDL_GameController *pad,mpv_handle *player,
-                              int backlight_ready,Uint32 *last_time,int *last_direction){
+                              int backlight_ready,Uint32 *last_time,int *last_direction,
+                              float *indicator_value){
     if(!pad || !SDL_GameControllerGetAttached(pad)){
         *last_direction=0;
         return 0;
@@ -2927,7 +2926,9 @@ static int player_right_stick(SDL_GameController *pad,mpv_handle *player,
     *last_time=now;
     if(direction>=3){
         change_volume(player,direction==4?1:-1);
-        return 1;
+        /* Show the HUD even if volume is already at 0% or 130%. */
+        *indicator_value=(float)(video_options[1]/130.0);
+        return 2;
     }
     if(!backlight_ready)return 0;
     float current=0;
@@ -2935,13 +2936,68 @@ static int player_right_stick(SDL_GameController *pad,mpv_handle *player,
     float next=current+(direction==1?0.05f:-0.05f);
     if(next<0.05f)next=0.05f;
     if(next>1.f)next=1.f;
-    if(fabsf(current-next)<0.001f)return 0;
-    if(R_FAILED(lblSetCurrentBrightnessSetting(next)))return 0;
-    lblApplyCurrentBrightnessSettingToBacklight();
+    if(fabsf(current-next)>=0.001f){
+        if(R_FAILED(lblSetCurrentBrightnessSetting(next)))return 0;
+        lblApplyCurrentBrightnessSettingToBacklight();
+    }
+    /* At either brightness limit, still show and refresh the HUD. */
+    *indicator_value=next;
     return 1;
 }
+/* The right stick shows one-second side HUDs rather than the player controls.
+   Last 300 ms fade smoothly to transparent. */
+/* Map touch Y on either HUD rail to its underlying player setting. */
+static int player_touch_slider(mpv_handle *player,int backlight_ready,int kind,
+                               int y,float *value){
+    float normalized=(float)(205+78+190-y)/190.f;
+    if(normalized<0.f)normalized=0.f;
+    if(normalized>1.f)normalized=1.f;
+    if(kind==2){
+        double volume=round(normalized*130.0);
+        if(video_options[1]!=volume){
+            video_options[1]=volume;
+            playback_set_value(player,"volume",volume);
+        }
+        *value=(float)(volume/130.0);
+        return 1;
+    }
+    if(kind==1 && backlight_ready){
+        float next=normalized<.05f?.05f:normalized;
+        float current=0.f;
+        if(R_FAILED(lblGetCurrentBrightnessSetting(&current)))return 0;
+        if(fabsf(current-next)>=.001f){
+            if(R_FAILED(lblSetCurrentBrightnessSetting(next)))return 0;
+            lblApplyCurrentBrightnessSettingToBacklight();
+        }
+        *value=next;
+        return 1;
+    }
+    return 0;
+}
+static void draw_player_stick_indicator(Paint *p,int kind,float value,Uint32 elapsed){
+    if((kind!=1 && kind!=2) || elapsed>=1000u)return;
+    if(value<0.f)value=0.f;
+    if(value>1.f)value=1.f;
+    float alpha=elapsed>700u?(1000.f-(float)elapsed)/300.f:1.f;
+    int x=kind==1?31:1177, y=205;
+    box_alpha(p,x,y,72,310,.035f,.047f,.063f,.83f*alpha,21);
+    text_center(p,kind==1?"☀":"♪",x+5,y+14,62,p->font_big,
+                .95f*alpha,.96f*alpha,.99f*alpha);
+    const int tx=x+31,ty=y+78,h=190;
+    box_alpha(p,tx,ty,10,h,.30f,.36f,.45f,.94f*alpha,5);
+    int filled=(int)lroundf(h*value);
+    if(filled>0)box_alpha(p,tx,ty+h-filled,10,filled,.94f,.96f,.99f,alpha,5);
+    /* Circular thumb with rounded rail ends, centered on the value. */
+    box_alpha(p,tx-5,ty+h-filled-10,20,20,.97f,.98f,1.f,alpha,10);
+    char label[20];
+    int percent=kind==1?(int)lroundf(value*100.f):(int)lroundf(value*130.f);
+    snprintf(label,sizeof(label),"%d%%",percent);
+    text_center(p,label,x+4,y+277,64,p->font_small,
+                .97f*alpha,.98f*alpha,1.f*alpha);
+}
 static void draw_player_controls(Paint *p,mpv_handle *player,double offset,
-                                 const char *live_title,const char *video_title) {
+                                 const char *live_title,const char *video_title,
+                                 const char *source_label) {
     ui_theme_enabled=0; /* Video playback controls remain readable in both themes. */
     double pos=0,duration=0;
     int paused=0;
@@ -2962,7 +3018,7 @@ static void draw_player_controls(Paint *p,mpv_handle *player,double offset,
     if(active_episode_variant>=0 &&
        catalog_next_episode(episodes,episode_count,active_episode_variant)>=0){
         box_alpha(p,869,27,241,49,.045f,.063f,.079f,.92f,14);
-        text_center(p,TR("»  Наступна серія","»  Next episode"),869,37,241,
+        text_center(p,TR("R  »  Наступна серія","R  »  Next episode"),869,37,241,
                     p->font_small,.96f,.97f,.99f);
     }
     box_alpha(p,0,507,1280,213,.027f,.034f,.044f,.93f,0);
@@ -2970,11 +3026,15 @@ static void draw_player_controls(Paint *p,mpv_handle *player,double offset,
     else if(video_title && video_title[0]){
         int has_next=active_episode_variant>=0 &&
             catalog_next_episode(episodes,episode_count,active_episode_variant)>=0;
-        text_small(p,video_title,35,517,has_next?737:1125);
+        char playback_heading[640];
+        snprintf(playback_heading,sizeof(playback_heading),"%s · %s · %s",
+                 source_label && source_label[0]?source_label:"UAPlay",
+                 TR("Відтворення","Playback"),video_title);
+        text_small(p,playback_heading,35,517,has_next?737:1125);
     }else text_tiny(p,TR("UAPlay  ·  Відтворення","UAPlay  ·  Playback"),35,519,430);
     if(active_episode_variant>=0 &&
        catalog_next_episode(episodes,episode_count,active_episode_variant)>=0)
-        text_tiny(p,TR("L — Наступна серія","L — Next episode"),790,519,310);
+        text_tiny(p,TR("L — Попередня · R — Наступна","L — Previous · R — Next"),790,519,410);
     if(live_title){
         text_small(p,TR("●  Прямий ефір","●  Live"),35,569,320);
     }else{
@@ -3193,12 +3253,15 @@ static void stick_arrow(SDL_GameController *pad,int include_right,
     int ry=SDL_GameControllerGetAxis(pad,SDL_CONTROLLER_AXIS_RIGHTY);
     int key=0;
     if(abs(ly)>deadzone || abs(lx)>deadzone)
-        key=abs(ly)>=abs(lx)?(ly>0?SDLK_DOWN:SDLK_UP):(lx>0?SDLK_RIGHT:SDLK_LEFT);
+        key=abs(ly)>=abs(lx)?(include_right?(ly>0?SDLK_DOWN:SDLK_UP):
+                                      (ly>0?SDLK_PAGEDOWN:SDLK_PAGEUP)):
+                                      (lx>0?SDLK_RIGHT:SDLK_LEFT);
     else if(include_right && (abs(ry)>deadzone || abs(rx)>deadzone))
         key=abs(ry)>=abs(rx)?(ry>0?SDLK_DOWN:SDLK_UP):(rx>0?SDLK_RIGHT:SDLK_LEFT);
     Uint32 now=SDL_GetTicks();
     if(!key){*last_key=0;return;}
-    if(key==*last_key && now-*last_time<175)return;
+    if(key==*last_key && now-*last_time<
+       ((key==SDLK_PAGEUP || key==SDLK_PAGEDOWN)?500u:175u))return;
     *last_key=key;*last_time=now;
     SDL_Event event={0};event.type=SDL_KEYDOWN;event.key.keysym.sym=key;
     SDL_PushEvent(&event);
@@ -3415,6 +3478,12 @@ int main(int argc,char **argv) {
     Uint32 next_episode_countdown_at=0;
     Uint32 stick_last_time=0,right_stick_last_time=0;
     int stick_last_key=0,right_stick_last_direction=0;
+    Uint32 stick_indicator_at=0;
+    int stick_indicator_kind=0;
+    float stick_indicator_value=0.f;
+    int stick_touch_drag=0; /* 1: finger, 2: mouse */
+    SDL_TouchID stick_touch_device=0;
+    SDL_FingerID stick_touch_finger=0;
     int media_playback_mode=0;
     int catalog_language_changed=0;
     TouchGesture touch={0};
@@ -3474,10 +3543,22 @@ int main(int argc,char **argv) {
                 TR("Не вдалося завантажити список IPTV","Could not load the IPTV list"));
         }
         stick_arrow(pad,page!=PLAYER,&stick_last_time,&stick_last_key);
-        if(page==PLAYER &&
-           player_right_stick(pad,player,backlight_ready,
-                              &right_stick_last_time,&right_stick_last_direction))
-            controls_until=SDL_GetTicks()+3000;
+        if(page==PLAYER && stick_touch_drag)
+            stick_indicator_at=SDL_GetTicks(); /* Keep HUD visible while held. */
+        if(page==PLAYER && !stick_touch_drag){
+            int changed=player_right_stick(pad,player,backlight_ready,
+                        &right_stick_last_time,&right_stick_last_direction,
+                        &stick_indicator_value);
+            if(changed){
+                stick_indicator_kind=changed;
+                stick_indicator_at=SDL_GetTicks();
+                controls_until=0;
+            }
+        }else if(page!=PLAYER){
+            stick_indicator_kind=0;
+            stick_touch_drag=0;
+            right_stick_last_direction=0;
+        }
         SDL_Event e;
         for(;;){
             int replay=pending_key>=0;
@@ -3495,6 +3576,9 @@ int main(int argc,char **argv) {
                     case SDLK_BACKSPACE:key=SDL_CONTROLLER_BUTTON_B;break;
                     case SDLK_UP:key=SDL_CONTROLLER_BUTTON_DPAD_UP;break;
                     case SDLK_DOWN:key=SDL_CONTROLLER_BUTTON_DPAD_DOWN;break;
+                    /* Reserved for left stick up/down inside PLAYER. */
+                    case SDLK_PAGEUP:key=10001;break;
+                    case SDLK_PAGEDOWN:key=10002;break;
                     case SDLK_LEFT:key=SDL_CONTROLLER_BUTTON_DPAD_LEFT;break;
                     case SDLK_RIGHT:key=SDL_CONTROLLER_BUTTON_DPAD_RIGHT;break;
                     case SDLK_x:key=SDL_CONTROLLER_BUTTON_X;break;
@@ -3510,6 +3594,7 @@ int main(int argc,char **argv) {
                 e.type==SDL_APP_WILLENTERBACKGROUND ||
                 (e.type==SDL_WINDOWEVENT && e.window.event==SDL_WINDOWEVENT_FOCUS_LOST);
             if(touch.page!=page || cancel_pointer_drag)touch.active=0;
+            if(cancel_pointer_drag)stick_touch_drag=0;
             /* Eden mouse drags must not be cancelled merely because an
                unrelated SDL touch gesture belongs to a different page. */
             if(cancel_pointer_drag){
@@ -3567,6 +3652,53 @@ int main(int argc,char **argv) {
                     }
                 }
                 continue;
+            }
+            /* A visible side HUD captures touch/mouse drags before the player
+               handles generic taps (which would open the full controls). */
+            if(page==PLAYER && video_loaded &&
+               (e.type==SDL_FINGERDOWN || e.type==SDL_FINGERMOTION ||
+                e.type==SDL_FINGERUP ||
+                (e.type==SDL_MOUSEBUTTONDOWN && e.button.button==SDL_BUTTON_LEFT &&
+                 e.button.which!=SDL_TOUCH_MOUSEID) ||
+                (e.type==SDL_MOUSEMOTION && e.motion.which!=SDL_TOUCH_MOUSEID) ||
+                (e.type==SDL_MOUSEBUTTONUP && e.button.button==SDL_BUTTON_LEFT &&
+                 e.button.which!=SDL_TOUCH_MOUSEID))){
+                int finger=e.type==SDL_FINGERDOWN || e.type==SDL_FINGERMOTION ||
+                           e.type==SDL_FINGERUP;
+                int down=e.type==SDL_FINGERDOWN || e.type==SDL_MOUSEBUTTONDOWN;
+                int up=e.type==SDL_FINGERUP || e.type==SDL_MOUSEBUTTONUP;
+                int x,y;
+                if(finger){x=(int)(e.tfinger.x*1280);y=(int)(e.tfinger.y*720);}
+                else{
+                    int ww=1280,hh=720;
+                    SDL_GetWindowSize(window,&ww,&hh);
+                    int mx=e.type==SDL_MOUSEMOTION?e.motion.x:e.button.x;
+                    int my=e.type==SDL_MOUSEMOTION?e.motion.y:e.button.y;
+                    x=mx*1280/(ww?ww:1280);y=my*720/(hh?hh:720);
+                }
+                if(down && !stick_touch_drag && stick_indicator_kind &&
+                   SDL_GetTicks()-stick_indicator_at<1000u &&
+                   y>=205 && y<=515 &&
+                   x>=(stick_indicator_kind==1?31:1177) &&
+                   x<=(stick_indicator_kind==1?103:1249)){
+                    stick_touch_drag=finger?1:2;
+                    if(finger){
+                        stick_touch_device=e.tfinger.touchId;
+                        stick_touch_finger=e.tfinger.fingerId;
+                    }
+                }
+                int owned=stick_touch_drag &&
+                    ((finger && stick_touch_drag==1 &&
+                      e.tfinger.touchId==stick_touch_device &&
+                      e.tfinger.fingerId==stick_touch_finger) ||
+                     (!finger && stick_touch_drag==2));
+                if(owned){
+                    if(player_touch_slider(player,backlight_ready,stick_indicator_kind,
+                                           y,&stick_indicator_value))
+                        stick_indicator_at=SDL_GetTicks();
+                    if(up){stick_touch_drag=0;stick_indicator_at=SDL_GetTicks();}
+                    continue;
+                }
             }
             int tx=-1,ty=-1;
             if(e.type==SDL_FINGERDOWN || e.type==SDL_FINGERMOTION || e.type==SDL_FINGERUP){
@@ -3745,6 +3877,32 @@ int main(int argc,char **argv) {
                 }
                 if(page==PLAYER){
                     int was_visible=SDL_GetTicks()<controls_until;
+                    /* A tap on empty video/overlay space toggles controls.
+                       Preserve interactive buttons, seek, and volume gestures. */
+                    if(was_visible && video_loaded &&
+                       ((e.type==SDL_FINGERDOWN) ||
+                        (e.type==SDL_MOUSEBUTTONDOWN && e.button.which!=SDL_TOUCH_MOUSEID))){
+                        int on_control=(ty>=24 && ty<=86 && tx>=27 && tx<=203) ||
+                            (ty>=24 && ty<=83 && tx>=869 && tx<=1110 &&
+                             active_episode_variant>=0 &&
+                             catalog_next_episode(episodes,episode_count,
+                                                  active_episode_variant)>=0) ||
+                            (player_return_page!=IPTV_CHANNELS &&
+                             ty>=547 && ty<=594 && tx>=118 && tx<=1161) ||
+                            (ty>=603 && ty<703 && tx>=60 && tx<259);
+                        if(!on_control && ty>=603 && ty<703)
+                            for(int i=0;i<6;i++){
+                                SDL_Rect hit=player_button_rect(i);
+                                if(tx>=hit.x && tx<hit.x+hit.w &&
+                                   ty>=hit.y && ty<hit.y+hit.h){
+                                    on_control=1;break;
+                                }
+                            }
+                        if(!on_control){
+                            controls_until=0;
+                            continue;
+                        }
+                    }
                     controls_until=SDL_GetTicks()+3000;
                     if(!was_visible && video_loaded)continue;
                     if(ty>=24 && ty<=86 && tx>=27 && tx<=203)key=SDL_CONTROLLER_BUTTON_B;
@@ -3753,7 +3911,7 @@ int main(int argc,char **argv) {
                             active_episode_variant>=0 &&
                             catalog_next_episode(episodes,episode_count,
                                                  active_episode_variant)>=0)
-                        key=SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
+                        key=SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
                     else if(player_return_page!=IPTV_CHANNELS && ty>=547 && ty<=594 && tx>=118 && tx<=1161){
                         double duration=0;
                         if(player && video_loaded &&
@@ -4083,13 +4241,16 @@ int main(int argc,char **argv) {
                     movy.seek_started=0;
                     command(player,"stop",NULL);page=player_return_page;
                 }
-                if(key==SDL_CONTROLLER_BUTTON_LEFTSHOULDER &&
-                   active_episode_variant>=0 && player_return_page==EPISODES)
-                    next_episode_request=catalog_next_episode(
-                        episodes,episode_count,active_episode_variant);
+                if(active_episode_variant>=0 && player_return_page==EPISODES){
+                    if(key==SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)
+                        next_episode_request=catalog_next_episode(
+                            episodes,episode_count,active_episode_variant);
+                    else if(key==SDL_CONTROLLER_BUTTON_LEFTSHOULDER)
+                        next_episode_request=catalog_previous_episode(
+                            episodes,episode_count,active_episode_variant);
+                }
                 if(key==SDL_CONTROLLER_BUTTON_A)command(player,"cycle","pause");
-                int fast=pad && SDL_GameControllerGetAttached(pad) &&
-                    SDL_GameControllerGetButton(pad,SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+                /* R now selects the next episode, not fast seeking. */
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_LEFT || key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT){
                     int direction=key==SDL_CONTROLLER_BUTTON_DPAD_RIGHT?1:-1;
                     if(player_return_page==IPTV_CHANNELS){
@@ -4105,10 +4266,29 @@ int main(int argc,char **argv) {
                            mpv_get_property(player,"duration",MPV_FORMAT_DOUBLE,&duration)>=0){
                             position+=movy.offset;
                             duration+=movy.offset;
-                            double target=position+direction*(fast?60:10);
+                            double target=position+direction*10;
                             movy_seek_to(player,&movy,fmax(0,fmin(target,duration-1)),&video_loaded);
                         }
-                    }else seek(player,direction>0?(fast?"60":"10"):(fast?"-60":"-10"));
+                    }else seek(player,direction>0?"10":"-10");
+                }
+                if(key==10001 || key==10002){
+                    /* Vertical left stick seeks one minute and opens controls. */
+                    if(video_loaded && player_return_page!=IPTV_CHANNELS){
+                        int direction=key==10001?1:-1;
+                        if(movy_stream_url(playing_url)){
+                            double position=0,duration=0;
+                            if(!movy.seek_started &&
+                               mpv_get_property(player,"time-pos",MPV_FORMAT_DOUBLE,&position)>=0 &&
+                               mpv_get_property(player,"duration",MPV_FORMAT_DOUBLE,&duration)>=0){
+                                position+=movy.offset;
+                                duration+=movy.offset;
+                                movy_seek_to(player,&movy,
+                                             fmax(0,fmin(position+direction*60,duration-1)),
+                                             &video_loaded);
+                            }
+                        }else seek(player,direction>0?"60":"-60");
+                        controls_until=SDL_GetTicks()+3000;
+                    }
                 }
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_UP)change_volume(player,1);
                 if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN)change_volume(player,-1);
@@ -5448,9 +5628,26 @@ int main(int argc,char **argv) {
                         else snprintf(video_title,sizeof(video_title),"%s",playing_movie.title);
                     }
                 }
-                draw_player_controls(&paint,player,movy.offset,live_title,video_title);
+                const char *source_label=TR("Джерело","Source");
+                if(player_return_page==DOWNLOADS)
+                    source_label=TR("Завантаження","Downloads");
+                else if(player_return_page==IPTV_CHANNELS)source_label="IPTV";
+                else{
+                    int provider=provider_for_row(selected_provider);
+                    for(int i=0;i<PROVIDER_COUNT;i++)
+                        if(providers[i].id==provider){
+                            source_label=ui_text(providers[i].name);
+                            break;
+                        }
+                }
+                draw_player_controls(&paint,player,movy.offset,live_title,video_title,
+                                     source_label);
                 battery_status_horizontal(&paint,1187,28);
             }
+            if(video_loaded && stick_indicator_kind &&
+               SDL_GetTicks()-stick_indicator_at<1000u)
+                draw_player_stick_indicator(&paint,stick_indicator_kind,
+                        stick_indicator_value,SDL_GetTicks()-stick_indicator_at);
             if(pending_next_episode>=0){
                 Uint32 elapsed=SDL_GetTicks()-next_episode_countdown_at;
                 int remaining=elapsed<NEXT_EPISODE_DELAY_MS?

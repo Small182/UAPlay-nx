@@ -2966,7 +2966,8 @@ static void draw_player_stick_indicator(Paint *p,int kind,float value,Uint32 ela
                 .97f*alpha,.98f*alpha,1.f*alpha);
 }
 static void draw_player_controls(Paint *p,mpv_handle *player,double offset,
-                                 const char *live_title,const char *video_title) {
+                                 const char *live_title,const char *video_title,
+                                 const char *source_label) {
     ui_theme_enabled=0; /* Video playback controls remain readable in both themes. */
     double pos=0,duration=0;
     int paused=0;
@@ -2995,8 +2996,9 @@ static void draw_player_controls(Paint *p,mpv_handle *player,double offset,
     else if(video_title && video_title[0]){
         int has_next=active_episode_variant>=0 &&
             catalog_next_episode(episodes,episode_count,active_episode_variant)>=0;
-        char playback_heading[576];
-        snprintf(playback_heading,sizeof(playback_heading),"%s: %s",
+        char playback_heading[640];
+        snprintf(playback_heading,sizeof(playback_heading),"%s · %s: %s",
+                 source_label && source_label[0]?source_label:"UAPlay",
                  TR("Відтворення","Playback"),video_title);
         text_small(p,playback_heading,35,517,has_next?737:1125);
     }else text_tiny(p,TR("UAPlay  ·  Відтворення","UAPlay  ·  Playback"),35,519,430);
@@ -5488,7 +5490,20 @@ int main(int argc,char **argv) {
                         else snprintf(video_title,sizeof(video_title),"%s",playing_movie.title);
                     }
                 }
-                draw_player_controls(&paint,player,movy.offset,live_title,video_title);
+                const char *source_label=TR("Джерело","Source");
+                if(player_return_page==DOWNLOADS)
+                    source_label=TR("Завантаження","Downloads");
+                else if(player_return_page==IPTV_CHANNELS)source_label="IPTV";
+                else{
+                    int provider=provider_for_row(selected_provider);
+                    for(int i=0;i<PROVIDER_COUNT;i++)
+                        if(providers[i].id==provider){
+                            source_label=ui_text(providers[i].name);
+                            break;
+                        }
+                }
+                draw_player_controls(&paint,player,movy.offset,live_title,video_title,
+                                     source_label);
                 battery_status_horizontal(&paint,1187,28);
             }
             if(video_loaded && stick_indicator_kind &&

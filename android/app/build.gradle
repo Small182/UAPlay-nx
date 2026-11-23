@@ -1,0 +1,16 @@
+plugins { id 'com.android.application' }
+android {
+  namespace 'com.small182.uaplay.android'
+  compileSdk 35
+  defaultConfig {
+    applicationId 'com.small182.uaplay.android'
+    minSdk 23
+    targetSdk 34
+    versionCode 2
+    versionName '0.1.1-alpha-tv-test'
+  }
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+}

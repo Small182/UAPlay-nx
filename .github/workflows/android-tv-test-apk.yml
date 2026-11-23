@@ -1,0 +1,30 @@
+name: Android TV test APK
+on:
+  push:
+    branches: [android-tv-test-apk]
+  workflow_dispatch:
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Build test APK
+        working-directory: android
+        run: gradle --no-daemon --stacktrace :app:assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UAPlay-Android-TV-test-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

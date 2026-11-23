@@ -39,6 +39,7 @@ static void json_field(const char *object,const char *end,const char *key,
                        char *value,size_t size);
 static const char *json_ws(const char *p);
 static const char *json_skip(const char *p,int depth);
+static int episode_order(const void *a,const void *b);
 
 #define COUNTRY_CACHE_LIMIT 4096
 #define COUNTRY_CACHE_PATH "sdmc:/switch/uaplay/country_cache.tsv"
@@ -182,7 +183,8 @@ static char *request_form(const char *url, const char *post_data,
     if(!strncmp(url,MOVY_API "/",sizeof(MOVY_API "/")-1))
         headers=curl_slist_append(headers,"Origin: " MOVY_ORIGIN);
     if(post_data)headers=curl_slist_append(headers,
-        !strncmp(url,"https://bbe.lme.isroot.in/api/v2/",34)?
+        !strncmp(url,"https://bbe.lme.isroot.in/api/v2/",
+                 sizeof("https://bbe.lme.isroot.in/api/v2/")-1)?
             "Content-Type: application/json":
             "Content-Type: application/x-www-form-urlencoded; charset=UTF-8");
     request_options(curl, url, &r, post_data?4L:6L, post_data?8L:14L);
@@ -1997,6 +1999,11 @@ static int bandera_episodes(int slot,Episode *items,int max,
             json_field(season,season_end,"number",number,sizeof(number));
             if(!number[0])json_field(season,season_end,"title",number,sizeof(number));
             int s=atoi(number);
+            if(s<1){
+                const char *digits=number;
+                while(*digits && !isdigit((unsigned char)*digits))digits++;
+                if(*digits)s=atoi(digits);
+            }
             if(s<1 || s>999){season=season_end;continue;}
             const char *episodes=bandera_array(season,"episodes");
             int sequence=0;

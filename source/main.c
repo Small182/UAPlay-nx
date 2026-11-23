@@ -3050,7 +3050,6 @@ static void draw_player_controls(Paint *p,mpv_handle *player,double offset,
         text_small(p,left,35,552,85);
         text_small(p,right,1167,552,88);
     }
-    text_tiny(p,TR("↑↓ Гучність","↑↓ Volume"),67,606,190);
     box_alpha(p,70,649,178,5,.35f,.42f,.52f,1.f,3);
     int volume=(int)video_options[1];
     if(volume<0)volume=0;if(volume>130)volume=130;

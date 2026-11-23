@@ -2903,7 +2903,45 @@ static void change_volume(mpv_handle *player,int direction){
     video_options[1]=volume;
     playback_set_value(player,"volume",volume);
 }
-static void draw_player_controls(Paint *p,mpv_handle *player,double offset,const char *live_title) {
+/* Player-only right-stick shortcuts; never convert them into navigation keys.
+   SDL analog Y is negative when pushed up. Repeat slowly while held. */
+static int player_right_stick(SDL_GameController *pad,mpv_handle *player,
+                              int backlight_ready,Uint32 *last_time,int *last_direction){
+    if(!pad || !SDL_GameControllerGetAttached(pad)){
+        *last_direction=0;
+        return 0;
+    }
+    int x=SDL_GameControllerGetAxis(pad,SDL_CONTROLLER_AXIS_RIGHTX);
+    int y=SDL_GameControllerGetAxis(pad,SDL_CONTROLLER_AXIS_RIGHTY);
+    const int deadzone=19000;
+    int direction=0;
+    if(abs(x)>deadzone || abs(y)>deadzone)
+        direction=abs(y)>=abs(x)?(y<0?1:2):(x<0?3:4);
+    if(!direction){
+        *last_direction=0;
+        return 0;
+    }
+    Uint32 now=SDL_GetTicks();
+    if(direction==*last_direction && now-*last_time<175u)return 0;
+    *last_direction=direction;
+    *last_time=now;
+    if(direction>=3){
+        change_volume(player,direction==4?1:-1);
+        return 1;
+    }
+    if(!backlight_ready)return 0;
+    float current=0;
+    if(R_FAILED(lblGetCurrentBrightnessSetting(&current)))return 0;
+    float next=current+(direction==1?0.05f:-0.05f);
+    if(next<0.05f)next=0.05f;
+    if(next>1.f)next=1.f;
+    if(fabsf(current-next)<0.001f)return 0;
+    if(R_FAILED(lblSetCurrentBrightnessSetting(next)))return 0;
+    lblApplyCurrentBrightnessSettingToBacklight();
+    return 1;
+}
+static void draw_player_controls(Paint *p,mpv_handle *player,double offset,
+                                 const char *live_title,const char *video_title) {
     ui_theme_enabled=0; /* Video playback controls remain readable in both themes. */
     double pos=0,duration=0;
     int paused=0;
@@ -2929,7 +2967,11 @@ static void draw_player_controls(Paint *p,mpv_handle *player,double offset,const
     }
     box_alpha(p,0,507,1280,213,.027f,.034f,.044f,.93f,0);
     if(live_title)text(p,live_title,35,530,1140);
-    else text_tiny(p,TR("UAPlay  ·  Відтворення","UAPlay  ·  Playback"),35,519,430);
+    else if(video_title && video_title[0]){
+        int has_next=active_episode_variant>=0 &&
+            catalog_next_episode(episodes,episode_count,active_episode_variant)>=0;
+        text_small(p,video_title,35,517,has_next?737:1125);
+    }else text_tiny(p,TR("UAPlay  ·  Відтворення","UAPlay  ·  Playback"),35,519,430);
     if(active_episode_variant>=0 &&
        catalog_next_episode(episodes,episode_count,active_episode_variant)>=0)
         text_tiny(p,TR("L — Наступна серія","L — Next episode"),790,519,310);
@@ -3141,7 +3183,8 @@ static int native_button(int button) {
         default:return button;
     }
 }
-static void stick_arrow(SDL_GameController *pad,Uint32 *last_time,int *last_key) {
+static void stick_arrow(SDL_GameController *pad,int include_right,
+                        Uint32 *last_time,int *last_key) {
     if(!pad || !SDL_GameControllerGetAttached(pad))return;
     const int deadzone=19000;
     int lx=SDL_GameControllerGetAxis(pad,SDL_CONTROLLER_AXIS_LEFTX);
@@ -3151,7 +3194,7 @@ static void stick_arrow(SDL_GameController *pad,Uint32 *last_time,int *last_key)
     int key=0;
     if(abs(ly)>deadzone || abs(lx)>deadzone)
         key=abs(ly)>=abs(lx)?(ly>0?SDLK_DOWN:SDLK_UP):(lx>0?SDLK_RIGHT:SDLK_LEFT);
-    else if(abs(ry)>deadzone || abs(rx)>deadzone)
+    else if(include_right && (abs(ry)>deadzone || abs(rx)>deadzone))
         key=abs(ry)>=abs(rx)?(ry>0?SDLK_DOWN:SDLK_UP):(rx>0?SDLK_RIGHT:SDLK_LEFT);
     Uint32 now=SDL_GetTicks();
     if(!key){*last_key=0;return;}
@@ -3304,6 +3347,8 @@ int main(int argc,char **argv) {
     if(!window) { SDL_Quit();return 2; }
     SDL_GLContext gl=SDL_GL_CreateContext(window);
     if(!gl) { SDL_DestroyWindow(window);SDL_Quit();return 3; }
+    /* Backlight control is optional (for example, when service access is restricted). */
+    int backlight_ready=R_SUCCEEDED(lblInitialize());
     Paint paint={0};
     int install_update=0;
     if(!paint_init(&paint)) goto cleanup;
@@ -3368,8 +3413,8 @@ int main(int argc,char **argv) {
     Uint32 controls_until=0;
     int pending_next_episode=-1,next_episode_request=-1;
     Uint32 next_episode_countdown_at=0;
-    Uint32 stick_last_time=0;
-    int stick_last_key=0;
+    Uint32 stick_last_time=0,right_stick_last_time=0;
+    int stick_last_key=0,right_stick_last_direction=0;
     int media_playback_mode=0;
     int catalog_language_changed=0;
     TouchGesture touch={0};
@@ -3428,7 +3473,11 @@ int main(int argc,char **argv) {
             if(refreshed)snprintf(message,sizeof(message),"%s",refreshed>0?"":
                 TR("Не вдалося завантажити список IPTV","Could not load the IPTV list"));
         }
-        stick_arrow(pad,&stick_last_time,&stick_last_key);
+        stick_arrow(pad,page!=PLAYER,&stick_last_time,&stick_last_key);
+        if(page==PLAYER &&
+           player_right_stick(pad,player,backlight_ready,
+                              &right_stick_last_time,&right_stick_last_direction))
+            controls_until=SDL_GetTicks()+3000;
         SDL_Event e;
         for(;;){
             int replay=pending_key>=0;
@@ -5384,7 +5433,22 @@ int main(int argc,char **argv) {
             if(video_loaded && SDL_GetTicks()<controls_until){
                 const char *live_title=player_return_page==IPTV_CHANNELS?
                     iptv_channel(tv.selected)->title:NULL;
-                draw_player_controls(&paint,player,movy.offset,live_title);
+                char video_title[512]="";
+                if(!live_title){
+                    if(player_return_page==DOWNLOADS){
+                        /* Display the actual downloaded filename, not its SD path. */
+                        const char *basename=strrchr(playing_url,'/');
+                        basename=basename && basename[1]?basename+1:playing_url;
+                        snprintf(video_title,sizeof(video_title),"%s",basename);
+                    }else if(playing_movie.title[0]){
+                        if(player_return_page==EPISODES && active_episode_variant>=0)
+                            snprintf(video_title,sizeof(video_title),"%s · S%02dE%02d",
+                                     playing_movie.title,episodes[active_episode_variant].season,
+                                     episodes[active_episode_variant].number);
+                        else snprintf(video_title,sizeof(video_title),"%s",playing_movie.title);
+                    }
+                }
+                draw_player_controls(&paint,player,movy.offset,live_title,video_title);
                 battery_status_horizontal(&paint,1187,28);
             }
             if(pending_next_episode>=0){
@@ -5479,7 +5543,10 @@ int main(int argc,char **argv) {
     glDeleteProgram(paint.program);
 cleanup:
     SDL_GL_DeleteContext(gl);
-    SDL_DestroyWindow(window);SDL_Quit();if(battery_service_ready)psmExit();romfsExit();
+    SDL_DestroyWindow(window);SDL_Quit();
+    if(backlight_ready)lblExit();
+    if(battery_service_ready)psmExit();
+    romfsExit();
     if(install_update && !update_install(app_update.path)){
         consoleInit(NULL);
         puts("Could not install UAPlay.nro. Check the SD card and UAPlay.nro.bak.\nPress B to exit.");

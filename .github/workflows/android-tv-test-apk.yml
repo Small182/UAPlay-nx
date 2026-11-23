@@ -7,7 +7,7 @@ jobs:
   apk:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -30,3 +30,12 @@ jobs:
           name: UAPlay-Android-TV-test-APK
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+      - name: Put APK at a direct download path on the isolated branch
+        run: |
+          mkdir -p android/apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk android/apk/UAPlay-Android-TV-test.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add android/apk/UAPlay-Android-TV-test.apk
+          git commit -m "build(android): publish installable test apk [skip ci]"
+          git push origin HEAD:android-tv-test-apk

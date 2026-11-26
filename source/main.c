@@ -4860,6 +4860,60 @@ int main(int argc,char **argv) {
                 }
                 continue;
             }
+            if(page==IPTV_PLAYLIST_SETTINGS){
+                if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){
+                    page=SETTINGS;
+                    continue;
+                }
+                int count=iptv_custom_count()+1;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_UP && iptv_playlist_settings_selected>0)
+                    iptv_playlist_settings_selected--;
+                if(key==SDL_CONTROLLER_BUTTON_DPAD_DOWN &&
+                   iptv_playlist_settings_selected+1<count)
+                    iptv_playlist_settings_selected++;
+                if(key==SDL_CONTROLLER_BUTTON_Y && iptv_playlist_settings_selected>0){
+                    int deleting=iptv_playlist_settings_selected-1;
+                    if(iptv_custom_delete(deleting)){
+                        if(tv.country==IPTV_MAX_COUNTRIES+deleting)
+                            tv.country=iptv_country_index("UA");
+                        else if(tv.country>IPTV_MAX_COUNTRIES+deleting)
+                            tv.country--;
+                        iptv_selection_save(tv.country);
+                        if(tv.loaded_country>=IPTV_MAX_COUNTRIES){
+                            tv.loaded_country=-1;
+                            iptv_request_country();
+                        }
+                        iptv_playlist_settings_selected--;
+                        snprintf(message,sizeof(message),"%s",
+                                 TR("Плейлист видалено","Playlist deleted"));
+                    }else snprintf(message,sizeof(message),"%s",
+                                  TR("Не вдалося видалити плейлист","Could not delete playlist"));
+                }
+                if(key==SDL_CONTROLLER_BUTTON_A){
+                    int editing=iptv_playlist_settings_selected-1;
+                    const IptvCustomPlaylist *existing=iptv_custom_at(editing);
+                    char name[96]={0},url[1024]={0};
+                    if(existing){
+                        snprintf(name,sizeof(name),"%s",existing->name);
+                        snprintf(url,sizeof(url),"%s",existing->url);
+                    }
+                    if(keyboard(name,sizeof(name)) && keyboard(url,sizeof(url))){
+                        if(iptv_custom_set(editing<0?iptv_custom_count():editing,name,url)){
+                            snprintf(message,sizeof(message),"%s",
+                                     TR("Плейлист збережено","Playlist saved"));
+                            if(editing<0)iptv_playlist_settings_selected=iptv_custom_count();
+                            if(editing>=0 && tv.country==IPTV_MAX_COUNTRIES+editing){
+                                iptv_selection_save(tv.country);
+                                tv.loaded_country=-1;
+                                iptv_request_country();
+                            }
+                        }else snprintf(message,sizeof(message),"%s",
+                                      TR("Перевірте назву та URL плейлиста",
+                                         "Check the playlist name and URL"));
+                    }
+                }
+                continue;
+            }
             if(page==PROVIDER_SETTINGS){
                 if(key==SDL_CONTROLLER_BUTTON_B || key==SDL_CONTROLLER_BUTTON_BACK){
                     message[0]=0;

@@ -1633,7 +1633,7 @@ static struct {
     IptvFocus focus;
     int more_countries[IPTV_MAX_COUNTRIES],more_count;
     int *visible,count;
-    int failures;
+    int failures,refresh_after_current;
     int64_t entry;
     Uint32 playing_since;
 } tv;
@@ -1675,6 +1675,12 @@ static int iptv_finish(void){
     if(!tv.thread || !SDL_AtomicGet(&tv.done))return 0;
     SDL_WaitThread(tv.thread,NULL);
     tv.thread=NULL;
+    if(tv.refresh_after_current){
+        tv.refresh_after_current=0;
+        iptv_free(&tv.pending);
+        tv.loaded_country=-1;
+        return iptv_request_country()?0:-1;
+    }
     if(tv.requested_country!=tv.country){
         iptv_free(&tv.pending);
         if(tv.loaded_country==tv.country)return 1;
@@ -1699,7 +1705,6 @@ static int iptv_finish(void){
 
 static void iptv_initialize(void){
     if(tv.initialized)return;
-    iptv_custom_load();
     int n;
     const IptvCountry *countries=iptv_countries(&n);
     tv.country=iptv_selection_load();
@@ -3444,6 +3449,7 @@ int main(int argc,char **argv) {
     battery_status_poll();
     catalog_http_init();
     downloads_init();
+    iptv_custom_load(); /* Saved lists are available even without network. */
     int can_update=R_SUCCEEDED(network_result) && argc>0 &&
                    update_path(argv[0],app_update.path,sizeof(app_update.path));
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,SDL_GL_CONTEXT_PROFILE_ES);
@@ -4905,7 +4911,8 @@ int main(int argc,char **argv) {
                             if(editing>=0 && tv.country==IPTV_MAX_COUNTRIES+editing){
                                 iptv_selection_save(tv.country);
                                 tv.loaded_country=-1;
-                                iptv_request_country();
+                                if(tv.thread)tv.refresh_after_current=1;
+                                else iptv_request_country();
                             }
                         }else snprintf(message,sizeof(message),"%s",
                                       TR("Перевірте назву та URL плейлиста",

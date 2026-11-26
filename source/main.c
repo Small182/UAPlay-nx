@@ -1757,8 +1757,12 @@ static void iptv_probe_start(void){
             iptv_probe_stop();return;
         }
     }
-    for(int i=0;i<IPTV_PROBE_THREADS;i++)
+    int workers=0;
+    for(int i=0;i<IPTV_PROBE_THREADS;i++){
         iptv_probe.threads[i]=SDL_CreateThread(iptv_probe_worker,"iptv-health",NULL);
+        if(iptv_probe.threads[i])workers++;
+    }
+    if(!workers)iptv_probe_stop();
 }
 static int iptv_probe_visible(int index){
     return !iptv_probe.entries || iptv_probe.source!=tv.country ||
@@ -1853,7 +1857,10 @@ static void iptv_open(void){
     tv.focus=IPTV_FOCUS_HEADER;
     catalog_hero_focus=IPTV_TAB_FOCUS;
     iptv_initialize();
-    if(tv.loaded_country==tv.country && iptv_probe.source!=tv.country){
+    if(tv.loaded_country==tv.country &&
+       (iptv_probe.source!=tv.country ||
+        (iptv_probe.entries &&
+         SDL_AtomicGet(&iptv_probe.done)>=iptv_probe.count))){
         iptv_probe_start();
         if(!tv.show_favorites)iptv_filter();
     }
@@ -2853,6 +2860,9 @@ static void draw(Paint *p,Page page,Movie *movies,int n,int chosen,
                      y,row==iptv_playlist_settings_selected,
                      row?entry->url:TR("Назва та URL","Name and URL"));
         }
+        /* list_offset enables clipping; reset it before drawing the footer
+           or it inherits the previous page's clipping region. */
+        paint_clip(p,0,0,0,0);
         footer(p,status);
     } else if (page==DETAILS) {
         screen_header(p,movies[chosen].series?TR("Про серіал","About the show"):TR("Про фільм","About the movie"),"UAPlay");
@@ -3745,9 +3755,13 @@ int main(int argc,char **argv) {
            iptv_probe.source==tv.country &&
            iptv_probe.seen!=SDL_AtomicGet(&iptv_probe.done)){
             iptv_probe.seen=SDL_AtomicGet(&iptv_probe.done);
-            int previous=tv.selected;
+            const char *previous_id=tv.count?iptv_channel(tv.selected)->id:NULL;
             iptv_filter();
-            if(tv.count && previous<tv.count)tv.selected=previous;
+            if(previous_id)
+                for(int i=0;i<tv.count;i++)
+                    if(!strcmp(iptv_channel(i)->id,previous_id)){
+                        tv.selected=i;break;
+                    }
         }
         stick_arrow(pad,page!=PLAYER,&stick_last_time,&stick_last_key);
         if(page==PLAYER && stick_touch_drag)
@@ -5006,6 +5020,7 @@ int main(int argc,char **argv) {
                         page=PROVIDER_SETTINGS;
                     }else if(settings_selected==SETTING_IPTV){
                         iptv_playlist_settings_selected=0;
+                        content_motion=(ScrollMotion){0};
                         page=IPTV_PLAYLIST_SETTINGS;
                     }else if(settings_selected==SETTING_LANGUAGE){
                         ui_set_language(ui_language()==UI_ENGLISH?UI_UKRAINIAN:UI_ENGLISH);

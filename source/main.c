@@ -3384,6 +3384,9 @@ static int keyboard(char *value,size_t size) {
     SwkbdConfig cfg;
     if(R_FAILED(swkbdCreate(&cfg,0))) return 0;
     swkbdConfigMakePresetDefault(&cfg);
+    /* The default preset restricts the keyboard to QWERTY variants.
+       Allow all system-supported input languages (including Cyrillic). */
+    swkbdConfigSetType(&cfg,SwkbdType_All);
     Result result=swkbdShow(&cfg,value,size);
     swkbdClose(&cfg);
     return R_SUCCEEDED(result) && value[0];

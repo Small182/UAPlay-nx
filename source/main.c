@@ -5019,6 +5019,7 @@ int main(int argc,char **argv) {
                         message[0]=0;
                         page=PROVIDER_SETTINGS;
                     }else if(settings_selected==SETTING_IPTV){
+                        if(!tv.initialized)tv.country=iptv_selection_load();
                         iptv_playlist_settings_selected=0;
                         content_motion=(ScrollMotion){0};
                         page=IPTV_PLAYLIST_SETTINGS;

@@ -1638,6 +1638,133 @@ static struct {
     Uint32 playing_since;
 } tv;
 
+/* Progressive IPTV health check. Work happens on four short-timeout
+   networking threads, never on the rendering thread. Each worker owns a
+   snapshot of its URL and headers, so refreshed catalog memory is safe. */
+enum { IPTV_PROBE_THREADS=4 };
+typedef struct {
+    char *url,*agent,*referrer;
+    SDL_atomic_t state; /* 0 waiting, 1 verified, -1 unavailable */
+} IptvProbeEntry;
+static struct {
+    SDL_Thread *threads[IPTV_PROBE_THREADS];
+    SDL_atomic_t next,done,stop;
+    IptvProbeEntry *entries;
+    int count,source,seen;
+} iptv_probe;
+
+typedef struct {
+    char data[8193];
+    size_t used;
+} IptvProbeBody;
+static size_t iptv_probe_write(char *ptr,size_t size,size_t nmemb,void *ctx){
+    IptvProbeBody *body=ctx;
+    size_t bytes=size*nmemb;
+    size_t room=sizeof(body->data)-1-body->used;
+    if(bytes>room)bytes=room;
+    memcpy(body->data+body->used,ptr,bytes);
+    body->used+=bytes;
+    body->data[body->used]=0;
+    /* Stop after reading enough to inspect the manifest, without
+       downloading a live stream indefinitely. */
+    return bytes==size*nmemb?bytes:0;
+}
+static int iptv_probe_one(const IptvProbeEntry *item){
+    CURL *curl=curl_easy_init();
+    if(!curl)return 0;
+    IptvProbeBody *body=calloc(1,sizeof(*body));
+    if(!body){curl_easy_cleanup(curl);return 0;}
+    curl_easy_setopt(curl,CURLOPT_URL,item->url);
+    curl_easy_setopt(curl,CURLOPT_USERAGENT,
+                     item->agent && item->agent[0]?item->agent:
+                     "Mozilla/5.0 (Nintendo Switch; UAPlay/1.0)");
+    if(item->referrer && item->referrer[0])
+        curl_easy_setopt(curl,CURLOPT_REFERER,item->referrer);
+    curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,1L);
+    curl_easy_setopt(curl,CURLOPT_MAXREDIRS,3L);
+    curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);
+    curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT_MS,1800L);
+    curl_easy_setopt(curl,CURLOPT_TIMEOUT_MS,3500L);
+#ifdef __SWITCH__
+    curl_easy_setopt(curl,CURLOPT_IPRESOLVE,(long)CURL_IPRESOLVE_V4);
+#endif
+    curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,iptv_probe_write);
+    curl_easy_setopt(curl,CURLOPT_WRITEDATA,body);
+    CURLcode result=curl_easy_perform(curl);
+    long code=0;
+    curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&code);
+    /* CURLE_WRITE_ERROR is expected if a stream exceeds the 8 KB probe. */
+    int ok=(result==CURLE_OK || (result==CURLE_WRITE_ERROR && body->used>0)) &&
+           code>=200 && code<300 && body->used>0;
+    const char *path=strstr(item->url,".m3u8");
+    if(path){
+        /* Reject HTML error pages that still respond 200. */
+        ok=ok && strstr(body->data,"#EXTM3U")!=NULL &&
+           strstr(body->data,"#EXT-X-")!=NULL;
+    }else if(strstr(body->data,"<html") || strstr(body->data,"<!DOCTYPE html"))
+        ok=0;
+    curl_easy_cleanup(curl);
+    free(body);
+    return ok;
+}
+static int iptv_probe_worker(void *unused){
+    (void)unused;
+    while(!SDL_AtomicGet(&iptv_probe.stop)){
+        int index=SDL_AtomicAdd(&iptv_probe.next,1);
+        if(index>=iptv_probe.count)break;
+        int ok=iptv_probe_one(&iptv_probe.entries[index]);
+        SDL_AtomicSet(&iptv_probe.entries[index].state,ok?1:-1);
+        SDL_AtomicAdd(&iptv_probe.done,1);
+    }
+    return 0;
+}
+static void iptv_probe_stop(void){
+    SDL_AtomicSet(&iptv_probe.stop,1);
+    for(int i=0;i<IPTV_PROBE_THREADS;i++){
+        if(iptv_probe.threads[i]){
+            SDL_WaitThread(iptv_probe.threads[i],NULL);
+            iptv_probe.threads[i]=NULL;
+        }
+    }
+    for(int i=0;i<iptv_probe.count;i++){
+        free(iptv_probe.entries[i].url);
+        free(iptv_probe.entries[i].agent);
+        free(iptv_probe.entries[i].referrer);
+    }
+    free(iptv_probe.entries);
+    iptv_probe.entries=NULL;
+    iptv_probe.count=iptv_probe.seen=0;
+    iptv_probe.source=-1;
+}
+static void iptv_probe_start(void){
+    iptv_probe_stop();
+    if(tv.loaded_country!=tv.country || !tv.catalog.count)return;
+    int count=tv.catalog.count;
+    iptv_probe.entries=calloc((size_t)count,sizeof(*iptv_probe.entries));
+    if(!iptv_probe.entries)return;
+    iptv_probe.count=count;
+    iptv_probe.source=tv.country;
+    SDL_AtomicSet(&iptv_probe.next,0);
+    SDL_AtomicSet(&iptv_probe.done,0);
+    SDL_AtomicSet(&iptv_probe.stop,0);
+    for(int i=0;i<count;i++){
+        const IptvChannel *c=&tv.catalog.channels[i];
+        IptvProbeEntry *item=&iptv_probe.entries[i];
+        item->url=strdup(c->url?c->url:"");
+        item->agent=strdup(c->agent?c->agent:"");
+        item->referrer=strdup(c->referrer?c->referrer:"");
+        if(!item->url || !item->agent || !item->referrer){
+            iptv_probe_stop();return;
+        }
+    }
+    for(int i=0;i<IPTV_PROBE_THREADS;i++)
+        iptv_probe.threads[i]=SDL_CreateThread(iptv_probe_worker,"iptv-health",NULL);
+}
+static int iptv_probe_visible(int index){
+    return !iptv_probe.entries || iptv_probe.source!=tv.country ||
+           index<0 || index>=iptv_probe.count ||
+           SDL_AtomicGet(&iptv_probe.entries[index].state)==1;
+}
 static const IptvChannel *iptv_channel(int row){
     return tv.show_favorites?&tv.favorites.channels[row]:
                             &tv.catalog.channels[tv.visible[row]];
@@ -1650,7 +1777,8 @@ static void iptv_filter(void){
     else if(tv.loaded_country==tv.country)
         for(int i=0;i<tv.catalog.count;i++){
             const IptvChannel *channel=&tv.catalog.channels[i];
-            if(tv.genre==IPTV_ALL || (channel->genres & (UINT32_C(1)<<tv.genre)))
+            if((tv.genre==IPTV_ALL || (channel->genres & (UINT32_C(1)<<tv.genre))) &&
+               iptv_probe_visible(i))
                 tv.visible[tv.count++]=i;
         }
     tv.selected=0;
@@ -1692,6 +1820,7 @@ static int iptv_finish(void){
         iptv_free(&tv.pending);
         return -1;
     }
+    iptv_probe_stop();
     iptv_free(&tv.catalog);
     free(tv.visible);
     tv.catalog=tv.pending;
@@ -1724,6 +1853,10 @@ static void iptv_open(void){
     tv.focus=IPTV_FOCUS_HEADER;
     catalog_hero_focus=IPTV_TAB_FOCUS;
     iptv_initialize();
+    if(tv.loaded_country==tv.country && iptv_probe.source!=tv.country){
+        iptv_probe_start();
+        if(!tv.show_favorites)iptv_filter();
+    }
 }
 
 static int iptv_filter_count(Page page){
@@ -2219,12 +2352,21 @@ static void draw_iptv(Paint *p,Page page,const char *status){
             if((int)tv.focus==IPTV_FOCUS_COUNTRY+i)selection_frame(p,x,IPTV_FILTER_Y,w,IPTV_FILTER_H);
             button(p,labels[i],x,IPTV_FILTER_Y,w,IPTV_FILTER_H,i==2 && tv.show_favorites);
         }
-        if(tv.cached && tv.loaded_country==tv.country && !tv.show_favorites)
+        if(iptv_probe.entries && iptv_probe.source==tv.country && !tv.show_favorites){
+            char progress[104];
+            snprintf(progress,sizeof(progress),
+                     TR("Перевірка: %d/%d","Checking: %d/%d"),
+                     SDL_AtomicGet(&iptv_probe.done),iptv_probe.count);
+            text_small(p,progress,1030,111,207);
+        }else if(tv.cached && tv.loaded_country==tv.country && !tv.show_favorites)
             text_small(p,TR("Збережений список","Cached list"),1030,111,205);
         if(!tv.count){
             const char *empty=tv.show_favorites?TR("У вибраному поки немає каналів","No favorite channels yet"):
                 tv.thread?TR("Завантаження каналів…","Loading channels…"):
-                          TR("Каналів не знайдено","No channels found");
+                iptv_probe.entries && iptv_probe.source==tv.country &&
+                SDL_AtomicGet(&iptv_probe.done)<iptv_probe.count?
+                    TR("Перевіряємо доступність каналів…","Checking channel availability…"):
+                          TR("Працюючих каналів не знайдено","No available channels found");
             text_center_button(p,empty,UI_EDGE,271,1216,96,p->font_big,.73f,.77f,.82f);
         }
         int target=tv.selected/IPTV_PAGE_SIZE*IPTV_PAGE_STEP;
@@ -3590,10 +3732,22 @@ int main(int argc,char **argv) {
         }
         {
             int refreshed=iptv_finish();
+            if(refreshed>0 && page==IPTV_CHANNELS && !tv.show_favorites){
+                iptv_probe_start();
+                iptv_filter();
+            }
             if(refreshed && (page==IPTV_CHANNELS || page==IPTV_COUNTRIES ||
                              page==IPTV_MORE_COUNTRIES || page==IPTV_GENRES))
                 snprintf(message,sizeof(message),"%s",refreshed>0?"":
                 TR("Не вдалося завантажити список IPTV","Could not load the IPTV list"));
+        }
+        if(page==IPTV_CHANNELS && !tv.show_favorites && iptv_probe.entries &&
+           iptv_probe.source==tv.country &&
+           iptv_probe.seen!=SDL_AtomicGet(&iptv_probe.done)){
+            iptv_probe.seen=SDL_AtomicGet(&iptv_probe.done);
+            int previous=tv.selected;
+            iptv_filter();
+            if(tv.count && previous<tv.count)tv.selected=previous;
         }
         stick_arrow(pad,page!=PLAYER,&stick_last_time,&stick_last_key);
         if(page==PLAYER && stick_touch_drag)
@@ -5836,6 +5990,7 @@ int main(int argc,char **argv) {
     if(media_playback_mode)appletSetMediaPlaybackState(false);
     if(subdl_job.thread)SDL_WaitThread(subdl_job.thread,NULL);
     if(tv.thread)SDL_WaitThread(tv.thread,NULL);
+    iptv_probe_stop();
     iptv_free(&tv.pending);
     iptv_free(&tv.catalog);
     iptv_free(&tv.favorites);

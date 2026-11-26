@@ -39,10 +39,19 @@ static bool custom_save(void){
         ok=fprintf(f,"%s\t%s\n",custom_playlists[i].name,custom_playlists[i].url)>0;
     if(fclose(f)!=0)ok=false;
     if(!ok){remove(IPTV_CUSTOM_FILE ".part");return false;}
-    if(rename(IPTV_CUSTOM_FILE ".part",IPTV_CUSTOM_FILE)==0)return true;
-    /* FAT implementations can require removing the existing destination. */
-    remove(IPTV_CUSTOM_FILE);
-    return rename(IPTV_CUSTOM_FILE ".part",IPTV_CUSTOM_FILE)==0;
+    /* Atomic-ish replacement with a backup: preserve the previous settings
+       even when FAT cannot overwrite a destination in one rename. */
+    remove(IPTV_CUSTOM_FILE ".bak");
+    bool had_file=rename(IPTV_CUSTOM_FILE,IPTV_CUSTOM_FILE ".bak")==0;
+    if(had_file || errno==ENOENT){
+        if(rename(IPTV_CUSTOM_FILE ".part",IPTV_CUSTOM_FILE)==0){
+            remove(IPTV_CUSTOM_FILE ".bak");
+            return true;
+        }
+        if(had_file)rename(IPTV_CUSTOM_FILE ".bak",IPTV_CUSTOM_FILE);
+    }
+    remove(IPTV_CUSTOM_FILE ".part");
+    return false;
 }
 void iptv_custom_load(void){
     custom_count=0;

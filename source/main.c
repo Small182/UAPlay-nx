@@ -5048,6 +5048,7 @@ int main(int argc,char **argv) {
                     iptv_playlist_settings_selected++;
                 if(key==SDL_CONTROLLER_BUTTON_Y && iptv_playlist_settings_selected>0){
                     int deleting=iptv_playlist_settings_selected-1;
+                    SDL_AtomicSet(&iptv_probe.stop,1);
                     if(iptv_custom_delete(deleting)){
                         if(tv.country==IPTV_MAX_COUNTRIES+deleting)
                             tv.country=iptv_country_index("UA");
@@ -5227,6 +5228,9 @@ int main(int argc,char **argv) {
                         snprintf(message,sizeof(message),"%s",
                                  TR("Не вдалося зберегти вибір IPTV","Could not save IPTV selection"));
                     tv.show_favorites=0;
+                    if(tv.country!=tv.loaded_country)
+                        SDL_AtomicSet(&iptv_probe.stop,1); /* Cancel old URL checks
+                            while the replacement source downloads in background. */
                     if(tv.country!=tv.loaded_country && !iptv_request_country())
                         snprintf(message,sizeof(message),"%s",
                              TR("Не вдалося завантажити список IPTV","Could not load the IPTV list"));

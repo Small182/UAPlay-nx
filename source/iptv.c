@@ -12,6 +12,126 @@
 
 #define IPTV_URL "https://iptv-org.github.io/iptv/countries/"
 #define IPTV_FAVORITES UAPLAY_DATA_DIR "/iptv-favorites.m3u"
+#define IPTV_CUSTOM_FILE UAPLAY_DATA_DIR "/iptv-custom.txt"
+#define IPTV_SELECTION_FILE UAPLAY_DATA_DIR "/iptv-selection.txt"
+
+static IptvCustomPlaylist custom_playlists[IPTV_CUSTOM_MAX];
+static int custom_count;
+static bool custom_valid(const char *name,const char *url) {
+    if(!name || !*name || strlen(name)>=sizeof(custom_playlists[0].name) ||
+       strpbrk(name,"\t\r\n") || !url ||
+       strlen(url)>=sizeof(custom_playlists[0].url) || strpbrk(url,"\t\r\n"))
+        return false;
+    return (!strncmp(url,"https://",8) || !strncmp(url,"http://",7)) &&
+           strcspn(url," \t\r\n")==strlen(url);
+}
+int iptv_custom_count(void){return custom_count;}
+const IptvCustomPlaylist *iptv_custom_at(int index){
+    return index>=0 && index<custom_count?&custom_playlists[index]:NULL;
+}
+static bool custom_save(void){
+    mkdir(UAPLAY_DATA_ROOT,0777);
+    mkdir(UAPLAY_DATA_DIR,0777);
+    FILE *f=fopen(IPTV_CUSTOM_FILE ".part","wb");
+    if(!f)return false;
+    bool ok=true;
+    for(int i=0;i<custom_count && ok;i++)
+        ok=fprintf(f,"%s\t%s\n",custom_playlists[i].name,custom_playlists[i].url)>0;
+    if(fclose(f)!=0)ok=false;
+    if(!ok){remove(IPTV_CUSTOM_FILE ".part");return false;}
+    /* Atomic-ish replacement with a backup: preserve the previous settings
+       even when FAT cannot overwrite a destination in one rename. */
+    remove(IPTV_CUSTOM_FILE ".bak");
+    bool had_file=rename(IPTV_CUSTOM_FILE,IPTV_CUSTOM_FILE ".bak")==0;
+    if(had_file || errno==ENOENT){
+        if(rename(IPTV_CUSTOM_FILE ".part",IPTV_CUSTOM_FILE)==0){
+            remove(IPTV_CUSTOM_FILE ".bak");
+            return true;
+        }
+        if(had_file)rename(IPTV_CUSTOM_FILE ".bak",IPTV_CUSTOM_FILE);
+    }
+    remove(IPTV_CUSTOM_FILE ".part");
+    return false;
+}
+void iptv_custom_load(void){
+    custom_count=0;
+    FILE *f=fopen(IPTV_CUSTOM_FILE,"rb");
+    if(!f)return;
+    char row[1200];
+    while(custom_count<IPTV_CUSTOM_MAX && fgets(row,sizeof(row),f)){
+        char *tab=strchr(row,'\t'),*newline=strchr(row,'\n');
+        if(!tab || !newline)continue;
+        *tab=0;*newline=0;
+        if(newline>row && newline[-1]=='\r')newline[-1]=0;
+        const char *name=row,*url=tab+1;
+        if(!custom_valid(name,url))continue;
+        IptvCustomPlaylist *entry=&custom_playlists[custom_count++];
+        snprintf(entry->name,sizeof(entry->name),"%s",name);
+        snprintf(entry->url,sizeof(entry->url),"%s",url);
+    }
+    fclose(f);
+}
+bool iptv_custom_set(int index,const char *name,const char *url){
+    if(!custom_valid(name,url) || index<0 || index>custom_count ||
+       index>=IPTV_CUSTOM_MAX)return false;
+    for(int i=0;i<custom_count;i++)
+        if(i!=index && !strcmp(custom_playlists[i].name,name))return false;
+    IptvCustomPlaylist old=custom_playlists[index];
+    int previous_count=custom_count;
+    snprintf(custom_playlists[index].name,sizeof(custom_playlists[index].name),"%s",name);
+    snprintf(custom_playlists[index].url,sizeof(custom_playlists[index].url),"%s",url);
+    if(index==custom_count)custom_count++;
+    if(custom_save())return true;
+    custom_playlists[index]=old;
+    custom_count=previous_count;
+    return false;
+}
+bool iptv_custom_delete(int index){
+    if(index<0 || index>=custom_count)return false;
+    IptvCustomPlaylist old[IPTV_CUSTOM_MAX];
+    memcpy(old,custom_playlists,sizeof(old));
+    int previous_count=custom_count;
+    for(int i=index;i+1<custom_count;i++)custom_playlists[i]=custom_playlists[i+1];
+    custom_count--;
+    if(custom_save())return true;
+    memcpy(custom_playlists,old,sizeof(old));
+    custom_count=previous_count;
+    return false;
+}
+int iptv_selection_load(void){
+    FILE *f=fopen(IPTV_SELECTION_FILE,"rb");
+    if(!f)return iptv_country_index("UA");
+    char row[256]={0};
+    bool ok=fgets(row,sizeof(row),f)!=NULL;
+    fclose(f);
+    if(!ok)return iptv_country_index("UA");
+    row[strcspn(row,"\r\n")]=0;
+    if(!strncmp(row,"C\t",2)){
+        for(int i=0;i<custom_count;i++)
+            if(!strcmp(row+2,custom_playlists[i].name))return IPTV_MAX_COUNTRIES+i;
+    }else if(!strncmp(row,"N\t",2)){
+        int country=iptv_country_index(row+2);
+        if(country>=0)return country;
+    }
+    return iptv_country_index("UA");
+}
+bool iptv_selection_save(int source){
+    mkdir(UAPLAY_DATA_ROOT,0777);
+    mkdir(UAPLAY_DATA_DIR,0777);
+    FILE *f=fopen(IPTV_SELECTION_FILE,"wb");
+    if(!f)return false;
+    const IptvCustomPlaylist *list=iptv_custom_at(source-IPTV_MAX_COUNTRIES);
+    bool ok;
+    if(source>=IPTV_MAX_COUNTRIES)
+        ok=list && fprintf(f,"C\t%s\n",list->name)>0;
+    else{
+        int count;const IptvCountry *countries=iptv_countries(&count);
+        ok=source>=0 && source<count &&
+           fprintf(f,"N\t%s\n",countries[source].code)>0;
+    }
+    if(fclose(f)!=0)ok=false;
+    return ok;
+}
 
 enum { IPTV_PLAYLIST_LIMIT=6*1024*1024, IPTV_CHANNEL_LIMIT=25000 };
 
@@ -204,7 +324,7 @@ static int parse_playlist(char *text,IptvCatalog *catalog,int country) {
             if(!strncmp(value,"http-user-agent=",16) && !item.agent)item.agent=value+16;
             if(!strncmp(value,"http-referrer=",14) && !item.referrer)item.referrer=value+14;
         }else if(line[0]!='#' && item.title){
-            if(item.country>=0 && (country==IPTV_ALL || item.country==country) &&
+            if((country==IPTV_ALL || item.country==country) &&
                http_url(line) && strlen(line)<2048){
                 if(catalog->count==IPTV_CHANNEL_LIMIT)return IPTV_INVALID;
                 if(catalog->count==capacity){
@@ -214,6 +334,9 @@ static int parse_playlist(char *text,IptvCatalog *catalog,int country) {
                     catalog->channels=grown;
                 }
                 item.url=line;
+                /* Community M3U playlists often omit tvg-id. Use URL so
+                   favorites still have a stable, non-null identity. */
+                if(!item.id || !item.id[0])item.id=line;
                 catalog->channels[catalog->count++]=item;
             }
             item.title=NULL;
@@ -310,12 +433,27 @@ bool iptv_favorite_toggle(IptvCatalog *favorites,const IptvChannel *channel) {
 }
 
 int iptv_load(int country,IptvCatalog *catalog,int *from_cache) {
-    if(country<0 || country>=(int)(sizeof(countries)/sizeof(countries[0])))return IPTV_INVALID;
-    const char *code=countries[country].code;
-    char path[112],url[128];
-    int first=tolower((unsigned char)code[0]),second=tolower((unsigned char)code[1]);
-    snprintf(path,sizeof(path),UAPLAY_DATA_DIR "/iptv-%c%c.m3u",first,second);
-    snprintf(url,sizeof(url),IPTV_URL "%c%c.m3u",first,second);
+    char path[160],url[1200];
+    int filter=country;
+    if(country>=IPTV_MAX_COUNTRIES){
+        const IptvCustomPlaylist *custom=iptv_custom_at(country-IPTV_MAX_COUNTRIES);
+        if(!custom)return IPTV_INVALID;
+        snprintf(url,sizeof(url),"%s",custom->url);
+        /* Key cache by URL, not row index: removing a list does not
+           accidentally load another list's old channels. */
+        unsigned hash=2166136261u;
+        for(const unsigned char *p=(const unsigned char*)url;*p;p++)
+            hash=(hash^*p)*16777619u;
+        snprintf(path,sizeof(path),UAPLAY_DATA_DIR "/iptv-custom-%08x.m3u",hash);
+        filter=IPTV_ALL;
+    }else{
+        if(country<0 || country>=(int)(sizeof(countries)/sizeof(countries[0])))
+            return IPTV_INVALID;
+        const char *code=countries[country].code;
+        int first=tolower((unsigned char)code[0]),second=tolower((unsigned char)code[1]);
+        snprintf(path,sizeof(path),UAPLAY_DATA_DIR "/iptv-%c%c.m3u",first,second);
+        snprintf(url,sizeof(url),IPTV_URL "%c%c.m3u",first,second);
+    }
     Playlist buffer={0};
     CURL *curl=curl_easy_init();
     CURLcode result=CURLE_FAILED_INIT;
@@ -337,14 +475,14 @@ int iptv_load(int country,IptvCatalog *catalog,int *from_cache) {
     *from_cache=0;
     if(result==CURLE_OK){
         catalog->playlist=buffer.data;
-        int status=parse_playlist(catalog->playlist,catalog,country);
-        if(status==IPTV_OK){
+        int status=parse_playlist(catalog->playlist,catalog,filter);
+        if(status==IPTV_OK && catalog->count>0){
             save_playlist(path,catalog,-1,NULL,NULL);
             return status;
         }
         iptv_free(catalog);
     }else free(buffer.data);
-    int status=read_saved(path,catalog,country);
+    int status=read_saved(path,catalog,filter);
     *from_cache=status==IPTV_OK;
     return status;
 }
